@@ -1,0 +1,45 @@
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const kind=location.pathname.split('/').at(-1).replace('.html',''),scope='<p class="demo-scope">独立交互原型 · 页内内存模拟，不下载、不调用模型、不执行命令、不读写真实源码或项目；刷新重置。</p>';
+const titles={index:'Store 独立功能页面',discover:'资源发现',detail:'资源详情',installed:'已安装资源',projects:'项目能力',develop:'自开发'};
+document.title='Nozeli Store · '+(titles[kind]||titles.index);document.querySelectorAll('.page-links a').forEach(a=>a.setAttribute('aria-current',a.getAttribute('href')==='./'+kind+'.html'?'page':'false'));
+$('#theme').onclick=()=>document.body.classList.toggle('dark');
+const header=(title,description)=>`<p class="eyebrow">NOZELI / STORE</p><h1>${title}</h1><p class="intro">${description}</p>${scope}`;
+const resources=[{name:'研究方法审阅员',type:'角色模板',desc:'审阅研究设计、混杂因素和证据链。',version:'1.0.0'},{name:'文献证据核对',type:'Skill',desc:'区分原文、作者主张与推论。',version:'1.1.0'},{name:'视频工具引擎',type:'引擎',desc:'按需抽帧、提取音轨与格式转换。',version:'1.0.0'}];
+let installed=false;
+function showDecision(title,body,accept){const d=$('#decision'),origin=document.activeElement;$('#decision-title').textContent=title;$('#decision-body').innerHTML=body;$('#accept').textContent=accept;d.showModal();d.onclose=()=>origin?.isConnected&&origin.focus();}
+$('#cancel').onclick=()=>$('#decision').close();
+if(kind==='index'||!titles[kind]){
+ $('#page').innerHTML=header(titles.index,'每个链接是一张独立页面，不包含完整工作台外壳。')+`<div class="grid">${Object.entries(titles).filter(([k])=>k!=='index').map(([k,t])=>`<a class="panel card-link" href="./${k}.html"><h2>${t}</h2><p class="muted">${k==='develop'?'需求 → 开发副本 → 候选 Diff → 验证 → 独立启用确认':'单独查看与操作这一项功能'}</p></a>`).join('')}</div>`;
+}else if(kind==='discover'){
+ $('#page').innerHTML=header(titles.discover,'引擎、Skills 与角色模板，按需发现，不自动引入项目。')+'<label>搜索资源 <input type="search" id="search" placeholder="名称或用途"></label><div id="resources"></div>';
+ function paint(){const q=$('#search').value.trim();$('#resources').innerHTML=resources.filter(r=>(r.name+r.type+r.desc).includes(q)).map(r=>`<article class="panel"><p class="eyebrow">${r.type} / v${r.version}</p><h2>${r.name}</h2><p>${r.desc}</p><a href="./detail.html?resource=${encodeURIComponent(r.name)}">查看资源详情 →</a></article>`).join('')||'<p>没有匹配的示例资源。</p>';};$('#search').oninput=paint;paint();
+}else if(kind==='detail'){
+ $('#page').innerHTML=header('研究方法审阅员','角色模板 · Nozeli 示例资源 · v1.0.0')+`<div class="two-columns"><section class="panel"><h2>角色与方法</h2><p>核对样本、对照、混杂因素与可重复性。区分已知事实和解释，不替用户接受成果。</p><h3>私有 Skill</h3><p>方法审查：逐条标明来源、限制和待验证假设。</p><h3>公共依赖</h3><p>文献证据核对 @ 1.0.0</p><h3>权限</h3><p>仅接收当前 Work 显式交接的材料；不新增 Shell、联网或文件写入权限。</p></section><section class="panel"><h2>安装计划</h2><p>角色模板 0.3 MiB＋Skill 0.2 MiB（示例）</p><p>安装到全局库，不自动引入项目、不启动Worker。</p><button class="primary" id="install">查看安装计划</button><a href="./develop.html">创建自己的能力 →</a><p id="installed-status" role="status">尚未模拟安装</p></section></div>`;
+ $('#install').onclick=()=>showDecision('确认模拟安装','<p>研究方法审阅员 @ 1.0.0</p><p>必需依赖：文献证据核对 @ 1.0.0</p><p>仅改变此页内存；不下载或执行，不绑定任何项目。</p>','确认模拟安装');$('#accept').onclick=()=>{installed=true;$('#installed-status').textContent='已模拟安装；0个项目绑定，0个运行实例。';$('#decision').close();};
+ const selected=resources.find(r=>r.name===new URLSearchParams(location.search).get('resource'));
+ if(selected&&selected.name!=='研究方法审阅员'){
+  $('#page').innerHTML=header(selected.name,`${selected.type} · 示例资源 · v${selected.version}`)+`<section class="panel"><h2>能力与边界</h2><p>${selected.desc}</p><p>${selected.type==='引擎'?'平台／原生执行依赖尚未接通；示例安装不会下载或运行二进制。':'纯文本方法，不授予额外工具或文件权限。'}</p><p>无额外示例依赖，固定版本 ${selected.version}。</p><button id="install" class="primary">查看安装计划</button><p id="installed-status" role="status">尚未模拟安装</p></section>`;
+  $('#install').onclick=()=>showDecision('确认模拟安装',`<p>${selected.name} @ ${selected.version}</p><p>仅改变此页内存，不下载或执行，不绑定项目。</p>`,'确认模拟安装');
+ }
+}else if(kind==='installed'){
+ $('#page').innerHTML=header(titles.installed,'这是独立资源管理页面。样例项目固定旧版，安装新版不会静默迁移项目。')+`<section class="panel"><div class="resource-row"><div><h3>文献证据核对</h3><p>全局已装 1.0.0 · 项目A固定1.0.0</p></div><button id="update">安装 1.1.0</button></div><div class="resource-row"><div><h3>文献证据核对 @ 1.0.0</h3><p>仍被项目A引用，卸载不能删除项目历史。</p></div><button id="uninstall">卸载旧版</button></div><p id="library-state" role="status">尚未安装新版本</p></section>`;
+ $('#update').onclick=()=>showDecision('安装新版本','<p>新增文献证据核对 @ 1.1.0，保留1.0.0。</p><p>项目A仍固定1.0.0；项目升级另行确认。</p>','确认模拟安装');$('#accept').onclick=()=>{$('#library-state').textContent='全局并存1.0.0／1.1.0，项目A仍固定1.0.0。';$('#decision').close();};$('#uninstall').onclick=()=>{$('#library-state').textContent='拒绝卸载：项目A仍引用1.0.0。请先显式升级或解绑，不删除历史。';};
+}else if(kind==='projects'){
+ const bindings={A:'1.0.0',B:'1.0.0'};let current='A';
+ $('#page').innerHTML=header(titles.projects,'只改变明确选择的项目，固定版本与历史不随全局资源更新而重写。')+`<section class="panel"><label>合成项目<select id="project"><option value="A">项目 A · 文献研究</option><option value="B">项目 B · 影像笔记</option></select></label><h2>文献证据核对</h2><p id="binding"></p><button id="upgrade">升级此项目至1.1.0</button><p id="project-history">没有新增变更。</p></section>`;
+ function paint(){$('#binding').textContent=`项目${current}固定 ${bindings[current]}`;$('#upgrade').disabled=bindings[current]==='1.1.0';}$('#project').onchange=()=>{current=$('#project').value;paint();};$('#upgrade').onclick=()=>showDecision('升级项目'+current,`<p>文献证据核对：${bindings[current]} → 1.1.0</p><p>进行中任务仍保留原版本，不影响其他项目。</p>`,'确认单项目升级');$('#accept').onclick=()=>{bindings[current]='1.1.0';$('#project-history').textContent='已记录项目'+current+'升级；旧绑定和成果保留，0个任务启动。';$('#decision').close();paint();};paint();
+}else if(kind==='develop'){
+ let phase='draft',candidate=null;
+ $('#page').innerHTML=header('自开发能力','从自己的需求创建Skill、角色模板或引擎适配候选；只在独立开发副本工作，不直接修改运行中的Nozeli。')+`<div class="steps" id="steps"><span>1 需求</span><span>2 开发副本</span><span>3 候选 Diff</span><span>4 验证</span><span>5 启用确认</span></div><div class="two-columns"><section class="panel"><h2>你想增加什么能力？</h2><label for="name">能力名称</label><input id="name" type="text" value="论文证据审阅助手" maxlength="70"><label for="type">资源类型</label><select id="type"><option>Skill</option><option>角色模板</option><option>引擎适配声明</option></select><label for="request">需求与边界</label><textarea id="request" maxlength="4000">核对论文中的关键结论，为每条意见保留引文和不确定性；不修改原文、不自动采纳。</textarea><button id="workspace">选择示例开发副本</button><p id="workspace-state" class="warning-note">未选择开发副本；运行安装与当前论文项目不是默认开发目标。</p><button id="prepare" class="primary" disabled>准备开发候选（模拟）</button></section><section class="panel" id="candidate"><h2>候选与验证</h2><p>先明确需求和开发副本。不会在后台执行脚本、调用模型或覆盖文件。</p></section></div>`;
+ $('#type').append(new Option('Nozeli 功能修改','Nozeli 功能修改'));
+ const render=()=>{
+ document.querySelectorAll('#steps span').forEach((n,i)=>n.classList.toggle('active',i===({draft:0,workspace:1,candidate:2,verified:3,enabled:4}[phase])));
+ if(!candidate)return;
+ $('#candidate').innerHTML=`<p class="eyebrow">本地候选 / 0.1.0-demo</p><h2>${esc(candidate.name)}</h2><p>${esc(candidate.type)} · 开发副本：store-demo-workspace</p><p>${esc(candidate.request)}</p><h3>候选 Diff · 模板预览</h3><pre>+ name: ${esc(candidate.name)}\n+ type: ${esc(candidate.type)}\n+ scope: explicit-material-only\n+ behavior: ${esc(candidate.request)}\n+ permissions: no-new-grants</pre><p class="warning-note">确定性模板预览，不是AI生成或真实源码Diff；引擎仅生成适配声明，不提供二进制。</p><button id="validate" ${phase==='enabled'?'disabled':''}>核对示例候选</button><button id="activate" class="primary" ${phase!=='verified'?'disabled':''}>查看启用计划</button><p id="validation" role="status">${phase==='enabled'?'已模拟加入本页资源库；未绑定项目、未部署或重启Nozeli。':phase==='verified'?'示例表单完整、固定版本与声明边界已核对。真实编译、签名、安全和跨平台测试：未执行。':'尚未核对；不能启用。'}</p>`;
+ $('#validate').onclick=()=>{phase='verified';render();};$('#activate').onclick=()=>showDecision('启用本地候选',`<p>${esc(candidate.name)} @ 0.1.0-demo</p><p>目标：${candidate.type==='Nozeli 功能修改'?'模拟应用开发候选，不写入Store资源库':'此页模拟全局资源库'}。</p><p>不会替换运行安装、不自动引入项目、不启动Worker、不授予新权限。</p><p>${candidate.type==='Nozeli 功能修改'?'真实功能修改必须另经源码Diff审阅、构建／回归、冻结包验收、单独激活／重启和旧包回退；这些步骤本页未执行。':'示例核对不等于真实构建验收，真实产品必须完成兼容性／签名／安全检查。'}</p>`,'确认模拟启用');
+ };
+ $('#workspace').onclick=()=>{phase='workspace';$('#workspace-state').textContent='已选择合成开发副本：store-demo-workspace（不是文件系统目录）';$('#prepare').disabled=false;render();};
+ $('#prepare').onclick=()=>{const name=$('#name').value.trim(),request=$('#request').value.trim();if(!name||!request){$('#status').textContent='请填写能力名称和需求。';return;}candidate={name,request,type:$('#type').value};phase='candidate';render();};
+ for(const id of ['name','type','request'])$('#'+id).addEventListener('input',()=>{if(candidate){candidate=null;phase='workspace';$('#candidate').innerHTML='<h2>需求已变化</h2><p>旧验证已失效，请重新准备候选，不沿用旧启用确认。</p>';if($('#decision').open)$('#decision').close();}});
+ $('#accept').onclick=()=>{if(phase!=='verified'||!candidate)return;phase='enabled';$('#decision').close();render();if(candidate.type==='Nozeli 功能修改')$('#validation').textContent='已模拟确认应用开发候选；未构建、未部署、未重启运行程序。';$('#status').textContent='模拟确认完成；未修改真实应用或项目。';};render();
+}

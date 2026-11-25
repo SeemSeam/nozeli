@@ -15,16 +15,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  createZaiCodingPlanOAuth,
-  parseZaiCallback,
-  zaiAuthorizeUrl,
-  zaiCodingPlanConfig,
-  zaiProviderWithCodingPlan,
-  nozeliZaiCodingPlanExtension,
-} from '../../../integrations/pi/src/zai-coding-plan.mjs';
+import {pathToFileURL} from 'node:url';
 import { ProviderSettings, loginDisplay } from '../src/agents/managed/provider-settings.mjs';
 import { EventEmitter } from 'node:events';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {createZaiCodingPlanOAuth,parseZaiCallback,zaiAuthorizeUrl,zaiCodingPlanConfig,zaiProviderWithCodingPlan,nozeliZaiCodingPlanExtension}=await import(pathToFileURL(path.join(integration,'src/zai-coding-plan.mjs')));
 
 const REDIRECT_URI = 'zcode://zai-auth/callback';
 const KEYS_URL = 'https://api.z.ai/api/biz/v1/organization/org-1/projects/proj-1/api_keys';

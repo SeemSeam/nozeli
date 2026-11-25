@@ -15,6 +15,15 @@
       "archive": "node-v22.23.4-darwin-arm64.tar.gz",
       "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-darwin-arm64.tar.gz",
       "sha256Archive": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428"
+    },
+    "win32-x64": {
+      "platform": "win32",
+      "arch": "x64",
+      "archive": "node-v22.23.4-win-x64.zip",
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-win-x64.zip",
+      "sha256Archive": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
+      "archivePrefix": "node-v22.23.4-win-x64",
+      "executable": "node.exe"
     }
   },
   "notes": "Standalone Node bundled for the private Pi runtime (Pi SDK requires >=22.19.0). Pin upgrades deliberately: update version+url+sha256Archive together after verifying the new build against the official SHASUMS256.txt for the release."

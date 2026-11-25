@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nozeli · 底部控制区设计预览</title>
+<style>
+:root{color-scheme:dark;--page:#151d28;--surface:#202b37;--layer:#1a2430;--ink:#e3edf7;--muted:#a7bacd;--line:#405266;--accent:#a8cdf6;--on-accent:#172739;--warn:#f2cc90;--danger:#f3b2b2;--hover:#2d3d50}
+:root[data-theme=light]{color-scheme:light;--page:#edf1f6;--surface:#fff;--layer:#f6f8fb;--ink:#223145;--muted:#4f6278;--line:#c2cdd9;--accent:#245a91;--on-accent:white;--warn:#785216;--danger:#9e3838;--hover:#e7eef6}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.55 system-ui,sans-serif}main{max-width:1160px;margin:auto;padding:clamp(12px,4vw,40px)}h1,h2,h3,p{margin:0}h1{font-size:clamp(23px,4vw,32px);font-weight:650}h2{font-size:14px;font-weight:600;color:var(--muted);letter-spacing:.02em;margin:28px 0 8px}h3{font-size:17px}.mast,.row,.group,.meta,.collab{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mast{justify-content:space-between}.eyebrow,.muted,.meta,.collab{color:var(--muted);font-size:13px}.eyebrow{margin-bottom:3px}.intro{margin-top:6px;color:var(--muted)}button{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:8px;min-height:44px;padding:6px 11px;cursor:pointer}button:hover:not(:disabled){background:var(--hover)}button:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button:disabled{opacity:.6;cursor:default}button.outline{border-color:var(--line)}button.primary{background:var(--accent);color:var(--on-accent);font-weight:650}button.primary:hover:not(:disabled){filter:brightness(1.07);background:var(--accent)}button.danger{color:var(--danger)}.compact{min-height:36px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:13px;min-width:0}.report-body{padding:18px 20px 15px;background:var(--layer);border-radius:13px 13px 0 0}.report-body p{color:var(--muted);margin-top:4px}.report-footer{border-top:1px solid var(--line);padding:12px 15px}.row{justify-content:space-between;gap:8px 16px}.meta{gap:6px}.pill{border:1px solid var(--line);border-radius:5px;color:var(--warn);padding:0 5px}.report-actions{margin-inline-start:auto}.notice{margin-top:8px;font-size:13px;color:var(--warn);overflow-wrap:anywhere}.notice:empty,.save:empty{display:none}.composer{padding:9px 12px 7px}.composer:focus-within{border-color:var(--accent)}.composer label[for=draft]{color:var(--muted);font-size:13px}textarea{display:block;width:100%;min-height:66px;resize:vertical;border:0;color:var(--ink);background:transparent;font:inherit;font-size:16px;padding:8px 1px 4px}textarea:focus{outline:none}textarea::placeholder{color:var(--muted)}.compose-tools{gap:4px 12px}.compose-tools .group{gap:4px 8px}.attach{display:inline-flex;align-items:center;gap:5px;min-height:44px;font-size:14px}.save{font-size:13px;color:var(--muted)}.send{min-width:44px;font-size:20px;padding:4px}.collab{padding:3px 3px 0;gap:2px 13px}.collab span{display:inline-flex;align-items:center;gap:5px}.collab i{width:7px;height:7px;border-radius:2px;background:currentColor}.collab .review{color:var(--warn)}.collab button{margin-inline-start:auto}.help{font-size:13px;color:var(--muted);margin:6px 0 0}.help summary{cursor:pointer;width:max-content;max-width:100%;padding:7px 2px}.help p{padding:0 2px 8px}.key-state{color:var(--warn);font-size:13px}.key-state:empty{display:none}dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:20px;width:min(450px,calc(100% - 28px))}dialog::backdrop{background:#09101999}dialog p{margin:8px 0 14px}dialog .group{justify-content:flex-end}.icon{width:17px;height:17px;vertical-align:-3px;fill:none;stroke:currentColor;stroke-width:1.6;margin-inline-end:4px}[hidden]{display:none!important}
+@media(max-width:590px){.report-actions{margin:0;width:100%;justify-content:space-between}.report-actions .group{gap:4px}.compose-submit{margin-inline-start:auto}.collab button{margin-inline-start:0}}@media(max-width:380px){.report-actions .group{flex-wrap:wrap;justify-content:flex-end}.report-body,.report-footer{padding-inline:11px}}
+.report-footer{container-type:inline-size}.decision{text-align:end;min-width:0}.decision p{margin-bottom:5px}.decision .group{justify-content:flex-end}.report-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,auto);align-items:end;gap:8px 16px;margin:6px 0 0;width:auto}.discussion{min-width:0}.composer textarea:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:5px}.materials{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0}.materials:empty{display:none}.materials button{min-height:32px;padding:2px 8px;background:var(--layer);border-color:var(--line);overflow-wrap:anywhere;max-width:100%}
+@container(max-width:440px){.report-actions{grid-template-columns:minmax(0,1fr);align-items:start}.decision{text-align:start}.decision .group{justify-content:flex-start}}@container(max-width:280px){.decision .group{display:grid;grid-template-columns:minmax(0,1fr)}}
+.window-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px}.discussion-window{display:flex;flex-direction:column;min-width:0;min-height:0;height:350px;overflow:hidden}.discussion-window.is-folded{height:auto}.window-head,.window-tools,.window-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.window-head{padding:6px 10px;border-bottom:1px solid var(--line);background:var(--layer)}.window-name{flex:1;min-width:0;overflow-wrap:anywhere}.window-head button{min-width:40px}.window-history{flex:1;min-height:0;overflow:auto;padding:12px;overflow-wrap:anywhere}.window-history p+p,.window-history details{margin-top:8px}.window-history summary{cursor:pointer}.window-compose{border-top:1px solid var(--line);padding:8px 10px 6px}.window-compose textarea{min-height:58px;max-height:100px;resize:none;padding:4px;border-radius:5px}.window-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.window-foot{justify-content:space-between}.window-tools{margin-inline-start:auto}.window-note{font-size:12px;color:var(--muted)}.window-note:empty{display:none}.publication{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:7px;padding-inline-start:8px;flex-wrap:wrap}.window-reopen{margin-top:6px}
+.window-queue{margin:0;padding:0 10px;max-height:80px;overflow:auto;overflow-wrap:anywhere}.window-queue ol{margin:0;padding-inline-start:22px}.window-queue button{min-height:32px}.discussion-window{container-type:inline-size}@container(max-width:250px){.window-tools{margin-inline-start:0}.window-head{align-items:start}.window-name{flex-basis:100%}}
+.preview-platform{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:13px}.preview-platform select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;min-height:36px;padding:4px 8px}.preview-platform select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+<main>
+<header class="mast"><div><div class="eyebrow">NOZELI / 交互设计预览</div><h1>报告与对话底栏</h1></div><div class="group"><label class="preview-platform">预览平台 <select id="platform"><option value="pc">Windows / Linux</option><option value="mac">macOS</option></select></label><button id="theme" class="outline compact" type="button">切换浅色</button></div></header>
+<p class="intro">只演示布局和状态，不连接项目或模型。</p>
+<h2 id="report-title">01 · 成果报告</h2>
+<section class="panel" aria-labelledby="report-title">
+<div class="report-body"><h3>计算结果核对</h3><p>冻结报告正文独立于底栏。讨论和采纳是两种不同的操作。</p></div>
+<footer class="report-footer">
+<div class="meta"><span>报告 V1</span><span class="pill" id="report-state">待审核</span></div>
+<div class="report-actions"><div class="discussion"><button id="discuss" class="outline"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H8l-5 4V5a1 1 0 0 1 1-1Z"/></svg><span>追加讨论</span></button><p class="notice" role="status" id="report-note"></p></div><div class="decision"><p class="muted">采纳会将当前审核稿写入项目，并结束工作。</p><div class="group"><button id="adopt" class="primary">采纳并结束</button><button id="discard" class="danger outline">放弃并结束</button></div></div></div>
+</footer>
+</section>
+<details class="help"><summary>试试打开失败</summary><label class="attach"><input type="checkbox" id="simulate">模拟窗口未显示</label></details>
+<h2 id="composer-title">02 · 项目前台</h2>
+<section aria-labelledby="composer-title">
+<form class="panel composer" id="compose"><label for="draft">示例项目 · 前台对话</label>
+<textarea id="draft" rows="2" aria-label="项目前台草稿"></textarea>
+<div id="materials" class="materials" aria-label="待发送材料"></div>
+<div class="row compose-tools"><div class="group"><button type="button" id="reference" class="outline">＋ 引用文件</button><label class="attach"><input type="checkbox" id="attachment">附上当前文件</label><span class="save" id="draft-status" role="status"></span></div><div class="group compose-submit"><button type="button" id="background" class="outline" disabled>后台任务</button><button type="submit" id="send" class="primary send" aria-label="发送给前台" disabled>↑</button></div></div>
+</form>
+<div class="collab"><span><i></i>前台待命</span><span><i></i>主控待命</span><span class="review"><i></i>1 项待审</span><button id="details" class="compact">状态详情</button></div>
+</section>
+<h2 id="windows-title">03 · 讨论小窗</h2>
+<div class="window-previews" aria-labelledby="windows-title">
+ <div><section class="panel discussion-window" id="worker-window" aria-labelledby="worker-title" data-worker>
+  <header class="window-head"><div class="window-name"><strong id="worker-title">追加讨论</strong><div class="muted">原 Worker · 报告 V2</div></div><button data-fold aria-label="收起追加讨论" aria-expanded="true">−</button><button data-close aria-label="关闭追加讨论">×</button></header>
+  <div class="window-history" role="log" aria-label="任务讨论记录"><p><strong>Worker</strong> · 已保留核对结果。</p><p class="publication"><span>当前版</span><button data-preview="报告 V2 · 冻结成果">查看报告 V2 ↗</button></p><details><summary>较早发布</summary><button data-preview="报告 V1 · 冻结成果">查看报告 V1 ↗</button></details><details><summary>执行过程</summary><p class="muted">工具记录 · bash · 示例执行结果</p></details></div>
+  <details class="help window-queue" hidden><summary>待发队列</summary><ol></ol></details>
+  <form class="window-compose"><textarea rows="2" aria-label="追加讨论草稿"></textarea><div class="window-foot"><span class="window-note" role="status"></span><div class="window-tools"><button type="submit" class="primary" disabled>发送 ↑</button></div></div></form>
+ </section><button class="outline window-reopen" data-reopen="worker-window" hidden>重新打开追加讨论</button></div>
+ <div><section class="panel discussion-window" id="tag-window" aria-labelledby="tag-title">
+  <header class="window-head"><div class="window-name"><strong id="tag-title">选区讨论</strong><div class="muted">标签 03 · methods.md</div></div><button data-fold aria-label="收起选区讨论" aria-expanded="true">−</button><button data-close aria-label="关闭选区讨论">×</button></header>
+  <div class="window-history" role="log" aria-label="标签讨论记录"><details><summary>查看原选区</summary><p>“用相同的边界条件复核两组计算结果。”</p></details><p><strong>你</strong> · 这两组结果能直接比较吗？</p><p><strong>前台</strong> · 先核对两组使用的边界条件。</p></div>
+  <form class="window-compose"><textarea rows="2" aria-label="选区讨论草稿"></textarea><div class="window-foot"><span class="window-note" role="status"></span><div class="window-tools"><button type="button" data-handoff class="outline" disabled>后台任务</button><button type="submit" class="primary" disabled>发送 ↑</button></div></div></form>
+ </section><button class="outline window-reopen" data-reopen="tag-window" hidden>重新打开选区讨论</button></div>
+</div>
+</main>
+<dialog id="dialog" aria-labelledby="dialog-title"><form method="dialog"><h3 id="dialog-title"></h3><p id="dialog-body"></p><div class="group"><button value="cancel" autofocus>返回</button><button value="confirm" class="primary" id="confirm">确认</button></div></form></dialog>
+<script>
+const $=id=>document.getElementById(id);
+const platform=$('platform');
+platform.value=/mac/i.test(navigator.userAgentData?.platform||navigator.platform)?'mac':'pc';
+const macPreview=()=>platform.value==='mac';
+function updateHints(){
+ const enter=macPreview()?'Return':'Enter';
+ const discussion=`${macPreview()?'⌘ + Return':'Ctrl + Enter'} 发送 · ${enter} 换行`;
+ const queue='Tab 排队 · Esc 后按 Tab 移焦';
+ $('draft').placeholder=`${enter} 发送 · Shift + ${enter} 换行 · ${queue}`;
+ document.querySelector('#worker-window textarea').placeholder=`${discussion} · ${queue}`;
+ document.querySelector('#tag-window textarea').placeholder=discussion;
+}
+platform.onchange=updateHints;updateHints();
+$('theme').onclick=()=>{const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';$('theme').textContent=light?'切换深色':'切换浅色';};
+let decision=null, opener=null;
+function dialog(title,body,label='',run=null){opener=document.activeElement;decision=run;$('dialog-title').textContent=title;$('dialog-body').textContent=body;$('confirm').hidden=!label;$('confirm').textContent=label;$('dialog').returnValue='cancel';$('dialog').showModal();}
+$('dialog').onclose=()=>{if($('dialog').returnValue==='confirm')decision?.();decision=null;opener?.focus();};
+$('discuss').onclick=()=>{const b=$('discuss'),label=b.querySelector('span');$('report-note').textContent='';b.disabled=true;b.setAttribute('aria-busy','true');label.textContent='正在打开…';const fail=$('simulate').checked;setTimeout(()=>{b.disabled=false;b.removeAttribute('aria-busy');label.textContent='追加讨论';if(fail){$('report-note').textContent='讨论窗口未显示，可再次点击「追加讨论」。';b.focus();}else{b.focus();dialog('原 Worker · 追加讨论','这里是讨论窗口的演示。打开讨论不发送意见，也不改变报告状态。');}},400);};
+function end(label){$('report-state').textContent=label;$('adopt').disabled=$('discard').disabled=true;}
+$('adopt').onclick=()=>dialog('采纳并结束？','将当前审核稿应用到项目并结束工作。这里仅演示确认，不修改文件。','确认采纳',()=>end('已采纳（示例）'));
+$('discard').onclick=()=>dialog('放弃并结束？','不应用当前成果；原报告和讨论仍保留。这里不修改项目。','确认放弃',()=>end('已放弃（示例）'));
+const draft=$('draft');let escapeTab=false;
+function sync(){const has=Boolean(draft.value.trim());$('send').disabled=$('background').disabled=!has;$('draft-status').textContent=has?'未发送':'';}
+function submit(kind){if(!draft.value.trim())return;draft.value='';sync();$('draft-status').textContent=kind+'（演示）';}
+draft.oninput=sync;draft.onblur=()=>{escapeTab=false;};draft.onkeydown=e=>{if(e.isComposing||e.keyCode===229||e.shiftKey||e.ctrlKey||e.altKey||e.metaKey)return;if(e.key==='Escape'&&draft.value.trim()){escapeTab=true;return;}if(e.key==='Tab'&&escapeTab){escapeTab=false;return;}if(e.key==='Tab'&&!draft.value.trim())return;if(['Tab','Enter'].includes(e.key)){e.preventDefault();if(!e.repeat)submit(e.key==='Tab'?'已排队':'已发送');}};
+function material(id,label,remove){const row=$(id);if(row){row.remove();return;}const chip=document.createElement('button');chip.id=id;chip.type='button';chip.textContent=label+' ×';chip.setAttribute('aria-label','移除 '+label);chip.onclick=()=>{chip.remove();remove();};$('materials').append(chip);}
+$('compose').onsubmit=e=>{e.preventDefault();submit('已发送');};$('background').onclick=()=>submit('已提交后台');$('reference').onclick=()=>{if(!$('ref-chip'))dialog('引用文件','把示例文件加入当前草稿，不会立即发送。','确认引用',()=>material('ref-chip','results.md',()=>$('reference').focus()));};$('attachment').onchange=()=>material('current-chip','当前文件',()=>{$('attachment').checked=false;$('attachment').focus();});$('details').onclick=()=>dialog('协作状态','前台待命 · 主控待命 · 1 项结果待审。示例状态，不连接运行时。');
+for(const win of document.querySelectorAll('.discussion-window')){
+ const form=win.querySelector('form'),input=form.querySelector('textarea'),note=form.querySelector('[role=status]'),send=form.querySelector('[type=submit]'),handoff=form.querySelector('[data-handoff]'),history=win.querySelector('[role=log]'),reopen=document.querySelector(`[data-reopen="${win.id}"]`),fold=win.querySelector('[data-fold]');
+ let escape=false;
+ function sync(){const empty=!input.value.trim();send.disabled=empty;if(handoff)handoff.disabled=empty;}
+ function submit(action){const text=input.value.trim();if(!text)return;if(action==='已排队'){
+  const queue=win.querySelector('.window-queue'),list=queue.querySelector('ol'),item=document.createElement('li'),cancel=document.createElement('button');
+  const update=()=>{queue.hidden=!list.children.length;queue.querySelector('summary').textContent='待发 '+list.children.length+' 条';};
+  cancel.type='button';cancel.textContent='撤回';cancel.onclick=()=>{item.remove();update();queue.hidden?input.focus():queue.querySelector('summary').focus();};item.append(text+' ',cancel);list.append(item);update();
+ }else{const entry=document.createElement('p');entry.textContent=`${action}（演示） · ${text}`;history.append(entry);history.scrollTop=history.scrollHeight;}input.value='';sync();note.textContent=action+'（演示）';}
+ input.oninput=()=>{sync();note.textContent=input.value?'草稿保留 · 未发送':'';};
+ input.onblur=()=>{escape=false;};
+ input.onkeydown=e=>{
+  if(e.isComposing||e.keyCode===229||e.altKey||e.shiftKey)return;
+  if(e.key==='Enter'&&(macPreview()?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey)){
+   e.preventDefault();if(!e.repeat)submit(handoff?'已发送续问':'已发送');return;
+  }
+  if(!win.hasAttribute('data-worker')||e.ctrlKey||e.metaKey)return;
+  if(e.key==='Escape'&&input.value.trim())escape=true;
+  else if(e.key==='Tab'&&escape)escape=false;
+  else if(e.key==='Tab'&&input.value.trim()){e.preventDefault();if(!e.repeat)submit('已排队');}
+ };
+ form.onsubmit=e=>{e.preventDefault();submit(handoff?'已发送续问':'已发送');};
+ if(handoff)handoff.onclick=()=>dialog('提交此标签的后台任务？','带上这个选区及当前草稿。仅模拟交接，不发送讨论。','确认提交',()=>submit('已提交后台'));
+ win.querySelector('[data-close]').onclick=()=>{win.hidden=true;reopen.hidden=false;reopen.focus();};
+ reopen.onclick=()=>{win.hidden=false;reopen.hidden=true;fold.focus();};
+ fold.onclick=()=>{const collapsed=win.classList.toggle('is-folded');form.hidden=history.hidden=collapsed;const queue=win.querySelector('.window-queue');if(queue)queue.hidden=collapsed||!queue.querySelector('li');fold.setAttribute('aria-expanded',String(!collapsed));fold.textContent=collapsed?'＋':'−';fold.setAttribute('aria-label',(collapsed?'展开':'收起')+win.querySelector('.window-name strong').textContent);};
+ for(const preview of win.querySelectorAll('[data-preview]'))preview.onclick=()=>dialog(preview.dataset.preview,'查看该版冻结结果，不影响讨论或审核决定。');
+}
+</script>
+</html>

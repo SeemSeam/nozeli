@@ -21,6 +21,7 @@
       <button type="button" id="pick-project" class="rail-add" title="选择目录">+</button>
       <div id="recent" class="recent"></div>
       <div class="rail-actions" role="group" aria-label="项目操作">
+        <button type="button" id="workspace-store" class="rail-action" aria-expanded="false" aria-controls="local-resource-store" hidden></button>
         <button type="button" id="workspace-drawing" class="rail-action" aria-label="涂鸦" title="涂鸦" disabled>涂鸦</button>
         <button type="button" id="workspace-open-website" class="rail-action" aria-label="打开网站" title="打开网站">网站</button>
         <button type="button" id="workspace-open-terminal" class="rail-action" aria-label="终端" title="终端" disabled>终端</button>
@@ -92,7 +93,7 @@
       <section id="conversation-panel" class="conversation-panel" aria-label="项目对话">
         <header id="conversation-head" class="conversation-head" aria-label="项目对话"><span>对话</span><div class="conversation-controls"></div></header>
         <div id="conversation" class="conversation"><p id="ai-status" data-state="unavailable">AI 尚未接通 · 可以先记下想法，草稿仅保存在本机。</p><div id="reading-inbox" hidden></div></div>
-        <form id="compose-form" class="composer-wrap"><div id="context-bar" class="context-bar">项目对话</div><textarea id="composer" rows="2" maxlength="20000" placeholder="聊一聊…" title="Enter 换行，Ctrl/Cmd+Enter 发送；@ 引用文件，可粘贴图片" aria-label="项目对话草稿"></textarea><div class="composer-footer"><label class="attach-file"><input id="attach-file" type="checkbox">附上当前文件</label><span id="compose-status">未发送</span><button id="send-message" disabled title="尚未配置真实 CLI，不能发送">发送 ↑</button></div></form>
+        <form id="compose-form" class="composer-wrap"><div id="context-bar" class="context-bar">项目对话</div><textarea id="composer" rows="2" maxlength="20000" aria-label="项目对话草稿"></textarea><div class="composer-footer"><label class="attach-file"><input id="attach-file" type="checkbox">附上当前文件</label><span id="compose-status">未发送</span><button id="send-message" disabled title="尚未配置真实 CLI，不能发送">发送 ↑</button></div></form>
       </section>
       </div>
     </main>
@@ -125,6 +126,7 @@
         <button type="button" data-settings-section="settings-project-workspace">工作区</button>
         <button type="button" data-settings-section="settings-project-tex">TeX 编译</button>
         <button type="button" data-settings-section="settings-project-confirmations">交互与确认</button>
+        <button type="button" data-settings-section="settings-project-agents">技能与角色</button>
         <div class="settings-scope-label">快捷操作 <small>立即执行，不切换设置分类</small></div>
         <button type="button" id="settings-zen" aria-pressed="false">进入 Zen 专注模式</button>
       </nav>
@@ -150,6 +152,7 @@
         <section id="settings-project-workspace" aria-label="当前项目工作区" hidden></section>
         <section id="settings-project-tex" aria-label="当前项目TeX编译" hidden></section>
         <section id="settings-project-confirmations" aria-label="当前项目交互与确认" hidden></section>
+        <section id="settings-project-agents" aria-label="当前项目技能与角色" hidden></section>
         <section id="settings-general" aria-label="通用设置" hidden>
           <h3>快捷键与初始化</h3><p class="settings-hint">正文与对话的显示偏好位于当前项目的“阅读与对话”；各文件的常用操作仍在内容附近。</p>
           <div class="settings-card"><h4>AI 连接初始化</h4><p>Pi 使用独立私有配置；旧版配置和会话不会自动导入或改写。请在 AI 连接中添加服务或登录账号。</p><button type="button" id="settings-initialize">查看初始化状态</button></div>

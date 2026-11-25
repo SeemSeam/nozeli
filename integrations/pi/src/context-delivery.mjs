@@ -20,6 +20,37 @@ export const CONTEXT_BUDGET_DEFAULTS = Object.freeze({
 export const utf8Bytes = (value) => Buffer.byteLength(value, "utf8");
 export const sha256Hex = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 
+export const IMPORTED_SKILL_MAX_BYTES = 32 * 1024;
+
+export function importedSkillError(code, message, beforeSubmission = false) {
+  return Object.assign(new Error(message), { code, failureOrigin: 'runtime',
+    ...(beforeSubmission ? { definitiveNonDispatch: true, deliveryPhase: 'not-submitted' } : {}),
+  });
+}
+
+export function normalizeImportedSkill(value, turnId) {
+  const { id, version, digest, text } = value ?? {};
+  const validLabel = label => typeof label === 'string' && label.length > 0 && label.length <= 128 &&
+    !/[^A-Za-z0-9._:+-]/u.test(label);
+  if (typeof value !== 'object' || Array.isArray(value) || !validLabel(id) || !validLabel(version) ||
+      typeof digest !== 'string' || digest.length !== 64 || /[^0-9a-f]/u.test(digest) ||
+      typeof text !== 'string' || text.length === 0 || /[\uD800-\uDFFF]/u.test(text)) {
+    throw importedSkillError('PI_IMPORTED_SKILL_INVALID', 'Invalid imported skill payload', true);
+  }
+  const bytes = utf8Bytes(text);
+  if (bytes > IMPORTED_SKILL_MAX_BYTES) {
+    throw importedSkillError('PI_IMPORTED_SKILL_OVER_BUDGET', `Imported skill exceeds ${IMPORTED_SKILL_MAX_BYTES} UTF-8 bytes`, true);
+  }
+  if (sha256Hex(text) !== digest) {
+    throw importedSkillError('PI_IMPORTED_SKILL_DIGEST_MISMATCH', 'Imported skill digest does not match its exact UTF-8 text', true);
+  }
+  // Bind the exact outbound envelope to this attempt, not an identical body
+  // already mentioned in user input or previous model output.
+  const marker = `nozeli-imported-skill:${turnId}`;
+  const envelopeText = `[${marker} id=${id} version=${version} sha256=${digest}]\n${text}\n[/${marker}]`;
+  return Object.freeze({ id, version, digest, bytes, marker, envelopeText });
+}
+
 function escapeAttribute(value) {
   return String(value).replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }

@@ -8,7 +8,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants,lstatSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {AsyncLocalStorage} from 'node:async_hooks';
 import { validateSheet } from './sheet-package.mjs';
+import {validateSheetSnapshot} from './office-recovery.mjs';
 import { validateWord } from './word-package.mjs';
 import { MaterialStore, digestBytes } from '../domain/material-store.mjs';
 import { FileTags } from '../domain/file-tags.mjs';
@@ -21,8 +23,12 @@ import {rebaseDocumentEdits, documentChangesSince, resolveTextReplacements} from
 import { treeViewValue } from './file-tree-ops.mjs';
 import {ProjectStorage} from './project-storage.mjs';
 import {ensureProjectGit} from './project-git.mjs';
+import {createWindowsDesktopProjectGitIO} from '../platform/windows/desktop-project-git.mjs';
+import {experimentalWindowsReadFilesystem} from '../platform/windows/experimental-filesystem.mjs';
+import {createExperimentalWindowsPersistence} from '../platform/windows/experimental-persistence.mjs';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
 import {ProjectAttachments,validateDrawingPng} from './project-attachments.mjs';
+import {createDesktopProfileIO} from './desktop-profile-io.mjs';
 
   const NOTE_KINDS = ['image-region','image-point','ppt-selection','ppt-region','ppt-point','word-region', 'word-selection', 'text-selection', 'text-point', 'pdf-page', 'pdf-point', 'pdf-selection', 'pdf-region'];
   function boundNoteOffsets(value, { strict = false } = {}) {
@@ -211,6 +217,15 @@ export class HostError extends Error {
   }
 }
 
+// Preserve native publication facts across the shared Office/IPC error layer.
+// A failed directory barrier after publication must never become "not written".
+function officeWriteError(error,recoveryPath,extra={}) {
+  const facts={};
+  for(const key of ['committed','durability','commitUnknown','operationId','win32Code'])if(error[key]!==undefined)facts[key]=error[key];
+  const message=error.committed===true?'Office 写入已发布，但持久化结果尚未确认；请核对原件后再保存，编辑副本已保留。':error.message;
+  return Object.assign(new HostError(error.code||'SAVE_FAILED',message,{...error.details,...facts,...extra,recoveryPath}),facts);
+}
+
 const SCHEMA = 1;
 const LIST_LIMIT = 2000;
 const LIST_DEPTH = 6;
@@ -314,12 +329,16 @@ async function syncDirectory(dir) {
 }
 
 export class DesktopHost {
-  constructor(userDataDir, { materialMaxBytes = 64 * 1024 * 1024, onDocumentChange = () => {} } = {}) {
+  constructor(userDataDir, { materialMaxBytes = 64 * 1024 * 1024, onDocumentChange = () => {}, profileIO } = {}) {
     if (typeof userDataDir !== 'string' || !path.isAbsolute(userDataDir)) {
       throw new HostError('INVALID_DIRECTORY', 'Application metadata directory must be absolute.');
     }
     this.userDataDir = path.resolve(userDataDir);
-    this.storage=new ProjectStorage(this.userDataDir);
+    this.profileIO=profileIO??createDesktopProfileIO(this.userDataDir);
+    this.profileRevisions=new Map();
+    // Only the private profile catalog is selected here. Project initialization
+    // remains disabled until its Git/file effects are qualified independently.
+    this.storage=new ProjectStorage(this.userDataDir,process.platform==='win32'?{windowsDesktopProjects:true}:{});
     this.attachments=new ProjectAttachments(this.storage);
     this.metaRoot = path.join(this.userDataDir,'nozeli','settings');
     this.maxReadBytes = materialMaxBytes;
@@ -330,6 +349,7 @@ export class DesktopHost {
     this.documentReadCursors = new Map();
     this.documentReadBytes = 0;
     this.documentStatusCache = new Map();
+    this.projectLockOwner=new AsyncLocalStorage();
     this.onDocumentChange = onDocumentChange;
     // Review-candidate document adapter; wired by the main process to the
     // managed review controller. Absent wiring fails closed for review reads.
@@ -377,17 +397,39 @@ export class DesktopHost {
   projectLock(projectId) {
     let held=this.projectLocks.get(projectId);
     if(!held){held=lock();this.projectLocks.set(projectId,held);}
-    return held;
+    return work=>{
+      const current=this.projectLockOwner.getStore();
+      if(current?.active&&current.projectId===projectId)return Promise.resolve().then(work);
+      return held(async()=>{
+        const owner={projectId,active:true};
+        try{return await this.projectLockOwner.run(owner,work);}finally{owner.active=false;}
+      });
+    };
   }
 
   async ensureMeta() {
-    await fs.mkdir(this.metaRoot, { recursive: true, mode: 0o700 });
+    await this.profileIO.ensureDirectory(this.metaRoot);
+  }
+
+  async readProfileRecord(file, options) {
+    const record=await this.profileIO.read(file,options);
+    const value=record.bytes===null?null:JSON.parse(record.bytes.toString('utf8'));
+    this.profileRevisions.set(file,record.sha256);
+    return value;
+  }
+
+  async writeProfileRecord(file,value) {
+    if(!this.profileRevisions.has(file))throw new HostError('PROFILE_REVISION_REQUIRED','保存前必须核验原配置版本。');
+    const receipt=await this.profileIO.write(file,Buffer.from(JSON.stringify(value)),{expectedSha256:this.profileRevisions.get(file)});
+    this.profileRevisions.set(file,receipt.sha256);
   }
 
   async readVersioned(file) {
-    let raw;
+    let raw,record;
     try {
-      raw = await fs.readFile(file, 'utf8');
+      record=await this.profileIO.read(file);
+      if(record.bytes===null){this.profileRevisions.set(file,null);return null;}
+      raw=record.bytes.toString('utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return null;
       throw new HostError('METADATA_IO', 'Metadata could not be read.', { cause: error.code });
@@ -403,10 +445,15 @@ export class DesktopHost {
         schemaVersion: data?.schemaVersion ?? null,
       });
     }
+    this.profileRevisions.set(file,record.sha256);
     return data;
   }
 
   async writeAtomic(file, value) {
+    if(process.platform==='win32'){
+      await this.profileIO.ensureDirectory(path.dirname(file));
+      return this.writeProfileRecord(file,value);
+    }
     platformPersistence.requireSupported();
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     const tmp = path.join(path.dirname(file), `.tmp-${randomUUID()}`);
@@ -424,6 +471,12 @@ export class DesktopHost {
   }
 
   async writeVersioned(file, value) {
+    if(process.platform==='win32'){
+      // Preserve the version used to compute the mutation; observing again
+      // here would authorize overwriting an intervening independent writer.
+      if(!this.profileRevisions.has(file))await this.readVersioned(file);
+      return this.writeAtomic(file,{...value,schemaVersion:SCHEMA});
+    }
     const existing = await this.readVersioned(file);
     if (existing && existing.schemaVersion !== SCHEMA) {
       throw new HostError('SCHEMA_UNSUPPORTED', 'Unknown metadata version; refusing to overwrite.');
@@ -503,8 +556,8 @@ export class DesktopHost {
     if(typeof input!=='string'||!path.isAbsolute(input))throw new HostError('NOT_A_DIRECTORY','请选择绝对目录');
     const project=await this.storage.register(input,options),key='git-init',previous=await this.storage.getRecovery(project.id,key);
     const operationId=previous?.operationId??randomUUID();
-    await ensureProjectGit(project.root,{operationId,expectedIdentity:project.identity,journal:{read:()=>this.storage.getRecovery(project.id,key),write:value=>this.storage.putRecovery(project.id,key,value)}});
-    return this.publicProject(project);
+    await ensureProjectGit(project.root,{operationId,expectedIdentity:project.identity,...(process.platform==='win32'?{ioFactory:createWindowsDesktopProjectGitIO}:{}),journal:{read:()=>this.storage.getRecovery(project.id,key),write:value=>this.storage.putRecovery(project.id,key,value)}});
+    return (await this.open(project.id)).project;
   }
 
   publicProject(project) {
@@ -521,15 +574,15 @@ export class DesktopHost {
 
   async removeProject(projectId,options={}){return this.track(this.storage.remove(projectId,options));}
 
-  async recent(){return this.track((async()=>{const projects=[];for(const p of await this.storage.list()){if(p.removed)continue;const available=await this.storage.requireOnline(p.id).then(()=>true,()=>false);projects.push({...this.publicProject(p),available});}projects.sort((a,b)=>String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));return {projects};})());}
+  async recent(){return this.track((async()=>{const projects=[];for(const p of await this.storage.list()){if(p.removed)continue;const available=await this.storage.requireOnline(p.id).then(()=>true,()=>false),access=await this.storage.db.request(this.storage.catalog,'get',{collection:'project_access',id:p.id});projects.push({...this.publicProject(p),...(access?.instanceId===p.instanceId?{lastOpenedAt:access.lastOpenedAt}:{}),available});}projects.sort((a,b)=>String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)));return {projects};})());}
 
   async open(projectId) {
     return this.track((async () => {
       const project = await this.requireProject(projectId);
       const now = new Date().toISOString();
-      const value={...project,lastOpenedAt:now};
-      await this.storage.db.request(this.storage.catalog,'put',{collection:'instances',id:project.id,value});
-      this.storage.bindings.set(project.id,value);
+      // Recency is presentation state, not a mutation of the registered
+      // source identity pinned by an active native Agent host.
+      await this.storage.db.request(this.storage.catalog,'put',{collection:'project_access',id:project.id,value:{instanceId:project.instanceId,lastOpenedAt:now}});
       return { project: { ...this.publicProject(project), lastOpenedAt: now } };
     })());
   }
@@ -754,13 +807,20 @@ export class DesktopHost {
       if(digest!==input.digest)throw new HostError('CONFLICT','DOC 已变化，请重新打开后再导入。');
       const converted=await importLegacyWord(original);
       if(digestBytes(await this.readSource(source.abs))!==digest)throw new HostError('CONFLICT','DOC 在导入期间发生变化，未生成副本。');
+      const recoveryPath=await this.backupBaseline(projectId,source.rel+'.import',converted.bytes,digestBytes(converted.bytes));
       const base=source.rel.slice(0,-4);
       for(let n=1;n<=100;n++){
         const relPath=base+(converted.mode==='body-only'?'.正文导入':'.导入')+(n===1?'':'-'+n)+'.docx';
         const target=await this.resolveFile(project,relPath);if(!target.missing)continue;
-        let handle;try{handle=await fs.open(target.abs,'wx',0o600);}catch(error){if(error.code==='EEXIST')continue;throw error;}
-        try{await handle.writeFile(converted.bytes);await platformPersistence.syncFileHandle(handle);}catch(error){await handle.close();await fs.unlink(target.abs);throw error;}
-        await handle.close();return {relPath,mode:converted.mode,sourceDigest:digest};
+        try{
+          await this.replaceFile(target.abs,converted.bytes,{createOnly:true,beforeCommit:async()=>{
+            if(digestBytes(await this.readSource(source.abs))!==digest)throw new HostError('CONFLICT','DOC 在导入发布前发生变化，原件及导入恢复副本均已保留。');
+          }});
+        }catch(error){
+          if(!error.committed&&!error.commitUnknown&&['EEXIST','FS_TARGET_EXISTS'].includes(error.code))continue;
+          throw officeWriteError(error,recoveryPath,{relPath,sourceDigest:digest});
+        }
+        return {relPath,mode:converted.mode,sourceDigest:digest,recoveryPath};
       }
       throw new HostError('CONFLICT','导入副本名称已占用，请先整理已有副本。');
     })());
@@ -987,7 +1047,7 @@ export class DesktopHost {
     await this.backupBaseline(project.id,located.rel,bytes,ledger.digest);
     const candidate=store.candidate(ledger,text,digest,changes,actor,{operationId,fingerprint,type:'word-text'});
     await store.prepare(located.rel,ledger,candidate);
-    await this.replaceFile(located.abs,payload,{mode:stat.mode,beforeCommit:async()=>{const fresh=await this.resolveFile(project,located.rel),draft=await this.readDraftRecord(project.id,located.rel);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('UNSAVED','用户草稿在DOCX保存期间变化，未覆盖。',{recoveryPath});if(fresh.missing||digestBytes(await this.readSource(fresh.abs))!==ledger.digest)throw new HostError('CONFLICT','DOCX保存期间变化。',{recoveryPath});beforeApply();}});
+    await this.replaceFile(located.abs,payload,{mode:stat.mode,expectedSha256:ledger.digest,beforeCommit:async()=>{const fresh=await this.resolveFile(project,located.rel),draft=await this.readDraftRecord(project.id,located.rel);if(draft?.draftError||draft&&draft.status!=='saved')throw new HostError('UNSAVED','用户草稿在DOCX保存期间变化，未覆盖。',{recoveryPath});if(fresh.missing||digestBytes(await this.readSource(fresh.abs))!==ledger.digest)throw new HostError('CONFLICT','DOCX保存期间变化。',{recoveryPath});beforeApply();}});
     await store.finish(located.rel,candidate);const material=await this.rememberMaterial(project.id,located.rel,payload),event=candidate.events.at(-1);
     this.onDocumentChange({projectId:project.id,relPath:located.rel,digest,actor,eventId:event.id,revision:candidate.revision,authorship:publicChanges(candidate)});
     return {relPath:located.rel,digest,materialDigest:material.digest,eventId:event.id,operationId,revision:candidate.revision,actor,recoveryPath,authorship:publicChanges(candidate)};
@@ -1116,7 +1176,7 @@ export class DesktopHost {
         if(candidate)await store.prepare(rel,history,candidate);
         const check=async()=>{beforeApply();const fresh=await safeBytes(project.root,rel);if((fresh===null?null:digestBytes(fresh))!==digest)throw new HostError('STALE_VERSION','文件在合入期间变化');};
         if(payload===null){platformPersistence.requireSupported();await check();await fs.unlink(located.abs);await syncDirectory(path.dirname(located.abs));}
-        else await this.replaceFile(located.abs,Buffer.from(payload),{createOnly:disk===null,mode:op.mode,beforeCommit:check});
+        else await this.replaceFile(located.abs,Buffer.from(payload),{createOnly:disk===null,expectedSha256:digest,mode:op.mode,beforeCommit:check});
         if(candidate)await store.finish(rel,candidate);
         this.onDocumentChange({projectId,relPath:rel,digest:op.afterDigest,actor});
         return {relPath:rel,beforeDigest:digest,digest:op.afterDigest,eventId:candidate?.events.at(-1)?.id,revision:candidate?.revision};
@@ -1152,6 +1212,18 @@ export class DesktopHost {
   }
 
   async readSource(abs) {
+    if(process.platform==='win32'){
+      const root=this.storage.nativeRootForPath(abs),relative=path.relative(root,abs).split(path.sep).join('/');
+      const reader=await experimentalWindowsReadFilesystem.openAnchoredFile(root,relative);
+      if(!reader)throw new HostError('NOT_FOUND','Source file disappeared.');
+      try{
+        if(reader.stat.size>BigInt(this.maxReadBytes))throw new HostError('TOO_LARGE','File exceeds this development build limit.');
+        const chunks=[];let size=0;
+        for await(const chunk of reader.stream()){size+=chunk.length;if(size>this.maxReadBytes)throw new HostError('TOO_LARGE','File grew beyond the read limit.');chunks.push(chunk);}
+        if(!(await reader.verify()).stable)throw new HostError('CONFLICT','Source changed while reading.');
+        this.storage.nativeRootForPath(abs);return Buffer.concat(chunks,size);
+      }finally{await reader.close();}
+    }
     const handle = await fs.open(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const stat = await handle.stat();
@@ -1169,6 +1241,10 @@ export class DesktopHost {
   }
 
   async backupBaseline(projectId, relPath, bytes, digest) {
+    if(process.platform==='win32'){
+      if(digestBytes(bytes)!==digest)throw new HostError('CONFLICT','Baseline bytes do not match their approved digest.');
+      const store=await this.storage.recoveryObjects(projectId),object=await store.put(bytes);return store.location(object.digest);
+    }
     platformPersistence.requireSupported();
     const dir = path.join(this.projectDir(projectId), 'baselines');
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -1211,7 +1287,18 @@ export class DesktopHost {
     return stored;
   }
 
-  async replaceFile(abs, payload, { mode = 0o600, beforeCommit = async () => {}, createOnly = false } = {}) {
+  async replaceFile(abs, payload, { mode = 0o600, beforeCommit = async () => {}, createOnly = false, expectedSha256 } = {}) {
+    if(process.platform==='win32'){
+      if(!createOnly&&(typeof expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(expectedSha256)))throw new HostError('FS_VERSION_REJECTED','An originally observed source digest is required.');
+      // Replacements hold the existing target exclusively while staging; their
+      // validation can still read it only before the native transaction starts.
+      if(!createOnly)await beforeCommit();
+      const root=this.storage.nativeRootForPath(abs),relative=path.relative(root,abs).split(path.sep).join('/');
+      return createExperimentalWindowsPersistence(root).writeStream(relative,[payload],{
+        expectedSha256:createOnly?null:expectedSha256,expectedNewSha256:digestBytes(payload),
+        checkpoint:createOnly?async phase=>{if(phase==='rename')await beforeCommit();}:undefined,
+      });
+    }
     platformPersistence.requireSupported();
     const dir = path.dirname(abs);
     const tmp = path.join(dir, `.nozeli-tmp-${randomUUID()}`);
@@ -1242,8 +1329,7 @@ export class DesktopHost {
   async recoverSheet(projectId, relPath, raw) {
     const rel=normalizeRel(relPath);await this.requireProject(projectId);
     if(path.posix.extname(rel).toLowerCase()!=='.xlsx'||!(raw instanceof Uint8Array)||raw.byteLength>160*1024*1024)throw new HostError('INVALID_PAYLOAD','表格恢复数据无效。');
-    const bytes=Buffer.from(raw),data=JSON.parse(bytes.toString('utf8'));
-    if(data.schema!=='nozeli-sheet-recovery-v1'||!Array.isArray(data.sheets)||!Array.isArray(data.original))throw new HostError('INVALID_PAYLOAD','表格恢复快照无效。');
+    const bytes=Buffer.from(raw);await validateSheetSnapshot(bytes);
     return {recoveryPath:await this.backupBaseline(projectId,rel+'.recovery.json',bytes,digestBytes(bytes))};
   }
 
@@ -1269,7 +1355,7 @@ export class DesktopHost {
           if (digestBytes(disk) !== baseDigest) throw new HostError('CONFLICT', 'Office 原文件已在外部修改，未覆盖；编辑副本已保留。', { recoveryPath });
           const stat = await fs.lstat(located.abs);
           if (stat.isSymbolicLink() || !stat.isFile()) throw new HostError('SYMLINK', '不能覆盖链接。', { recoveryPath });
-          if (process.platform !== 'win32' && (stat.mode & 0o222) === 0) throw new HostError('READONLY', 'Office 文件只读，编辑副本已保留。', { recoveryPath });
+          if ((stat.mode & 0o222) === 0) throw new HostError('READONLY', 'Office 文件只读，编辑副本已保留。', { recoveryPath });
           await this.backupBaseline(projectId, rel, disk, baseDigest);
           let history=null,candidate=null,authorshipText=null;
           if(changes){
@@ -1279,7 +1365,7 @@ export class DesktopHost {
             candidate=digest===history.digest?history:changes.candidate(history,authorshipText,digest,mapping,userActor,{type:history.text===authorshipText?'word-format':'word-text'});
             if(candidate!==history)await changes.prepare(rel,history,candidate);
           }
-          await this.replaceFile(located.abs, bytes, { mode: stat.mode, beforeCommit: async () => {
+          await this.replaceFile(located.abs, bytes, { mode: stat.mode, expectedSha256:baseDigest, beforeCommit: async () => {
             const fresh = await this.resolveFile(project, rel);
             if (fresh.missing || fresh.abs !== located.abs || digestBytes(await this.readSource(fresh.abs)) !== baseDigest) throw new HostError('CONFLICT', 'Office 文件在保存时发生变化，编辑副本已保留。', { recoveryPath });
           } });
@@ -1288,9 +1374,9 @@ export class DesktopHost {
           const stored = await this.rememberMaterial(projectId, rel, bytes);
           if(changes&&candidate!==history)this.onDocumentChange({projectId,relPath:rel,digest,actor:userActor});
           return { digest, materialDigest: stored.digest, byteLength: bytes.length, recoveryPath, ...(changes?{authorship:publicChanges(candidate),authorshipText}: {}) };
-        } catch(error) { throw new HostError(error.code || 'SAVE_FAILED',error.message,{...error.details,recoveryPath}); }
+        } catch(error) { throw officeWriteError(error,recoveryPath); }
       };
-      return changes ? changes.withLock(rel,commit).catch(error=>{throw new HostError(error.code||'CHANGE_HISTORY_IO',error.message,{...error.details,recoveryPath});}) : commit();
+      return changes ? changes.withLock(rel,commit).catch(error=>{throw officeWriteError(error,recoveryPath);}) : commit();
     }));
   }
 
@@ -1366,7 +1452,7 @@ export class DesktopHost {
       const diskDigest = digestBytes(disk);
       const stat = await fs.lstat(located.abs);
       if (stat.isSymbolicLink() || !stat.isFile()) await fail('SYMLINK', 'Refusing to replace a non-regular file.', { baseDigest });
-      if (process.platform !== 'win32' && (stat.mode & 0o222) === 0) {
+      if ((stat.mode & 0o222) === 0) {
         await fail('READONLY', 'File is read-only. It was not modified and the draft was kept.', {
           diskDigest,
           baseDigest,
@@ -1415,7 +1501,7 @@ export class DesktopHost {
       if (candidate !== history) await changeStore.prepare(located.rel,history,candidate);
       await this.stageTagMappings(projectId, located.rel, disk, payload, diskDigest === baseDigest ? anchorChanges : null);
       try {
-        await this.replaceFile(located.abs, payload, { mode: stat.mode, beforeCommit: async () => {
+        await this.replaceFile(located.abs, payload, { mode: stat.mode, expectedSha256:diskDigest, beforeCommit: async () => {
           const checked = await this.resolveFile(project, located.rel);
           if (checked.missing || digestBytes(await this.readSource(checked.abs)) !== diskDigest) {
             throw new HostError('CONFLICT', 'File changed during staging.');
@@ -1425,11 +1511,12 @@ export class DesktopHost {
         } });
         if (digestBytes(await this.readSource(located.abs)) !== digest) throw new HostError('CONFLICT', 'File changed after replacement; draft retained.');
       } catch (error) {
-        const code = ['CONFLICT','WORK_STOPPED','UNSAVED'].includes(error.code) ? error.code : error.code === 'EACCES' || error.code === 'EPERM' ? 'ACCESS_DENIED' : 'SAVE_FAILED';
+        const code = error.code==='FS_VERSION_CONFLICT'?'CONFLICT':['CONFLICT','WORK_STOPPED','UNSAVED'].includes(error.code) ? error.code : error.code === 'EACCES' || error.code === 'EPERM' ? 'ACCESS_DENIED' : 'SAVE_FAILED';
         await fail(code, 'Replace failed. The original file was left in place if the rename did not complete.', {
           cause: error.code || error.message,
           diskDigest,
           baseDigest,
+          ...(error.committed||error.transactionOutcome?{publication:{committed:error.committed===true,transactionOutcome:error.transactionOutcome??null,durability:error.durability??'uncertain'}}:{}),
         });
       }
       if (candidate !== history) await changeStore.finish(located.rel,candidate);

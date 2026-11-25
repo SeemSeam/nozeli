@@ -71,7 +71,9 @@ await build({
         if(op==='managed.review.discussion.read')return {ok:true,value:{canSend:false,reasons:[],taskFrame:{version:1,entries:[],deltas:[]},taskState:{works:[{id:'reading-work',sourceJob:'reading-intake',name:'Reading recovery',status:'review',revision:1}],jobs:[{id:'reading-intake',type:'intake',target:'orchestrator',status:'completed'}],receipts:[]}}};
         throw Error('Unexpected review recovery IPC: '+op);
       };
-      fixture.surface=mountManagedReview(host,{invoke,projectId:'project-reading-recovery',workId:'reading-work',objectId:'reading-report',discussionHost:true});await fixture.surface.ready;fixture.surface.root.hidden=false;host.querySelector('.managed-review-discussion').hidden=false;
+      fixture.surface=mountManagedReview(host,{invoke,projectId:'project-reading-recovery',workId:'reading-work',objectId:'reading-report',discussionHost:true});
+      try{await fixture.surface.ready;}catch(error){if(error.message!=='TEMPORARY_READING_READ_FAILURE')throw error;fixture.initialError=error.message;}
+      fixture.surface.root.hidden=false;host.querySelector('.managed-review-discussion').hidden=false;
     };
   `},
   bundle: true, format: 'iife', platform: 'browser', outfile: path.join(out, 'consumer.js'),
@@ -283,8 +285,8 @@ try {
   }
   assert.equal(await page.evaluate(()=>window.consumerUnsafe===true),false);
   await page.evaluate(()=>{
-    const c=consumer;c.store.reset('project-consumer');c.state.receipts=[{workId:'contained-work',kind:'result',objectId:'contained-report',revision:1}];
-    c.state.works=[{id:'contained-work',sourceJob:'contained-intake',name:'混沌系统网页 3D 观感优化',revision:1,status:'review',result:{objectId:'contained-report',revision:1}}];
+    const c=consumer;c.store.reset('project-consumer');c.state.receipts=[{id:'receipt-v1',workId:'contained-work',kind:'result',objectId:'contained-report',revision:1,publicationNumber:1},{id:'receipt-v1-duplicate',workId:'contained-work',kind:'result',objectId:'contained-report',revision:1,publicationNumber:1},{id:'receipt-v2',workId:'contained-work',kind:'result',objectId:'contained-report-v2',revision:1,publicationNumber:2}];
+    c.state.works=[{id:'contained-work',sourceJob:'contained-intake',name:'混沌系统网页 3D 观感优化',revision:1,status:'review',result:{objectId:'contained-report-v2',revision:1}}];
     c.state.jobs=[{id:'contained-intake',target:'orchestrator',type:'intake',status:'completed'},{id:'contained-initial',target:'contained-work',type:'initial',status:'completed'},{id:'contained-discussion',target:'contained-work',type:'review-discussion',status:'completed'},{id:'contained-supplement',target:'contained-work',type:'supplement',status:'completed'},{id:'ordinary',target:'frontdesk',type:'front',status:'completed'}];
     c.store.apply('project-consumer',{version:1,entries:[
       {id:'contained-request',sequence:1,target:'frontdesk',jobId:'contained-intake',taskRequestId:'contained-intake',speaker:'user',source:'host',text:'原输入：优化 chaos-demo.html，增加3D感。'},
@@ -293,7 +295,10 @@ try {
       {id:'contained-handoff',sequence:4,target:'contained-work',jobId:'contained-initial',speaker:'user',source:'host',originalTask:true,text:'INTERNAL_EXPANDED_HANDOFF'},
       {id:'contained-internal-supplement',sequence:4.5,target:'contained-work',jobId:'contained-supplement',speaker:'user',source:'host',text:'INTERNAL_SUPPLEMENT_HANDOFF'},
       {id:'contained-question',sequence:5,target:'contained-work',jobId:'contained-discussion',speaker:'user',source:'host',text:'后续讨论：为什么使用透视？'},
-      {id:'contained-answer',sequence:6,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'native',text:'Worker解释：透视关系保留层级。',complete:true}
+      {id:'contained-answer',sequence:6,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'native',text:'Worker解释：透视关系保留层级。',complete:true},
+      {id:'publication-v1',sequence:6.1,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'host',publication:'result',objectId:'contained-report',revision:1},
+      {id:'duplicate-publication-v1',sequence:6.2,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'host',publication:'result',objectId:'contained-report',revision:1},
+      {id:'publication-v2',sequence:6.3,target:'contained-work',jobId:'contained-discussion',speaker:'agent',source:'host',publication:'result',objectId:'contained-report-v2',revision:1}
     ],deltas:[]});c.render();
   });
   await page.waitForSelector('.session-task-card [data-message="contained-answer"]');
@@ -315,9 +320,13 @@ try {
   assert.equal(await page.$('#shared-task-reader textarea,#shared-task-reader [data-review-action="accept"],#shared-task-reader [data-review-action="discard"]'),null);
   assert.equal(await page.$$eval('#shared-task-reader .session-task-conversation>details>summary',nodes=>nodes.filter(node=>node.textContent.startsWith('原始请求')).length),1,'only the exact root intake is an original request');
   await page.evaluate(()=>{consumer.store.apply('project-consumer',{version:1,entries:[],deltas:[{id:'decision-fact',kind:'review-decision-registered',workId:'contained-work',objectId:'contained-report',sequence:6.5,text:'Decision registered'}]});__sharedReader.render();});
-  await page.waitForSelector('#shared-task-reader [data-host-delta="decision-fact"] button:not([disabled])');
-  await page.click('#shared-task-reader [data-host-delta="decision-fact"] button');
-  assert.deepEqual(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='reader.report')),{op:'reader.report',objectId:'contained-report',kind:'result'},'event display kind never replaces the real result receipt kind');
+  await page.waitForSelector('#shared-task-reader [data-host-delta="decision-fact"]');
+  assert.equal(await page.$('#shared-task-reader [data-host-delta="decision-fact"] button'),null,'decision remains visible but does not duplicate the frozen result action');
+  assert.deepEqual(await page.$$eval('#shared-task-reader [data-result-object]',nodes=>nodes.map(node=>[node.dataset.resultObject,node.textContent])),[['contained-report','查看报告 V1'],['contained-report-v2','查看报告 V2']]);
+  for(const objectId of ['contained-report','contained-report-v2']){
+    await page.click('#shared-task-reader [data-result-object="'+objectId+'"]');
+    assert.deepEqual(await page.evaluate(()=>consumer.calls.findLast(call=>call.op==='reader.report')),{op:'reader.report',objectId,kind:'result'},'each version routes through its exact result receipt');
+  }
   await page.evaluate(()=>{const c=consumer;c.state.works[0].brief='MUTATED_CURRENT_BRIEF_NOT_HISTORY';c.state.works[0].request='MUTATED_CURRENT_REQUEST_NOT_HISTORY';__sharedReader.render();});
   assert.equal(await page.$eval('#shared-task-reader',node=>node.textContent.includes('MUTATED_CURRENT_')),false,'mutable Work metadata never reconstructs historical original text');
   await page.click('#shared-task-reader .session-task-conversation>details:first-of-type>summary');
@@ -511,6 +520,7 @@ try {
   await page.evaluate(()=>window.__scopeListeners['session.flush']());
   assert.equal(await page.evaluate(()=>Object.hasOwn(consumer.calls.filter(call=>call.op==='workspace.command').at(-1).args.command.viewState,'taskLocate')),false,'location effects are not persisted with ordinary reading state');
   await page.evaluate(()=>consumer.reviewReadingFailure());
+  assert.equal(await page.evaluate(()=>__reviewReadingFixture.initialError),'TEMPORARY_READING_READ_FAILURE');
   await page.waitForSelector('#review-reading-recovery [data-review-action=retry-reading]:not([hidden])');
   assert.equal(await page.$('#review-reading-recovery [data-task-toggle]'),null,'failed initial reading-state read never mounts mutable disclosure controls from an empty snapshot');
   assert.equal(await page.evaluate(()=>__reviewReadingFixture.writes.length),0,'failed initial read cannot write a replacement snapshot');

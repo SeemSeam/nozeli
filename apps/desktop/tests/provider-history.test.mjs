@@ -2,17 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, mkdir, writeFile, readFile, appendFile, rename, rm, readdir, stat, symlink, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, appendFile, rename, rm, readdir, stat, symlink, link, utimes } from 'node:fs/promises';
 import { createProviderHistoryReader } from '../src/agents/managed/provider-history.mjs';
 
 const timestamp = '2026-01-01T00:00:00Z';
 const header = (provider, cwd, id = 'synthetic') => provider === 'codex'
   ? { type: 'session_meta', timestamp, payload: { id, cwd, timestamp } }
-  : provider === 'pi' ? { type: 'session', version: 3, id, cwd, timestamp }
+  : ['pi', 'omp'].includes(provider) ? { type: 'session', version: 3, id, cwd, timestamp }
     : { type: 'user', cwd, sessionId: id, timestamp, message: { role: 'user', content: [] } };
 const message = (provider, text, role = 'user') => provider === 'codex'
   ? { type: 'response_item', timestamp, payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } }
-  : { type: provider === 'pi' ? 'message' : role, timestamp, message: { role, content: [{ type: 'text', text }] } };
+  : { type: ['pi', 'omp'].includes(provider) ? 'message' : role, timestamp, message: { role, content: [{ type: 'text', text }] } };
 async function setup(t, options = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'nozeli-provider-history-'));
   const readers = [];
@@ -20,7 +20,7 @@ async function setup(t, options = {}) {
   const project = path.join(temp, 'one', 'same-name');
   const other = path.join(temp, 'two', 'same-name');
   await mkdir(project, { recursive: true }); await mkdir(other, { recursive: true });
-  const roots = Object.fromEntries(['codex', 'claude', 'pi'].map(p => [p, path.join(temp, 'providers', p)]));
+  const roots = Object.fromEntries(['codex', 'claude', 'pi', 'omp'].map(p => [p, path.join(temp, 'providers', p)]));
   for (const root of Object.values(roots)) await mkdir(root, { recursive: true });
   const makeReader = extra => {
     const instance = createProviderHistoryReader({ projectRoot: project, projectIdentity: 'host-project-id', providerRoots: roots, ...options, ...extra });
@@ -99,17 +99,20 @@ test('direct and budgeted history consumers share nullable optionals without wea
  }
 });
 
-test('default home layout discovers all three providers without internal options', async t => {
+test('default home layout discovers all four providers without internal options', async t => {
   const f = await setup(t);
   const home = path.join(f.temp, 'home');
-  const dirs = { codex: '.codex/sessions/2026/01/01', claude: '.claude/projects/encoded-project', pi: '.pi/agent/sessions/--encoded-project--' };
+  const dirs = { codex: '.codex/sessions/2026/01/01', claude: '.claude/projects/encoded-project', pi: '.pi/agent/sessions/--encoded-project--', omp: '.omp/agent/sessions/--encoded-project--' };
   for (const [provider, dir] of Object.entries(dirs)) {
     const folder = path.join(home, dir); await mkdir(folder, { recursive: true });
     await writeFile(path.join(folder, 'session.jsonl'), [header(provider, f.project), message(provider, 'default synthetic')].map(JSON.stringify).join('\n') + '\n');
   }
   const reader = createProviderHistoryReader({ projectRoot: f.project, home });
   t.after(() => reader.close());
-  assert.deepEqual((await searchAll(reader)).items.map(i => i.provider).sort(), ['claude', 'codex', 'pi']);
+  assert.deepEqual((await searchAll(reader)).items.map(i => i.provider).sort(), ['claude', 'codex', 'omp', 'pi']);
+  const catalog = await reader.catalog();
+  assert.equal(catalog.limited, false);
+  assert.deepEqual(catalog.items.map(i => i.provider).sort(), ['claude', 'codex', 'omp', 'pi']);
 });
 
 test('source and continuation tickets reject forgery, cross-reader reuse, expiry and replay', async t => {
@@ -483,4 +486,344 @@ test('oversized final record without newline never restores exhaustive coverage 
  assert.equal(result.pages.at(-1).coverage.traversalComplete,true);assert.equal(result.pages.at(-1).coverage.exhaustive,false);
  assert.equal(result.pages.flatMap(p=>p.coverage.unsupported).filter(e=>e.reason==='record_too_large').length,1);
  assert.equal(result.records.map(r=>r.text).join(''),'known');
+});
+
+const linked = (provider, id, parentId, text, role = 'user') => ({ ...message(provider, text, role), id, parentId });
+const omissionCounts = frozen => Object.fromEntries(frozen.coverage.omissions.map(({ reason, count }) => [reason, count]));
+
+test('OMP reads its native title slot and linked records from its own root', async t => {
+  const f = await setup(t);
+  const title = { type: 'title', v: 1, updatedAt: timestamp, title: 'OMITTED-TITLE', pad: '' };
+  const titleSlot = { ...title, pad: ' '.repeat(256 - Buffer.byteLength(JSON.stringify(title) + '\n')) };
+  await f.fixture('omp', 'bucket/session.jsonl', [titleSlot, header('omp', f.project),
+    { type: 'session_init', id: 'init', parentId: null, systemPrompt: 'OMITTED-SYSTEM' },
+    linked('omp', 'turn', 'init', 'OMP request'),
+    { type: 'credential_pin', id: 'pin', parentId: 'turn', hash: 'OMITTED-HASH' },
+    linked('omp', 'answer', 'pin', 'response', 'assistant')]);
+  await f.fixture('omp', 'bucket/foreign.jsonl', [header('omp', f.other), linked('omp', 'a', null, 'OMP request')]);
+  await f.fixture('pi', 'bucket/session.jsonl', [header('pi', f.project), message('pi', 'Pi only')]);
+  const pi = await searchAll(f.reader, { provider: 'pi' });
+  assert.deepEqual(pi.items.map(item => item.preview), ['Pi only']);
+  const omp = await searchAll(f.reader, { provider: 'omp', query: 'OMP request' });
+  assert.equal(omp.items.length, 1);
+  const [found] = omp.items;
+  assert.equal(found.descriptor.sourcePath, 'bucket/session.jsonl');
+  const read = await readAll(f.reader, found.source);
+  assert.deepEqual(read.records.map(r => r.text), ['OMP request', 'response']);
+  assert.match(read.pages.at(-1).coverage.branchScope, /not-a-selected-branch/);
+  const frozen = await f.reader.freeze(found.source);
+  assert.deepEqual(Object.keys(frozen).sort(), ['coverage', 'descriptor', 'provider', 'records', 'sessionId']);
+  assert.equal(frozen.provider, 'omp');
+  assert.equal(frozen.sessionId, 'synthetic');
+  assert.deepEqual(frozen.descriptor, found.descriptor);
+  assert.deepEqual(frozen.records, read.records);
+  assert.deepEqual(frozen.records[0].location, found.location);
+  assert.match(frozen.coverage.branchScope, /single-linked-chain/);
+  assert.equal(omissionCounts(frozen).system_or_credentials, 2);
+  assert.doesNotMatch(JSON.stringify(frozen), /OMITTED|bucket\/foreign/);
+});
+
+for (const provider of ['codex', 'claude', 'pi']) test(`freeze normalizes ${provider} independently of page budgets`, async t => {
+  const f = await setup(t, { budgets: { records: 1, bytes: 17 } });
+  await f.fixture(provider, 'linear.jsonl', [header(provider, f.project), message(provider, 'request'), message(provider, 'answer', 'assistant')]);
+  const [found] = (await searchAll(f.reader, { provider })).items;
+  const frozen = await f.reader.freeze(found.source);
+  assert.deepEqual(frozen.descriptor, found.descriptor);
+  assert.deepEqual(frozen.records.map(row => row.text), ['request', 'answer']);
+  assert.ok(frozen.records.every(row => !row.continued && row.untrusted));
+  assert.equal(frozen.coverage.textBytes, 13);
+  assert.equal(frozen.coverage.traversalComplete, true);
+});
+
+test('freeze enforces the decoded UTF-8 limit without splitting a row and reports omissions', async t => {
+  const f = await setup(t);
+  const exact = '🦋'.repeat(32 * 1024);
+  const first = JSON.stringify(message('pi', exact)).replace('🦋', '\\ud83e\\udd8b');
+  // The first butterfly occupies twelve source bytes but only four decoded bytes.
+  const file = await f.fixture('pi', 'budget.jsonl', [header('pi', f.project), first,
+    message('pi', 'over budget'), message('pi', 'also omitted'), '{bad json',
+    { type: 'future', content: 'OMITTED-UNKNOWN' }, { type: 'credentials', token: 'OMITTED-SECRET' },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'image', data: 'OMITTED-IMAGE' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'OMITTED-TEXT' }, { type: 'image', data: 'OMITTED-IMAGE' }] } }]);
+  await appendFile(file, JSON.stringify(message('pi', 'OMITTED-UNTERMINATED')));
+  const before = await readFile(file);
+  const [found] = (await searchAll(f.reader, { provider: 'pi' })).items;
+  const frozen = await f.reader.freeze(found.source);
+  assert.equal(frozen.records.length, 1);
+  assert.equal(frozen.records[0].text, exact);
+  assert.equal(frozen.records[0].location.textEnd, exact.length);
+  assert.equal(frozen.coverage.textBytes, 128 * 1024);
+  assert.equal(frozen.coverage.textLimitReached, true);
+  assert.equal(frozen.coverage.exhaustive, false);
+  assert.equal(frozen.coverage.branchScanComplete, false);
+  assert.deepEqual(omissionCounts(frozen), { decoded_text_limit: 3, system_or_credentials: 1,
+    nontext_content: 2, malformed_jsonl: 1, unterminated_record: 1, unknown_envelope: 1 });
+  assert.doesNotMatch(JSON.stringify(frozen), /OMITTED|over budget|also omitted/);
+  assert.deepEqual(await readFile(file), before);
+});
+
+test('freeze does not split a JSONL row with both user text and tool results', async t => {
+  const f = await setup(t);
+  const first = 'x'.repeat(128 * 1024 - 6);
+  await f.fixture('claude', 'atomic.jsonl', [header('claude', f.project), message('claude', first), {
+    type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'fits' }, { type: 'tool_result', content: 'does not fit' }] },
+  }]);
+  const [found] = (await searchAll(f.reader, { provider: 'claude' })).items;
+  const frozen = await f.reader.freeze(found.source);
+  assert.deepEqual(frozen.records.map(r => r.text), [first]);
+  assert.equal(omissionCounts(frozen).decoded_text_limit, 1);
+});
+
+test('valid JSON without a final newline cannot be searched or frozen as a complete row', async t => {
+  const f = await setup(t);
+  const file = await f.fixture('pi', 'tail.jsonl', [header('pi', f.project), message('pi', 'complete')]);
+  await appendFile(file, JSON.stringify(message('pi', 'tail only')));
+  assert.equal((await searchAll(f.reader, { provider: 'pi', query: 'tail only' })).items.length, 0);
+  const [found] = (await searchAll(f.reader, { provider: 'pi' })).items;
+  const frozen = await f.reader.freeze(found.source);
+  assert.deepEqual(frozen.records.map(row => row.text), ['complete']);
+  assert.equal(omissionCounts(frozen).unterminated_record, 1);
+});
+
+test('freeze rejects raw paths, foreign/expired source tickets, and replaced projects', async t => {
+  let time = 0;
+  const f = await setup(t, { now: () => time, ticketTtlMs: 60_000 });
+  const file = await f.fixture('pi', 'stable.jsonl', [header('pi', f.project), message('pi', 'stable')]);
+  const [found] = (await searchAll(f.reader, { provider: 'pi' })).items;
+  for (const token of [undefined, found.descriptor, file, { source: found.source }]) {
+    await assert.rejects(f.reader.freeze(token), { code: 'INVALID_PAYLOAD' });
+  }
+  await assert.rejects(f.makeReader().freeze(found.source), { code: 'INVALID_PAYLOAD' });
+  await assert.rejects(f.makeReader({ projectRoot: f.other }).freeze(found.source), { code: 'INVALID_PAYLOAD' });
+  time = 60_000;
+  await assert.rejects(f.reader.freeze(found.source), { code: 'INVALID_PAYLOAD' });
+  const [fresh] = (await searchAll(f.reader, { provider: 'pi' })).items;
+  await rename(f.project, `${f.project}-original`);
+  await mkdir(f.project);
+  await assert.rejects(f.reader.freeze(fresh.source), { code: 'STALE_SOURCE' });
+  await f.reader.close();
+  await assert.rejects(f.reader.freeze(fresh.source), { code: 'INVALID_PAYLOAD' });
+});
+
+for (const phase of ['before-freeze', 'before-open', 'after-read']) test(`freeze rejects source mutations at ${phase}`, async t => {
+  let armed = false;
+  let fired = false;
+  const f = await setup(t, { fault: async ({ phase: observed, file }) => {
+    if (armed && !fired && observed === phase) {
+      fired = true;
+      await appendFile(file, JSON.stringify(message('pi', 'not in searched version')) + '\n');
+    }
+  } });
+  const file = await f.fixture('pi', 'changing.jsonl', [header('pi', f.project), message('pi', 'stable')]);
+  const [found] = (await searchAll(f.reader, { provider: 'pi' })).items;
+  if (phase === 'before-freeze') await appendFile(file, '\n');
+  else armed = true;
+  await assert.rejects(f.reader.freeze(found.source), { code: 'STALE_SOURCE' });
+  if (armed) assert.equal(fired, true);
+});
+
+for (const provider of ['pi', 'omp', 'claude', 'codex']) test(`freeze rejects ${provider} divergence after the preview and text budget`, async t => {
+  const f = await setup(t);
+  const text = 'x'.repeat(128 * 1024);
+  const meta = header(provider, f.project);
+  const rows = provider === 'codex' ? [meta, message(provider, text), message(provider, 'past cap'),
+    { type: 'event_msg', payload: { type: 'thread_rolled_back', num_turns: 1 } }]
+    : provider === 'claude' ? [{ ...meta, ...message(provider, text), uuid: 'a', parentUuid: null },
+      { ...message(provider, 'past cap', 'assistant'), uuid: 'b', parentUuid: 'a' },
+      { ...message(provider, 'alternative'), uuid: 'c', parentUuid: 'a' }]
+      : [meta, linked(provider, 'a', null, text), linked(provider, 'b', 'a', 'past cap'), linked(provider, 'c', 'a', 'alternative')];
+  await f.fixture(provider, 'divergent.jsonl', rows);
+  const [found] = (await searchAll(f.reader, { provider })).items;
+  await assert.rejects(f.reader.freeze(found.source), { code: 'AMBIGUOUS_HISTORY' });
+});
+
+test('freeze rejects conflicting cwd, session ids, dangling parents and unverifiable scan sizes', async t => {
+  const f = await setup(t);
+  await f.fixture('claude', 'mixed-project.jsonl', [header('claude', f.project), message('claude', 'known'),
+    { ...message('claude', 'different project'), cwd: f.other }]);
+  await f.fixture('pi', 'mixed-session.jsonl', [header('pi', f.project), message('pi', 'known'), header('pi', f.project, 'different-id')]);
+  await f.fixture('omp', 'multi-workspace.jsonl', [{ ...header('omp', f.project), additionalDirectories: [f.other] }, linked('omp', 'a', null, 'known')]);
+  await f.fixture('omp', 'dangling.jsonl', [header('omp', f.project), linked('omp', 'a', null, 'known'), linked('omp', 'b', 'missing', 'bad')]);
+  await f.fixture('pi', 'many-rows.jsonl', [header('pi', f.project), message('pi', 'known'), ...Array(20_001).fill('{}')]);
+  const { items } = await searchAll(f.reader);
+  assert.equal(items.length, 5);
+  for (const found of items) {
+    await assert.rejects(f.reader.freeze(found.source), {
+      code: found.descriptor.sourcePath === 'many-rows.jsonl' ? 'HISTORY_SCAN_LIMIT' : 'AMBIGUOUS_HISTORY',
+    });
+  }
+});
+
+const ccbSessions = (project, agent, provider) => path.join(project, '.ccb', 'agents', agent, 'provider-state',
+  ...(provider === 'omp' ? ['omp', 'sessions'] : ['codex', 'home', 'sessions']));
+async function ccbFixture(f, agent, provider, name, rows) {
+  const file = path.join(ccbSessions(f.project, agent, provider), name);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, rows.map(row => typeof row === 'string' ? row : JSON.stringify(row)).join('\n') + '\n');
+  return file;
+}
+
+test('picker previews recent dialogue by message time rather than touched file time', async t => {
+  const f = await setup(t);
+  const old = await ccbFixture(f, 'worker', 'codex', 'older.jsonl', [header('codex', f.project, 'older'),
+    {...message('codex', 'old work'), timestamp:'2025-01-01T00:00:00Z'}]);
+  const next = await f.fixture('codex', 'newer.jsonl', [header('codex', f.project, 'newer'),
+    ...Array.from({length:6}, (_, index)=>({...message('codex', `dialogue ${index}`), timestamp:`2026-01-0${index+1}T00:00:00Z`})),
+    {type:'response_item',payload:{type:'function_call_output',output:'tool-only text'}}]);
+  await utimes(old,new Date('2027-01-01'),new Date('2027-01-01'));
+  await utimes(next,new Date('2026-01-07'),new Date('2026-01-07'));
+  const {items}=await f.reader.catalog({previews:true});
+  assert.deepEqual(items.map(({sessionId,time})=>[sessionId,time]),[['newer','2026-01-06T00:00:00.000Z'],['older','2025-01-01T00:00:00.000Z']]);
+  assert.deepEqual(items[0].recent.map(row=>row.text),['dialogue 2','dialogue 3','dialogue 4','dialogue 5']);
+});
+
+test('picker keeps readable prose and limitations without Markdown tables or paths', async t => {
+  const f=await setup(t);
+  const body='**隔离包已完成，尚未提交 GPU 作业。**\n## 验证细节\n| 作业 | 编号 | 状态 |\n- 审核入口：`tmp/output/READINESS.md`\n```sh\nignored command\n```\n现有结果不代表精度已验证。';
+  await f.fixture('codex','review.jsonl',[header('codex',f.project,'review'),message('codex',body)]);
+  const {items:[item]}=await f.reader.catalog({previews:true});
+  assert.match(item.recent[0].text,/尚未提交 GPU 作业。.*不代表精度已验证。/);
+  assert.doesNotMatch(item.recent[0].text,/\*\*|##|\||tmp\/|ignored command/);
+  const frozen=await f.reader.freezeSelected(item.source);
+  assert.equal(frozen.records[0].text,body);
+});
+
+test('CCB worktree journals are scoped to their owning Agent and large current Codex logs freeze only recent dialogue', async t=>{
+  const f=await setup(t),agent='agent2',id='current';
+  const cwd=path.join(f.project,'.ccb','workspaces',agent);
+  await mkdir(cwd,{recursive:true});
+  const file=await ccbFixture(f,agent,'codex','current.jsonl',[header('codex',cwd,id),message('codex','old history')]);
+  const config=path.join(f.project,'.ccb','agents',agent);
+  await writeFile(path.join(config,'agent.json'),JSON.stringify({schema_version:2,record_type:'agent_spec',name:agent,workspace_mode:'git-worktree'}));
+  const runtime={schema_version:2,record_type:'agent_runtime',agent_name:agent,workspace_path:cwd,provider:'codex',session_id:id};
+  await writeFile(path.join(config,'runtime.json'),JSON.stringify(runtime));
+  const tail=JSON.stringify(message('codex','recent request'))+'\n';
+  await appendFile(file,'x'.repeat(9*1024*1024)+'\n'+tail+JSON.stringify(message('codex','incomplete row')));
+  await ccbFixture(f,agent,'codex','small.jsonl',[header('codex',cwd,'small'),message('codex','old valid worktree context')]);
+  await ccbFixture(f,'other','codex','foreign.jsonl',[header('codex',cwd,'foreign'),message('codex','wrong owner')]);
+  await f.fixture('codex','outside.jsonl',[header('codex',cwd,'standalone'),message('codex','wrong source')]);
+  const {items}=await f.reader.catalog({previews:true});
+  assert.deepEqual(items.map(row=>row.sessionId).sort(),['current','small']);
+  const current=items.find(row=>row.sessionId===id),small=items.find(row=>row.sessionId==='small');
+  assert.equal(current.descriptor.workspacePath,'.ccb/workspaces/agent2');
+  assert.equal(current.descriptor.selectionScope,'recent-dialogue-only');
+  assert.deepEqual(current.recent.map(row=>row.text),['recent request']);
+  const frozen=await f.reader.freezeSelected(current.source);
+  assert.deepEqual(frozen.records.map(row=>row.text),['recent request']);
+  assert.equal(frozen.coverage.exhaustive,false);
+  const offset=frozen.records[0].location.byteOffset;
+  assert.equal((await readFile(file)).subarray(offset,offset+Buffer.byteLength(tail)).toString(),tail);
+  assert.deepEqual((await f.reader.freezeSelected(small.source)).records.map(row=>row.text),['old valid worktree context']);
+  await writeFile(path.join(config,'runtime.json'),JSON.stringify({...runtime,session_id:'replaced'}));
+  await assert.rejects(f.reader.freezeSelected(current.source),{code:'STALE_SOURCE'});
+});
+
+
+test('catalog ranks standalone and project-local sessions by mtime and exposes only metadata', async t => {
+  const f = await setup(t);
+  const title = { type: 'title', v: 1, title: 'PRIVATE-TITLE', updatedAt: timestamp, pad: '' };
+  const omp = await ccbFixture(f, 'frontdesk', 'omp', 'bucket/session.jsonl', [title,
+    { ...header('omp', f.project, 'omp-id'), title: 'PRIVATE-HEADER-TITLE' }, linked('omp', 'a', null, 'PRIVATE-TEXT')]);
+  const codex = await ccbFixture(f, 'worker', 'codex', '2026/01/01/session.jsonl', [header('codex', f.project, 'codex-id'), message('codex', 'PRIVATE-CODEX')]);
+  const pi = await f.fixture('pi', 'first.jsonl', [header('pi', f.project, 'pi-id'), '{unparseable transcript body', linked('pi', 'a', null, 'PRIVATE-PI')]);
+  const claude = await f.fixture('claude', 'first.jsonl', [{ type: 'summary', summary: 'PRIVATE-SUMMARY' }, header('claude', f.project, 'claude-id')]);
+  const times = [omp, codex, pi, claude].map((_, index) => new Date(Date.UTC(2026, 1, 4 - index)));
+  await Promise.all([omp, codex, pi, claude].map((file, index) => utimes(file, times[index], times[index])));
+  const invalid = [
+    await f.fixture('codex', 'newer-foreign.jsonl', [header('codex', f.other, 'foreign'), message('codex', f.project)]),
+    await f.fixture('omp', 'wrong-order.jsonl', [title, message('omp', 'not a header'), header('omp', f.project, 'not-leading')]),
+    await f.fixture('codex', 'cwd-alias.jsonl', [header('codex', `${f.project}${path.sep}.`, 'not-exact')]),
+  ];
+  const newer = new Date(Date.UTC(2026, 1, 5));
+  await Promise.all(invalid.map(file => utimes(file, newer, newer)));
+
+  const result = await f.reader.catalog();
+  assert.deepEqual(Object.keys(result).sort(), ['items', 'limited']);
+  assert.equal(result.limited, false);
+  assert.deepEqual(result.items.map(item => [item.provider, item.agent, item.sessionId, item.time]), [
+    ['omp', 'frontdesk', 'omp-id', times[0].toISOString()], ['codex', 'worker', 'codex-id', times[1].toISOString()],
+    ['pi', null, 'pi-id', times[2].toISOString()], ['claude', null, 'claude-id', times[3].toISOString()],
+  ]);
+  for (const item of result.items) {
+    assert.deepEqual(Object.keys(item).sort(), ['agent', 'descriptor', 'provider', 'sessionId', 'source', 'time']);
+    assert.equal(typeof item.source, 'string');
+  }
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE-|unparseable/);
+  const [selected] = result.items;
+  assert.equal(selected.descriptor.sourcePath, '.ccb/agents/frontdesk/provider-state/omp/sessions/bucket/session.jsonl');
+  const frozen = await f.reader.freezeSelected(selected.source);
+  assert.equal(frozen.agent, 'frontdesk');
+  assert.deepEqual(frozen.descriptor, selected.descriptor);
+  assert.deepEqual(frozen.records.map(row => row.text), ['PRIVATE-TEXT']);
+  assert.equal((await f.reader.freezeSelected(result.items[1].source)).agent, 'worker');
+  assert.equal((await f.reader.freezeSelected(result.items[2].source)).agent, null);
+
+  const shortlist = await f.reader.catalog({ limit: 2 });
+  assert.equal(shortlist.limited, true);
+  assert.deepEqual(shortlist.items.map(item => item.sessionId), ['omp-id', 'codex-id']);
+  await Promise.all(invalid.map(file => utimes(file, times[3], times[3])));
+  const boundedReader = f.makeReader({ budgets: { files: 1 } });
+  const boundedCatalog = await boundedReader.catalog();
+  assert.equal(boundedCatalog.limited, true);
+  assert.deepEqual(boundedCatalog.items.map(item => item.sessionId), ['omp-id']);
+});
+
+test('catalog ignores symlink files and ancestors in both source layouts', async t => {
+  const f = await setup(t);
+  const foreign = await f.fixture('pi', 'untrusted.jsonl', [header('omp', f.project, 'symlinked')]);
+  const outside = path.join(path.dirname(f.roots.pi), 'outside-catalog.jsonl');
+  await rename(foreign, outside);
+  const safe = await ccbFixture(f, 'worker', 'omp', 'safe.jsonl', [header('omp', f.project, 'safe')]);
+  const dir = path.dirname(safe);
+  const agents = path.join(f.project, '.ccb', 'agents');
+  try {
+    await symlink(outside, path.join(f.roots.omp, 'alias.jsonl'), 'file');
+    await symlink(outside, path.join(dir, 'alias.jsonl'), 'file');
+    await symlink(dir, path.join(f.roots.codex, 'alias-dir'), 'junction');
+    await symlink(path.join(agents, 'worker'), path.join(agents, 'alias-agent'), 'junction');
+    const otherState = path.join(agents, 'other', 'provider-state');
+    await mkdir(path.dirname(otherState));
+    await symlink(path.join(agents, 'worker', 'provider-state'), otherState, 'junction');
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) return t.skip('symlinks unavailable');
+    throw error;
+  }
+  const { items } = await f.reader.catalog();
+  assert.deepEqual(items.map(item => [item.agent, item.sessionId]), [['worker', 'safe']]);
+  await rename(dir, `${dir}-original`);
+  await symlink(`${dir}-original`, dir, 'junction');
+  await assert.rejects(f.reader.freezeSelected(items[0].source), { code: 'STALE_SOURCE' });
+});
+
+test('freezeSelected accepts only current catalog tickets from this reader', async t => {
+  let time = 0;
+  const f = await setup(t, { now: () => time, ticketTtlMs: 60_000 });
+  const file = await f.fixture('omp', 'stable.jsonl', [header('omp', f.project), linked('omp', 'a', null, 'stable')]);
+  const [preview] = (await searchAll(f.reader, { provider: 'omp' })).items;
+  const { items: [selected] } = await f.reader.catalog();
+  for (const source of [preview.source, selected.descriptor, file, { source: selected.source }, null]) {
+    await assert.rejects(f.reader.freezeSelected(source), { code: 'INVALID_PAYLOAD' });
+  }
+  await assert.rejects(f.makeReader().freezeSelected(selected.source), { code: 'INVALID_PAYLOAD' });
+  time = 60_000;
+  await assert.rejects(f.reader.freezeSelected(selected.source), { code: 'INVALID_PAYLOAD' });
+  const { items: [fresh] } = await f.reader.catalog();
+  await appendFile(file, '\n');
+  await assert.rejects(f.reader.freezeSelected(fresh.source), { code: 'STALE_SOURCE' });
+  const { items: [current] } = await f.reader.catalog();
+  await rename(f.project, `${f.project}-original`);
+  await mkdir(f.project);
+  await assert.rejects(f.reader.freezeSelected(current.source), { code: 'STALE_SOURCE' });
+});
+
+test('freezeSelected does not treat OMP forks or continuations as standalone transcripts', async t => {
+  const f = await setup(t);
+  await f.fixture('omp', 'fork.jsonl', [{ ...header('omp', f.project, 'fork'), parentSession: '/parent.jsonl' }, linked('omp', 'a', null, 'fork')]);
+  await f.fixture('omp', 'continuation.jsonl', [{ ...header('omp', f.project, 'continuation'), parentSession: 'parent', continuationOf: 'parent' }, linked('omp', 'a', null, 'continuation')]);
+  const { items } = await f.reader.catalog();
+  assert.equal(items.length, 2);
+  for (const item of items) {
+    assert.equal(item.unavailable, 'AMBIGUOUS_HISTORY');assert.equal(item.source, null);
+    await assert.rejects(f.reader.freezeSelected(item.source), { code: 'INVALID_PAYLOAD' });
+  }
 });

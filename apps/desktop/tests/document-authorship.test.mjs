@@ -1,3 +1,4 @@
+import {desktopHosts} from './fixtures/desktop-hosts.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs/promises';
@@ -7,7 +8,6 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ChangeSet } from '@codemirror/state';
-import { DesktopHost } from '../src/main/host.mjs';
 import { FileChanges } from '../src/domain/file-changes.mjs';
 import { agentActor } from '../src/domain/document-changes.mjs';
 import { FileTreeOps } from '../src/main/file-tree-ops.mjs';
@@ -18,8 +18,8 @@ const hash=text=>createHash('sha256').update(text).digest('hex');
 async function fixture(text='base\nuntouched\nbase\n') {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-authorship-')),root=path.join(dir,'项目'),profile=path.join(dir,'profile');
   await fs.mkdir(root);const file=path.join(root,'sample.md');await fs.writeFile(file,text);
-  const host=new DesktopHost(profile),projectId=(await host.pick(root)).project.id,store=new FileChanges({storage:host.storage,projectId,root});
-  return {dir,root,profile,file,host,projectId,store,rel:'sample.md',cleanup:()=>fs.rm(dir,{recursive:true,force:true})};
+  const hosts=desktopHosts(),host=hosts.create(profile),projectId=(await host.pick(root)).project.id,store=new FileChanges({storage:host.storage,projectId,root});
+  return {dir,root,profile,file,host,hosts,projectId,store,rel:'sample.md',cleanup:async()=>{await hosts.close();await fs.rm(dir,{recursive:true,force:true});}};
 }
 const record=(fx,rel)=>fx.host.storage.getProjectRecord(fx.projectId,'file_changes',fx.store.keys.key(rel));
 const actor=(id,role,instance='instance-'+role)=>agentActor(id,role,{provider:'codex',sessionInstance:instance,sessionId:'real-session-'+role});
@@ -66,7 +66,7 @@ test('baseline stays unknown; exact repeated-text edits distinguish you and both
     assert.equal(saved.authorship.spans.length,1);assert.equal(saved.authorship.spans[0].from,from);assert.equal(after.slice(saved.authorship.spans[0].from,saved.authorship.spans[0].to),'用户改写');assert.equal(saved.authorship.spans[0].actor.kind,'user');
     await apply(fx,'qa',[{from:0,to:3,insert:'A1标题',expected:'第一处'}]);
     const current=await fs.readFile(fx.file,'utf8'),tail=current.indexOf('保留正文');await apply(fx,'task',[{from:tail,to:tail+4,insert:'A2尾段'}]);
-    const restarted=await new DesktopHost(fx.profile).readFile(fx.projectId,fx.rel);
+    const restarted=await fx.hosts.create(fx.profile).readFile(fx.projectId,fx.rel);
     assert.deepEqual(new Set(restarted.authorship.spans.map(span=>span.actor.kind)),new Set(['user','agent1','agent2']));
     assert.equal(new Set(restarted.authorship.spans.map(span=>span.actor.id)).size,3);assert(restarted.authorship.spans.every(span=>Number.isFinite(Date.parse(span.time))));
     assert(!restarted.text.includes('actorId'));assert(!restarted.text.includes('.nozeli'));
@@ -130,7 +130,7 @@ test('prepared journal after failed replacement preserves candidate without fake
     const read=await fx.host.readFile(fx.projectId,fx.rel);fx.host.replaceFile=async()=>{throw new Error('injected before rename');};
     await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'candidate'));
     assert((await fx.store.read(fx.rel)).pending);
-    const recovered=await new DesktopHost(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(recovered.text,read.text);assert.equal(recovered.authorship.eventCount,0);assert.equal(recovered.draft.text,'candidate');
+    const recovered=await fx.hosts.create(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(recovered.text,read.text);assert.equal(recovered.authorship.eventCount,0);assert.equal(recovered.draft.text,'candidate');
     const ledger=await fx.store.read(fx.rel);assert.equal(ledger.pending,null);assert.equal(ledger.attempts[0].candidate.text,'candidate');assert.equal(ledger.attempts[0].outcome,'not-written');
   }finally{await fx.cleanup();}
 });
@@ -140,9 +140,9 @@ test('journal recovers after rename/finalization failure; third disk version is 
   try{
     const read=await fx.host.readFile(fx.projectId,fx.rel);FileChanges.prototype.finish=async()=>{throw Error('injected after rename');};
     await assert.rejects(fx.host.save(fx.projectId,fx.rel,read.digest,'candidate'));FileChanges.prototype.finish=finish;
-    const recovered=await new DesktopHost(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(recovered.text,'candidate');assert.equal(recovered.authorship.spans[0].actor.kind,'user');assert.equal((await fx.store.read(fx.rel)).pending,null);
+    const recovered=await fx.hosts.create(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(recovered.text,'candidate');assert.equal(recovered.authorship.spans[0].actor.kind,'user');assert.equal((await fx.store.read(fx.rel)).pending,null);
     FileChanges.prototype.finish=async()=>{throw Error('another interruption');};await assert.rejects(fx.host.save(fx.projectId,fx.rel,recovered.digest,'second candidate'));FileChanges.prototype.finish=finish;
-    await fs.writeFile(fx.file,'third external');const divergent=await new DesktopHost(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(divergent.text,'third external');assert.equal(divergent.authorship.lastChange.actor.kind,'external');assert.equal((await fx.store.read(fx.rel)).attempts[0].outcome,'source-diverged');
+    await fs.writeFile(fx.file,'third external');const divergent=await fx.hosts.create(fx.profile).readFile(fx.projectId,fx.rel);assert.equal(divergent.text,'third external');assert.equal(divergent.authorship.lastChange.actor.kind,'external');assert.equal((await fx.store.read(fx.rel)).attempts[0].outcome,'source-diverged');
   }finally{FileChanges.prototype.finish=finish;await fx.cleanup();}
 });
 

@@ -128,11 +128,23 @@ export function mountProjectSearchView({invoke, projectId, filter, tree, openAt,
   }
   filter.addEventListener('keydown',keys);panel.addEventListener('keydown',keys);dialog.addEventListener('keydown',keys);
   function restoreSidebar(){reset();target=filter;(document.getElementById('workspace-open-editors')||tree).before(panel);quick.value='';filter.value='';layout();}
-  dialog.addEventListener('close',()=>{if(target!==quick)return;restoreSidebar();const path=quickFocusPath;quickFocusPath=null;const focus=returnFocus;returnFocus=null;if(path)void Promise.resolve(focusOpened(path)).catch(error=>toast(error.message));else if(focus?.isConnected)focus.focus({preventScroll:true});});
-  function showSearch(){if(window.__workspaceScope?.role==='surface')return false;if(!projectId()||!canSearch()){toast('请先打开可用项目');return false;}if(!dialog.open){reset();returnFocus=document.activeElement;target=quick;dialog.insertBefore(panel,close);dialog.showModal();schedule();}quick.focus();quick.select();return true;}
+  function finishQuickClose(restoreFocus=true){
+    if(dialog.open||target!==quick)return;
+    restoreSidebar();
+    const path=quickFocusPath,focus=returnFocus;quickFocusPath=null;returnFocus=null;
+    if(!restoreFocus)return;
+    if(path)void Promise.resolve(focusOpened(path)).catch(error=>toast(error.message));
+    else if(focus?.isConnected)focus.focus({preventScroll:true});
+  }
+  dialog.addEventListener('close',()=>finishQuickClose());
+  function showSearch(){if(window.__workspaceScope?.role==='surface')return false;if(!projectId()||!canSearch()){toast('请先打开可用项目');return false;}if(!dialog.open){
+    // Chromium queues `close`; finish the previous session before reusing its dialog.
+    finishQuickClose(false);reset();returnFocus=document.activeElement;target=quick;dialog.insertBefore(panel,close);dialog.showModal();schedule();
+  }quick.focus();quick.select();return true;}
   function contentSearch(){
     if(window.__workspaceScope?.role==='surface')return;
-    if(dialog.open){dialog.close();restoreSidebar();returnFocus=null;}
+    if(dialog.open)dialog.close();
+    finishQuickClose(false);
     const toggle=document.getElementById('file-toggle'),app=document.getElementById('app');
     // The drawer is independent of desktop collapse and aria-expanded can lag a resize.
     const closed=innerWidth<=1000?!app?.classList.contains('drawer-files-open'):app?.classList.contains('files-collapsed');

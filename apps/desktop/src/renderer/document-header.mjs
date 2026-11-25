@@ -74,17 +74,24 @@ export function mountDocumentHeader() {
     const texTools=document.getElementById('tex-toolbar');
     if(texTools){
       if(!texTools.dataset.panelObserved){texTools.dataset.panelObserved='true';observer.observe(texTools,{attributes:true,attributeFilter:['hidden']});}
-      if(!texTools.hidden&&texTools.parentElement!==parent)parent.insertBefore(texTools,tools);
+      if(document.documentElement.dataset.workspaceRole==='surface'){
+        if(texTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('reader-scroll').before(texTools);
+      }else if(!texTools.hidden&&texTools.parentElement!==parent)parent.insertBefore(texTools,tools);
       else if(texTools.hidden&&texTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('reader-scroll').before(texTools);
     }
     const pdf = !pdfTools.hidden;
     // Image navigation is a visible content toolbar, not part of hidden native pane chrome.
     if(imageTools&&imageTools.parentElement!==document.getElementById('primary-pane'))document.getElementById('reader-scroll').before(imageTools);
-    const pdfParent = pdf ? parent : document.getElementById('primary-pane');
-    if (pdfTools.parentElement !== pdfParent) {
-      if (pdf && !dual) header.insertBefore(pdfTools, tools);
-      else if (pdf) bar.append(pdfTools);
-      else pdfParent.insertBefore(pdfTools, document.getElementById('pdf-search'));
+    if (document.documentElement.dataset.workspaceRole==='surface') {
+      const scroll=document.getElementById('reader-scroll');
+      if(pdfTools.parentElement!==scroll.parentElement)scroll.before(pdfTools);
+    } else {
+      const pdfParent = pdf ? parent : document.getElementById('primary-pane');
+      if (pdfTools.parentElement !== pdfParent) {
+        if (pdf && !dual) header.insertBefore(pdfTools, tools);
+        else if (pdf) bar.append(pdfTools);
+        else pdfParent.insertBefore(pdfTools, document.getElementById('pdf-search'));
+      }
     }
     if (metadata.parentElement !== parent) {
       if (dual) bar.append(metadata);

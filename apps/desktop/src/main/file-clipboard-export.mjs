@@ -16,7 +16,7 @@ function cleanOfficeCapture(value,disk){
     status?.dirty===false&&status.composing===false&&status.conflict===false&&status.missing===false&&
     createHash('sha256').update(disk).digest('hex')===proof.sourceDigest;
 }
-async function durableGuard(ops,project,paths){
+export async function assertTreeCopySaved(ops,project,paths){
   const host=ops.host;
   const changes=await new FileChanges({storage:host.storage,projectId:project.id,root:project.root}).all();
   if(changes.some(row=>row.pending&&paths.some(rel=>under(row.relPath,rel))))fail('源文件有待恢复的修改批次，请先恢复后再复制。');
@@ -58,6 +58,11 @@ async function durableGuard(ops,project,paths){
   }
 }
 async function sourceSnapshot(ops,project,paths){
+  if(process.platform==='win32'&&ops.io.recoverableTransfer){
+    const {windowsClipboardSnapshot}=await import('../platform/windows/clipboard-source.mjs'),sources=[],nodes=new Map();
+    for(const rel of paths){const source=await ops.locate(project,rel);sources.push(source);nodes.set(source,await windowsClipboardSnapshot(source));}
+    return {sources,nodes};
+  }
   const nodes=new Map(),sources=[];
   const walk=async file=>{
     const stat=await fs.lstat(file);
@@ -91,13 +96,13 @@ export function exportClipboardFiles(ops,clipboard,{owner,projectId,paths,action
     for(const rel of unique)await ops.locate(project,rel);
     await guard();
     if(action==='cut')return clipboard.mark(owner,projectId,{action,beforeWrite:guard});
-    await durableGuard(ops,project,selected);
+    await assertTreeCopySaved(ops,project,selected);
     const prepared=await sourceSnapshot(ops,project,selected);
     return clipboard.mark(owner,projectId,{action,paths:prepared.sources,beforeWrite:async()=>{
       const current=await ops.host.requireProject(projectId);
       if(current.root!==project.root)fail('源项目已变化，请重新复制。');
       await guard();
-      await durableGuard(ops,current,selected);
+      await assertTreeCopySaved(ops,current,selected);
       const next=await sourceSnapshot(ops,current,selected);
       if(next.nodes.size!==prepared.nodes.size||[...prepared.nodes].some(([file,identity])=>!sameFileIdentity(identity,next.nodes.get(file))))fail('源文件已变化，请重新复制。');
       await guard();

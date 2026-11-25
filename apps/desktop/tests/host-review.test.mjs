@@ -1,9 +1,9 @@
+import {desktopHosts} from './fixtures/desktop-hosts.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { DesktopHost } from '../src/main/host.mjs';
 import { digestBytes } from '../src/domain/material-store.mjs';
 
 async function setup(t, contents = 'before') {
@@ -12,10 +12,10 @@ async function setup(t, contents = 'before') {
   await fs.mkdir(project);
   const file = path.join(project, 'file.txt');
   await fs.writeFile(file, contents);
-  const host = new DesktopHost(userData);
+  const hosts=desktopHosts(),host = hosts.create(userData);
   const id = (await host.pick(project)).project.id;
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  return { root, project, userData, host, id, file, read: () => host.readFile(id, 'file.txt') };
+  t.after(async() => {await hosts.close();await fs.rm(root, { recursive: true, force: true });});
+  return { root, project, userData, host, hosts, id, file, read: () => host.readFile(id, 'file.txt') };
 }
 
 test('existing-note edit drafts retain empty text and frozen update baseline across restart without changing annotations', async t => {
@@ -23,7 +23,7 @@ test('existing-note edit drafts retain empty text and frozen update baseline acr
   const {annotation}=await f.host.addAnnotation(f.id,{relPath:'file.txt',kind:'text-selection',materialDigest:file.materialDigest,anchor:{start:0,end:8,quote:'original'},note:'saved note'});
   const draft={projectId:f.id,relPath:annotation.relPath,materialDigest:annotation.materialDigest,kind:annotation.kind,anchor:annotation.anchor,annotationId:annotation.id,baselineUpdatedAt:annotation.updatedAt,text:'',updatedAt:1};
   await f.host.writeState(f.id,{workspace:{noteDrafts:[draft]}});
-  const restarted=new DesktopHost(f.userData);assert.deepEqual((await restarted.readState(f.id)).state.workspace.noteDrafts,[draft]);
+  const restarted=f.hosts.create(f.userData);assert.deepEqual((await restarted.readState(f.id)).state.workspace.noteDrafts,[draft]);
   assert.equal((await restarted.listAnnotations(f.id,'file.txt')).annotations[0].note,'saved note');
   const changed=await restarted.updateAnnotation(f.id,annotation.id,{materialDigest:annotation.materialDigest,expectedUpdatedAt:annotation.updatedAt,note:'concurrent writer'});
   await assert.rejects(restarted.updateAnnotation(f.id,annotation.id,{materialDigest:draft.materialDigest,expectedUpdatedAt:draft.baselineUpdatedAt,note:draft.text}),{code:'ANNOTATION_CONFLICT'});
@@ -42,7 +42,7 @@ test('own execute-link metadata advances the retained newer note edit baseline w
   const retained={projectId:f.id,annotationId:annotation.id,baselineUpdatedAt:saved.updatedAt,relPath:annotation.relPath,materialDigest:annotation.materialDigest,kind:annotation.kind,anchor:annotation.anchor,text:'newer unsent typing',updatedAt:1};
   const linked=(await f.host.updateAnnotation(f.id,annotation.id,{materialDigest:annotation.materialDigest,expectedUpdatedAt:saved.updatedAt,note:saved.note,execute:{jobId:'00000000-0000-4000-8000-000000000001'}})).annotation;
   await f.host.writeState(f.id,{workspace:{noteDrafts:[{...retained,baselineUpdatedAt:linked.updatedAt}]}});
-  const restarted=new DesktopHost(f.userData),draft=(await restarted.readState(f.id)).state.workspace.noteDrafts[0];
+  const restarted=f.hosts.create(f.userData),draft=(await restarted.readState(f.id)).state.workspace.noteDrafts[0];
   assert.equal(draft.text,'newer unsent typing');assert.equal(draft.baselineUpdatedAt,linked.updatedAt);
   const updated=(await restarted.updateAnnotation(f.id,draft.annotationId,{materialDigest:draft.materialDigest,expectedUpdatedAt:draft.baselineUpdatedAt,note:draft.text})).annotation;
   assert.equal(updated.note,'newer unsent typing');
@@ -52,7 +52,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
   const f = await setup(t);
   await f.host.writeState(f.id, { currentRelPath: null, workspace: { draft: '未发送问题', dock: 'left', filesCollapsed: true, chatWidth: 380, conversationFontSize: 20 } });
   await f.host.writeState(f.id, { currentRelPath: 'file.txt', pdfPage: 2 });
-  const stored = await new DesktopHost(f.userData).readState(f.id);
+  const stored = await f.hosts.create(f.userData).readState(f.id);
   assert.equal(stored.state.workspace.draft, '未发送问题');
   assert.equal(stored.state.workspace.dock, 'left');
   assert.equal(stored.state.workspace.conversationFontSize, 20);
@@ -71,7 +71,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
     assert.equal(other.noteDrafts[0].text, '冻结草稿');
     assert.equal(other.noteDrafts[0].kind, 'text-selection');
     assert.deepEqual(other.noteDrafts[0].anchor, { start: 0, end: 1, quote: 'x' });
-    assert.equal((await new DesktopHost(f.userData).readState(id)).state.workspace.noteOffsets['00000000-0000-4000-8000-000000000001'][0], 40);
+    assert.equal((await f.hosts.create(f.userData).readState(id)).state.workspace.noteOffsets['00000000-0000-4000-8000-000000000001'][0], 40);
     assert.equal((await f.host.readState(f.id)).state.workspace.draft, '未发送问题');
     assert.deepEqual((await f.host.readState(f.id)).state.workspace.noteOffsets, {});
   });
@@ -83,7 +83,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
     const draft = (end, text = 'n') => ({ projectId: f.id, relPath: 'file.txt', materialDigest: digest, kind: 'text-selection', anchor: { start: 0, end, quote: source.slice(0, end) }, text, updatedAt: 1 });
     for (const end of [4000, 4001, 5001]) {
       await f.host.writeState(f.id, { workspace: { noteDrafts: [draft(end)] } });
-      const restored = (await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteDrafts[0].anchor;
+      const restored = (await f.hosts.create(f.userData).readState(f.id)).state.workspace.noteDrafts[0].anchor;
       assert.deepEqual(restored, draft(end).anchor);
       const saved = await f.host.addAnnotation(f.id, { relPath: 'file.txt', materialDigest: digest, kind: 'text-selection', anchor: restored, note: 'n' });
       assert.equal(saved.annotation.anchor.quote, source.slice(0, end));
@@ -98,7 +98,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
       const rects = Array.from({ length: count }, () => [0.1, 0.1, 0.2, 0.2]);
       const anchor = { ...base, rects, quote: longQuote };
       await f.host.writeState(f.id, { workspace: { noteDrafts: [{ projectId: f.id, relPath: 'a.pdf', materialDigest: pdf.materialDigest, kind: 'pdf-selection', anchor, text: 'p', updatedAt: 2 }] } });
-      const restored = (await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteDrafts[0].anchor;
+      const restored = (await f.hosts.create(f.userData).readState(f.id)).state.workspace.noteDrafts[0].anchor;
       assert.equal(restored.rects.length, count);
       assert.deepEqual(restored.rects, rects);
       assert.equal(restored.quote, longQuote);
@@ -112,7 +112,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
     await assert.rejects(f.host.writeState(f.id, { workspace: { noteDrafts: [{ projectId: f.id, relPath: 'a.pdf', materialDigest: pdf.materialDigest, kind: 'pdf-selection', anchor: { ...base, rects: [[0.1, 0.1, 0.2, 0.2]], quote: '引'.repeat(20001) }, text: 'bad', updatedAt: 3 }] } }), { code: 'INVALID_ANCHOR' });
     await assert.rejects(f.host.writeState(f.id, { workspace: { noteDrafts: [{ projectId: f.id, relPath: 'a.pdf', materialDigest: pdf.materialDigest, kind: 'pdf-selection', anchor: { ...base, rects: [[0.1, 0.1, 0.2, 0.2], [1, 0, 0.2, 0.2]], quote: 'x' }, text: 'bad', updatedAt: 3 }] } }), { code: 'INVALID_ANCHOR' });
     await assert.rejects(f.host.writeState(f.id, { workspace: { noteDrafts: [{ projectId: f.id, relPath: 'file.txt', materialDigest: digest, kind: 'text-selection', anchor: { start: 0, end: 2, quote: '长长' }, text: 'n'.repeat(4001), updatedAt: 3 }] } }), { code: 'INVALID_PAYLOAD' });
-    assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteDrafts, kept);
+    assert.deepEqual((await f.hosts.create(f.userData).readState(f.id)).state.workspace.noteDrafts, kept);
   });
 
   test('legacy note drafts stay readable and later writes keep unrecovered records', async t => {
@@ -139,7 +139,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
       },
     };
     await f.host.storage.putLocal(f.id, 'view', legacy);
-    const read = await new DesktopHost(f.userData).readState(f.id);
+    const read = await f.hosts.create(f.userData).readState(f.id);
     assert.equal(read.state.workspace.draft, '保留的项目对话草稿');
     assert.equal(read.state.workspace.dock, 'left');
     const text = read.state.workspace.noteDrafts.find(item => item.text === '旧版未提交备注');
@@ -159,7 +159,7 @@ test('workspace draft/layout persists without an open file, preserves legacy wri
     assert.equal(pending.find(item => item.original.text === '被截断').original.anchor.end, 5001);
     assert.equal(Object.hasOwn(pending.find(item => item.original.text === '缺页').original.anchor, 'page'), false);
     await f.host.writeState(f.id, { currentRelPath: 'file.txt', workspace: { draft: '保留的项目对话草稿', dock: 'right', noteDrafts: read.state.workspace.noteDrafts } });
-    const again = await new DesktopHost(f.userData).readState(f.id);
+    const again = await f.hosts.create(f.userData).readState(f.id);
     assert.equal(again.state.workspace.draft, '保留的项目对话草稿');
     assert.equal(again.state.workspace.dock, 'right');
     assert.equal(again.state.workspace.retainedNoteDrafts.length, 3);
@@ -244,7 +244,7 @@ test('view positions are retained separately for each document', async t => {
   const fileView={textMode:'split',selection:{from:2,to:8,anchor:8,head:2},markdownPreview:{linked:false,ratio:38,scrollTop:125}};
   await f.host.writeState(f.id, { currentRelPath: 'file.txt', pdfPage: 1, scrollTop: 83, fileView });
   await f.host.writeState(f.id, { currentRelPath: 'other.pdf', pdfPage: 3, scrollTop: 12, fileView:{zoom:{scale:1.5,mode:'page'}} });
-  const state = await new DesktopHost(f.userData).readState(f.id);
+  const state = await f.hosts.create(f.userData).readState(f.id);
   assert.equal(state.state.currentRelPath, 'other.pdf');
   assert.equal(state.files['file.txt'].scrollTop, 83);
   assert.equal(state.files['other.pdf'].pdfPage, 3);
@@ -252,7 +252,7 @@ test('view positions are retained separately for each document', async t => {
   assert.deepEqual(state.files['other.pdf'].fileView.zoom,{scale:1.5,mode:'page'});
   for(const mode of ['fit','manual','width','page','actual']){
     await f.host.writeState(f.id,{currentRelPath:'other.pdf',fileView:{zoom:{scale:2,mode}}});
-    assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).files['other.pdf'].fileView.zoom,{scale:2,mode});
+    assert.deepEqual((await f.hosts.create(f.userData).readState(f.id)).files['other.pdf'].fileView.zoom,{scale:2,mode});
   }
   assert.deepEqual((await f.host.readState(f.id)).files['file.txt'].fileView,{...fileView,zoom:null,webMode:null});
 });
@@ -264,7 +264,7 @@ test('.htm and spaced Chinese HTML files list as editable text; webMode persists
   assert.equal((await f.host.readFile(f.id, '中文 页面.htm')).kind, 'text');
   assert.equal((await f.host.readFile(f.id, 'my file.html')).kind, 'text');
   await f.host.writeState(f.id, { currentRelPath: '中文 页面.htm', fileView: { webMode: 'split', textMode: 'edit' } });
-  assert.equal((await new DesktopHost(f.userData).readState(f.id)).files['中文 页面.htm'].fileView.webMode, 'split');
+  assert.equal((await f.hosts.create(f.userData).readState(f.id)).files['中文 页面.htm'].fileView.webMode, 'split');
   await f.host.writeState(f.id, { currentRelPath: '中文 页面.htm', fileView: { webMode: 'nope' } });
   assert.equal((await f.host.readState(f.id)).files['中文 页面.htm'].fileView.webMode, null);
 });
@@ -292,7 +292,7 @@ test('material persistence failure happens before a user document is replaced', 
 
 test('oversize sources fail explicitly without truncation or material publication', async t => {
   const f = await setup(t, 'eight888');
-  const limited = new DesktopHost(f.userData, { materialMaxBytes: 4 });
+  const limited = f.hosts.create(f.userData, { materialMaxBytes: 4 });
   await assert.rejects(limited.readFile(f.id, 'file.txt'), { code: 'TOO_LARGE' });
   assert.equal(await fs.readFile(f.file, 'utf8'), 'eight888');
   assert.equal(await fs.readFile(f.file, 'utf8'), 'eight888');
@@ -333,7 +333,7 @@ test('annotation update preserves identity, conflicts safely, and survives resta
   assert.equal(updated.annotation.kind, saved.annotation.kind);
   assert.equal(updated.annotation.createdAt, saved.annotation.createdAt);
   assert.ok(Date.parse(updated.annotation.updatedAt) > Date.parse(saved.annotation.updatedAt));
-  assert.equal((await new DesktopHost(f.userData).listAnnotations(f.id, 'file.txt')).annotations[0].updatedAt, updated.annotation.updatedAt);
+  assert.equal((await f.hosts.create(f.userData).listAnnotations(f.id, 'file.txt')).annotations[0].updatedAt, updated.annotation.updatedAt);
   await fs.writeFile(f.file, '文件已外部修改');
   const changed = await f.host.updateAnnotation(f.id, saved.annotation.id, { materialDigest: source.materialDigest, expectedUpdatedAt: updated.annotation.updatedAt, note: '再次修改' });
   assert.equal(Object.hasOwn(changed.annotation, 'sourceChanged'), false);
@@ -400,10 +400,10 @@ test('note offsets preserve long precise values and reject unsafe writes without
   const id = '00000000-0000-4000-8000-000000000001';
   const offsets = { [id]: [2500.25, -3100.75] };
   await f.host.writeState(f.id, { workspace: { noteOffsets: offsets } });
-  assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteOffsets[id], offsets[id]);
+  assert.deepEqual((await f.hosts.create(f.userData).readState(f.id)).state.workspace.noteOffsets[id], offsets[id]);
   const huge = { [id]: [10000.125, -12000.875] };
   await f.host.writeState(f.id, { workspace: { noteOffsets: huge } });
-  assert.deepEqual((await new DesktopHost(f.userData).readState(f.id)).state.workspace.noteOffsets[id], huge[id]);
+  assert.deepEqual((await f.hosts.create(f.userData).readState(f.id)).state.workspace.noteOffsets[id], huge[id]);
   const record = await f.host.storage.getLocal(f.id, 'view');
   await assert.rejects(f.host.writeState(f.id, { workspace: { noteOffsets: { [id]: [Number.MAX_SAFE_INTEGER + 1, 0] } } }), { code: 'INVALID_PAYLOAD' });
   await assert.rejects(f.host.writeState(f.id, { workspace: { noteOffsets: { [id]: [Number.NaN, 0] } } }), { code: 'INVALID_PAYLOAD' });

@@ -31,8 +31,8 @@ try{
  const ctrlEnter=async()=>{await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');};
  const syntheticKey=async init=>page.evaluate(init=>{const e=document.querySelector('.tag-composer .tag-editor');e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true,...init}));},init);
  assert(await page.evaluate(()=>{const e=document.querySelector('.tag-delivery');return !e||e.hidden||!e.textContent.trim();}),'idle card shows no always-visible shortcut/status row');
- const head=await page.$eval('.tag-chat-window .note-projection-head',e=>({h:e.getBoundingClientRect().height,ordinal:Boolean(e.querySelector('button.tag-ordinal')),title:Boolean(e.querySelector('.tag-window-title')),more:Boolean(e.querySelector('[data-tag-more]')),close:Boolean(e.querySelector('.tag-close')),fontDropdowns:e.querySelectorAll('[data-chat-font]').length,fontInCard:e.closest('.tag-chat-window').querySelectorAll('[data-chat-font]').length}));
- assert(head.h<=36,'head stays a compact ~28px row (<=36px), got '+head.h);assert(head.ordinal&&head.title&&head.more&&head.close,'header carries number/title/more/collapse');
+ const head=await page.$eval('.tag-chat-window .note-projection-head',e=>({h:e.getBoundingClientRect().height,ordinal:Boolean(e.querySelector('button.tag-ordinal')),title:Boolean(e.closest('.local-window')?.querySelector('.tag-window-title')??e.querySelector('.tag-window-title')),more:Boolean(e.querySelector('[data-tag-more]')),close:Boolean(e.closest('.local-window')?.querySelector('[data-local-window-collapse]')??e.querySelector('.tag-close')),fontInCard:e.closest('.tag-chat-window').querySelectorAll('[data-chat-font]').length}));
+ assert(head.h<=36,'head stays compact (<=36px), got '+head.h);assert(head.ordinal&&head.title&&head.more&&head.close,'window carries number/title/more/collapse');
  assert.equal(head.fontInCard,0,'per-card font dropdown removed; size is owned by global settings');
  // --- Source behind the number: closed details occupies no row; open shows quote.
  assert(await page.$eval('details.tag-source',e=>e.hidden||!e.open),'closed source details occupies no persistent row');
@@ -43,15 +43,15 @@ try{
  // --- No welcome bubble in the tag transcript before the first explicit send.
  assert.equal(await page.$$eval('.tag-transcript .tag-message',ns=>ns.length),0,'no welcome/shortcut bubble; empty transcript until the user actually speaks');
 assert(await page.evaluate(()=>{const e=document.querySelector('.tag-delivery');return !e||e.hidden||!e.textContent.trim();}),'idle card shows no always-visible shortcut/status row');
-// --- B. empty composer ~32px single row; growth follows real content, capped.
-const empty=await box();assert(empty.h>=24&&empty.h<=44,'empty composer is a ~32px single row, got '+empty.h);assert(empty.sh<=empty.ch+4,'empty composer does not scroll');
+// The empty editor reserves two text lines and keeps actions below it.
+const empty=await box();assert(empty.h>=empty.lh*2,'empty composer reserves two lines');assert(empty.sh<=empty.ch+4,'empty composer does not scroll');
 await typeLines(6);const grown=await box();
-assert(grown.h>empty.h*2,'multi-line draft grows the composer');assert(grown.sh>grown.ch,'composer caps (~4 lines) and scrolls instead of growing unbounded');assert(grown.h<grown.lh*5.2,'cap keeps the composer near four text rows');
+assert(grown.h>empty.h,'multi-line draft grows the composer');assert(grown.sh>grown.ch,'long drafts scroll inside the capped editor');assert(grown.h<grown.lh*5.2,'cap keeps the composer near four text rows');
 // --- D. send button lives inside the composer row and submits the draft.
-assert(await page.$eval('.tag-composer',row=>Boolean(row.querySelector('button.tag-send'))&&row.contains(row.querySelector('textarea.tag-editor'))),'send button is inside the composer row with the textarea');
+assert(await page.$eval('.tag-composer',row=>row.querySelector('.discussion-composer-actions .tag-send').getBoundingClientRect().top>=row.querySelector('textarea.tag-editor').getBoundingClientRect().bottom),'send action follows the editor in its own row');
 const beforeUsers=(await userBubbles()).length;await page.locator('.tag-composer .tag-send').click();
 await page.waitForFunction(n=>document.querySelectorAll('.tag-transcript .tag-message-user').length>n,{},beforeUsers);
-const sent=await box();assert(sent.value==='','accepted send clears the draft');assert(sent.h<=empty.h+6,'cleared composer returns to the single empty row');
+const sent=await box();assert(sent.value==='','accepted send clears the draft');assert(sent.h<=empty.h+6,'cleared composer returns to its empty height');
 // --- C. an async reply arriving while a NONEMPTY draft is being written must
 // not shrink or clear it (empty-state styling never reclaims a grown editor).
 await typeLines(6);const grownAgain=await box();
@@ -89,9 +89,10 @@ await page.waitForFunction(()=>document.querySelector('.tag-composer .tag-send')
  const beforeRemove=await annotations();
  await page.locator('#action-confirmation-cancel').click();await page.waitForFunction(()=>!document.querySelector('#action-confirmation')?.open);
  assert((await annotations()).length===beforeRemove.length,'cancelled confirmation removes nothing');
- await page.locator('.tag-chat-window .tag-close').click();await page.waitForSelector('.tag-chat-window.is-collapsed');
+ const foldSelector=await page.$('.local-window:has(.tag-chat-window) [data-local-window-collapse]')?'.local-window:has(.tag-chat-window) [data-local-window-collapse]':'.tag-chat-window .tag-close';
+ await page.locator(foldSelector).click();await page.waitForSelector('.local-window.is-collapsed:has(.tag-chat-window), .tag-chat-window.is-collapsed');
  assert((await annotations()).length===beforeRemove.length,'collapse is not delete: the annotation survives');
- await page.locator('.tag-chat-window .tag-close').click();await page.waitForFunction(()=>!document.querySelector('.tag-chat-window')?.classList.contains('is-collapsed'));
+ await page.locator(foldSelector).click();await page.waitForFunction(()=>!document.querySelector('.local-window.is-collapsed:has(.tag-chat-window), .tag-chat-window.is-collapsed'));
  await page.locator('.tag-chat-window [data-tag-more]').click();
  const removeItem2=await page.waitForSelector('xpath/.//div[contains(@class,"nozeli-context-menu") and not(@hidden)]//button[contains(normalize-space(.),"移除标签")]',{timeout:10000});await removeItem2.click();
  await page.locator('#action-confirmation-accept').click();await page.waitForFunction(()=>!document.querySelector('.tag-chat-window'));
@@ -124,6 +125,6 @@ await page.waitForFunction(()=>document.querySelector('.tag-composer .tag-send')
  try{await page.waitForFunction(before=>parseFloat(getComputedStyle(document.querySelector('.tag-composer .tag-editor')).fontSize)>before,{timeout:15000},beforePx);}catch(error){const dump=await page.evaluate(()=>({conversationFont:getComputedStyle(document.documentElement).getPropertyValue('--conversation-font'),editorFont:getComputedStyle(document.querySelector('.tag-composer .tag-editor')).fontSize,editorInline:document.querySelector('.tag-composer .tag-editor')?.style?.cssText??null})).catch(()=>null);const shellSelect=await shell.evaluate(()=>document.querySelector('select[data-project-reading="conversationFontSize"]')?.value??null).catch(()=>null);throw new Error('live cross-surface font update failed — '+JSON.stringify({dump,shellSelect})+' (var updated ⇒ CSS; var stale ⇒ broadcast) | '+error.message);}
  const afterFont=await box();assert(parseFloat(afterFont.fs)===22,'global conversation size applies to the tag composer');assert.equal(await page.$$eval('.tag-chat-window [data-chat-font]',ns=>ns.length),0,'the card itself still exposes no font dropdown');
  await page.screenshot({path:out+'/compact-card.png'});
- console.log(JSON.stringify({pass:true,label:'renderer raw-message injection (synthetic canonical messages; no Provider)',out,checks:['~28px header with number/title/more/collapse and no font dropdown','source behind the number as on-demand details with frozen quote','no welcome/shortcut bubble before first send','empty composer ~32px single row','multi-line growth capped ~4 lines then internal scroll','async reply keeps nonempty draft text and height','send button inside composer row submits and clears','busy permits typing but blocks Ctrl+Enter and accidental send','IME composition (isComposing/keyCode 229) never sends','failed delivery retains draft and grown height then explicit retry recovers','card menu removal requires confirmation; cancel removes nothing','collapse keeps the annotation (collapse != delete)','confirmed removal hides the card but keeps persisted history','global conversation size resizes the composer with no per-card control']}));
+ console.log(JSON.stringify({pass:true,label:'renderer raw-message injection (synthetic canonical messages; no Provider)',out,checks:['compact header and on-demand frozen source','two-line empty editor with separate action row','bounded multiline growth, draft retention and delivery retry','busy and IME send guards','confirmed removal preserves history; collapse is not deletion','live conversation font size']}));
  await page.evaluate(()=>nozeli.invoke('session.requestClose',{}));assert.deepEqual(await Promise.race([exit,new Promise(r=>setTimeout(()=>r(null),10000))]),{code:0,signal:null});
 }catch(error){console.error(log,out);throw error;}finally{await browser?.disconnect();if(child.exitCode===null){child.kill('SIGTERM');await Promise.race([exit,new Promise(r=>setTimeout(r,3000))]).catch(()=>{});if(child.exitCode===null)child.kill('SIGKILL');}}

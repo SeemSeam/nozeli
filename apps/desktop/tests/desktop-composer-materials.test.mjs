@@ -283,7 +283,15 @@ try {
   await page.evaluate(text => { const i = document.getElementById('composer'); i.value = text; i.dispatchEvent(new Event('input', { bubbles: true })); }, materialDraft);
   const beforeHandoff = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
   await page.focus('.cm-add');
-  await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.cm-picker:not([hidden])');
+  await page.keyboard.press('Escape');
+  await page.focus('#composer');
+  await page.keyboard.press('End');
+  await page.keyboard.down('Shift'); await page.keyboard.press('Enter'); await page.keyboard.up('Shift');
+  check('Shift+Enter keeps the draft with a newline', await page.$eval('#composer', (n, text) => n.value === text+'\n' && !n.matches(':placeholder-shown'), materialDraft));
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Enter');
   await wait(async ({ id, expected }) => {
     const result = await window.nozeli.invoke('managed.status', {projectId:id});
     return result.ok && result.value.state.jobs.length === expected
@@ -291,6 +299,7 @@ try {
       && document.getElementById('composer').value === ''
       && document.querySelectorAll('#compose-form .cm-chip').length === 0;
   }, 15000, { id: pid, expected: beforeHandoff.ok ? beforeHandoff.value.state.jobs.length + 1 : -1 });
+  check('empty composer shows the muted shortcut placeholder again', await page.$eval('#composer', n => n.matches(':placeholder-shown') && n.placeholder.includes('Shift+Enter')));
   const afterHandoff = await page.evaluate(id => window.nozeli.invoke('managed.status', {projectId:id}), pid);
   check('supported local-material send accepts one job and consumes draft + all material chips',
     beforeHandoff.ok && afterHandoff.ok
@@ -326,7 +335,8 @@ try {
   await wait(() => document.querySelector('.cm-picker').hidden === true && [...document.querySelectorAll('.cm-chip-status')].every(s => s && s.dataset.status !== 'reading'), 15000);
   check('closing picker restores keyboard focus to add-material control',await page.evaluate(()=>document.activeElement===document.querySelector('.cm-add')));
   const beforeLongHandoff=await page.evaluate(id=>window.nozeli.invoke('managed.status',{projectId:id}),pid);
-  await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
+  await page.focus('#composer');
+  await page.keyboard.press('Enter');
   await wait(async ({id, expected}) => {
     const result=await window.nozeli.invoke('managed.status',{projectId:id});
     return result.ok && result.value.state.jobs.length===expected && result.value.state.jobs.at(-1)?.status==='completed'

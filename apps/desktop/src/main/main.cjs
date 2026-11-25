@@ -25,7 +25,7 @@ const {createForceQuit} = require('./force-quit.cjs');
 let forceQuitting = false;
 const forceQuit = createForceQuit({app});
 let autoUpdater, acknowledgeUpdateHealth, updateLifecycle, updateFrozen=false, exportClipboardFiles;
-const updateFlushWrites=new Set(['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save']);
+const updateFlushWrites=new Set(['workspace.displayView.write','workspace.recovery','file.draft','file.save','file.retain','managed.review.instruction.save','managed.review.save','workspace.reviewDiscussion.flush','workspace.reviewDiscussion.readingState.write']);
 let onlineBrowser;
 async function closeOnlineBrowsers(){for(const scope of new Set([...onlineBrowser?.slots.values()||[]].map(slot=>slot.scope))){const result=await onlineBrowser.closeScope(scope);if(result?.cancelled||result?.closed===false)throw Object.assign(Error('网站仍有未提交输入，已保留窗口。'),{code:'WEB_CLOSE_CANCELLED'});}}
 
@@ -34,9 +34,17 @@ const RENDERER_ROOT = path.join(APP_ROOT, 'dist/renderer');
 const HIDDEN = process.env.NOZELI_HIDDEN === '1';
 const FORCE_VISIBLE = process.env.NOZELI_FORCE_VISIBLE === '1';
 const DEBUG_PORT = process.env.NOZELI_DEBUG_PORT || '';
-const externalFiles=[];
-app.on('open-file',(event,file)=>{event.preventDefault();externalFiles.push(file);void revealNavigation().catch(error=>console.error('external open routing failed',error));});
+const earlyExternal=[];
+let externalRouting,refusedExternal=0;
+function receiveExternal(paths,source){
+  const bounded=paths.filter(file=>typeof file==='string'&&Buffer.byteLength(file)<=16*1024&&!file.includes('\0'));
+  const refused=paths.length-bounded.length;
+  if(externalRouting){externalRouting.refused+=refused;void externalRouting.admit(bounded,source).then(()=>revealNavigation()).catch(error=>console.error('external open routing failed',error));}
+  else{refusedExternal+=refused;for(const absolutePath of bounded){if(earlyExternal.length<128)earlyExternal.push({absolutePath,source});else refusedExternal++;}}
+}
+app.on('open-file',(event,file)=>{event.preventDefault();receiveExternal([path.resolve(file)],'open-file');});
 const ISOLATED_TEST_INSTANCE = process.env.NOZELI_TEST_INSTANCE === '1';
+let installedUpdateTest=false,usingInstalledProfile=false;
 if (HIDDEN) {
   app.commandLine.appendSwitch('ozone-platform', process.env.NOZELI_OZONE || 'headless');
   app.disableHardwareAcceleration();
@@ -106,8 +114,9 @@ function startStatic() {
   });
 }
 
-let host, fileTreeOps, treeMenuItems, nativeFileClipboard, importClipboardFiles;
+let host, fileTreeOps, treeMenuItems, nativeFileClipboard, importClipboardFiles, treeRecovery;
 let workspaceNative, isolatedPreview, workspaceCapture, projectLifecycle;
+let storeSkills, contextTransfer, localSkillImports;
 async function finishDrawing({windowId,projectId}={}){
   const active=workspaceCapture?.active;
   if(windowId&&active?.windowId!==windowId||projectId&&active?.projectId!==projectId)return;
@@ -191,6 +200,7 @@ function trusted(event, op, payload) {
 }
 
   function testPickPaths() {
+    if(usingInstalledProfile&&!installedUpdateTest)return [];
     return (process.env.NOZELI_TEST_PICK || '').split('\n').filter(Boolean);
   }
   function showDirectoryDialog(owner, options) {
@@ -249,6 +259,7 @@ async function createWindow(server) {
   if(process.platform !== 'darwin'){win.setMenu(null);win.setMenuBarVisibility(false);}
   win.webContents.once('did-finish-load', () => revealWindow(win));
   const scope = workspaceNative.registerShell(win);
+  externalRouting?.observe(scope);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(origin)) event.preventDefault();
@@ -256,7 +267,7 @@ async function createWindow(server) {
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const recovery=new WindowRecovery(win,{
     prepareClose:()=>finishDrawing(),
-    dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),
+    dialog,settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(r=>r.role==='surface'||r.discussionRow?.workMode));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),
     stop:stopForWindowClose,
     forceQuit:forceQuitApplication,
     reveal:()=>revealWindow(win),onClose:finalizeWindowClose,
@@ -282,23 +293,40 @@ async function createWindow(server) {
 
 async function main() {
   const {acquireApplicationSingleton}=require('./application-singleton.cjs');
+  const {selectedWindowsInstallProfile,verifyWindowsInstallProfile}=await import('../platform/windows/install-profile.mjs');
+  const installedProfile=selectedWindowsInstallProfile();
+  const installedBinding=installedProfile?await verifyWindowsInstallProfile(installedProfile):null;
+  usingInstalledProfile=Boolean(installedBinding);
   const pendingLaunches=[];
   let routeLaunch=null;
-  app.on('second-instance',(_event,argv,cwd)=>{
-    if(routeLaunch)routeLaunch(argv,cwd);else pendingLaunches.push({argv,cwd});
+  app.on('second-instance',(_event,argv,cwd,additionalData)=>{
+    const launch=additionalData?.nozeliLaunch;
+    const original=launch?.schema===1&&Array.isArray(launch.argv)&&launch.argv.length<=1024&&launch.argv.every(arg=>typeof arg==='string')&&typeof launch.cwd==='string'&&path.isAbsolute(launch.cwd)&&typeof launch.packaged==='boolean';
+    if(ISOLATED_TEST_INSTANCE&&process.env.NOZELI_TEST_SINGLETON_ROOT)console.log('NOZELI_TEST_SINGLETON_LAUNCH '+JSON.stringify({deliveredArgv:argv,deliveredCwd:cwd,original:original?launch:null}));
+    const packaged=typeof launch?.packaged==='boolean'?launch.packaged:app.isPackaged;
+    if(original){argv=launch.argv;cwd=launch.cwd;}
+    if(routeLaunch)routeLaunch(argv,cwd,packaged);else if(pendingLaunches.length<128)pendingLaunches.push({argv,cwd,packaged});else refusedExternal+=Math.max(1,argv.length-(packaged?1:2));
   });
   // No profile resolution, migration, host or Agent creation before this lock.
   // Isolated test instances run synthetic profiles in parallel; they must not
   // kill each other over the OS-account singleton, which guards real launches.
-  if(!ISOLATED_TEST_INSTANCE && !acquireApplicationSingleton(app)){app.exit(0);return;}
-  const {fileArguments, externalTarget}=await import('./external-open.mjs');
-  routeLaunch=(argv,cwd)=>{
-    externalFiles.push(...fileArguments(argv,{packaged:app.isPackaged,cwd}).filter(file=>file!==__filename&&file!==APP_ROOT));
-    void revealNavigation().catch(error=>console.error('external open routing failed',error));
+  // Explicit synthetic account scope exercises the real Electron lock without
+  // touching this OS account's product singleton or personal profile. Ambient
+  // overrides remain ignored outside an isolated test instance.
+  const singletonTestRoot=ISOLATED_TEST_INSTANCE?process.env.NOZELI_TEST_SINGLETON_ROOT:null;
+  const useSingleton=!ISOLATED_TEST_INSTANCE||singletonTestRoot!=null;
+  const singletonRoot=installedProfile?path.join(installedProfile,'application-singleton'):singletonTestRoot;
+  if(useSingleton&&!await acquireApplicationSingleton(app,singletonRoot!=null?{root:singletonRoot}:{})){app.exit(0);return;}
+  const {parseExternalArguments}=await import('./external-open.mjs');
+  routeLaunch=(argv,cwd,packaged=app.isPackaged,source='second-instance')=>{
+    const parsed=parseExternalArguments(argv,{packaged,cwd});
+    if(externalRouting)externalRouting.refused+=parsed.errors.length;else refusedExternal+=parsed.errors.length;
+    receiveExternal(parsed.paths.filter(file=>file!==__filename&&file!==APP_ROOT),source);
   };
-  routeLaunch(process.argv,process.cwd());
-  for(const launch of pendingLaunches)routeLaunch(launch.argv,launch.cwd);
+  routeLaunch(process.argv,process.cwd(),app.isPackaged,'argv');
+  for(const launch of pendingLaunches)routeLaunch(launch.argv,launch.cwd,launch.packaged);
   const {resolveNozeliPaths,initializeNozeliConfiguration,readNozeliConfiguration,completeNozeliConfiguration}=await import('../agents/managed/nozeli-config.mjs');
+  const {requireProjectInitializationSupport,projectInitializationSupported}=await import('../agents/managed/project-initialization.mjs');
   const nozeliPaths=resolveNozeliPaths();
   await initializeNozeliConfiguration(nozeliPaths);
   // The temporary lock path was already restored synchronously. Chromium's
@@ -323,7 +351,8 @@ async function main() {
   const { FileTreeOps } = await import('./file-tree-ops.mjs');
   const {NativeFileClipboard}=await import('./file-clipboard.mjs');
   ({importClipboardFiles}=await import('./file-clipboard-import.mjs'));
-  nativeFileClipboard=new NativeFileClipboard(clipboard,{ClipboardItem});
+  const nativeFiles=process.platform==='win32'?(await import('../platform/windows/file-clipboard.mjs')).createWindowsFileClipboard():undefined;
+  nativeFileClipboard=new NativeFileClipboard(clipboard,{ClipboardItem,nativeFiles});
   ({exportClipboardFiles}=await import('./file-clipboard-export.mjs'));
   ({ treeMenuItems } = await import('./file-tree-menu.mjs'));
   fileTreeOps = new FileTreeOps(host, { trash: p => shell.trashItem(p) });
@@ -332,12 +361,19 @@ async function main() {
   texLanguage = new TexLanguageService({host, onEvent: payload => workspaceNative?.broadcast('nozeli:lsp',payload,payload.projectId)});
   const { TexBuildManager } = await import('./tex-build-manager.mjs');
   texManager = new TexBuildManager({ host, onEvent: payload => workspaceNative?.broadcast('nozeli:tex',payload,payload.projectId) });
-  lspManager = new LanguageServiceManager({ host, userDataDir: app.getPath('userData'), onEvent: payload => workspaceNative?.broadcast('nozeli:lsp',payload,payload.projectId) });
+  lspManager = new LanguageServiceManager({ host, userDataDir: app.getPath('userData'), appRoot:APP_ROOT,packaged:app.isPackaged,onEvent: payload => workspaceNative?.broadcast('nozeli:lsp',payload,payload.projectId) });
   // Previous two-slot transcripts are read-only records, never another backend.
   agents = new AgentRuntime({userDataDir:app.getPath('userData')});
   agents.onEvent(event => workspaceNative?.broadcast('nozeli:agent',event,event.projectId));
   agentHandlers = agentOps(agents);
   const {ManagedProjects}=await import('../agents/managed-projects.mjs');
+  const {StoreSkills,contextTransfer:transferSkill}=await import('../agents/managed/store-skills.mjs');
+  contextTransfer=transferSkill;
+  storeSkills=new StoreSkills(path.join(app.getPath('userData'),'store-skills.json'));
+  const {LocalSkillImports}=await import('../agents/managed/local-skill-imports.mjs');
+  localSkillImports=new LocalSkillImports(path.join(app.getPath('userData'),'local-skill-imports.json'));
+  const {capacitySkillPath,capacityConfigKey,reviewedCapacityIdentity,readReviewedCapacity}=await import('../agents/managed/paracloud-migration.mjs');
+  const {validateCapacityConfig}=await import('../agents/managed/paracloud-capacity.mjs');
   const {resolveBundledPiRuntime}=await import('../agents/managed/pi-runtime.mjs');
   const {createNozeliPiSource}=await import('../agents/managed/pi-source.mjs');
   const {PiSettingsWorker}=await import('../agents/managed/pi-auth.mjs');
@@ -363,11 +399,13 @@ async function main() {
   piSource.modelFor=role=>providerSettings.modelFor(role);
   piSource.roleDefaultsFor=role=>providerSettings.roleDefaultsFor(role);
   const piSessionRuntime=piRuntime?{...piRuntime,args:piRuntime.args.filter(value=>value!==piRuntime.entry)}:null;
-  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models()});
+  managedAgents=new ManagedProjects({userDataDir:app.getPath('userData'),host,legacy:agents,beforeDocumentOperation:syncDocument,piSource,piRuntime:piSessionRuntime,piAuth,privilegeBroker,modelCatalog:()=>providerSettings.models(),terminalAppRoot:app.isPackaged?APP_ROOT:null});
+  managedAgents.localSkillImports=localSkillImports;
   const {AdminAgent}=await import('../agents/admin-agent.mjs');
   const {adminOperation}=await import('./admin-operations.mjs');
   const {AdminMaintenance}=await import('../agents/admin-maintenance.mjs');
-  adminAgent=new AdminAgent({userDataDir:app.getPath('userData'),host,providerSettings,piSource,piRuntime:piSessionRuntime,processBudget:managedAgents.processBudget,maintenance:new AdminMaintenance({host,managed:managedAgents,recovery:{preview:payload=>projectLifecycle.preview(payload),execute:payload=>projectLifecycle.execute(payload)}})});
+  const {AdminDevelopment}=await import('../agents/admin-development.mjs');
+  adminAgent=new AdminAgent({userDataDir:app.getPath('userData'),host,providerSettings,piSource,piRuntime:piSessionRuntime,processBudget:managedAgents.processBudget,development:new AdminDevelopment({host,managed:managedAgents}),maintenance:new AdminMaintenance({host,managed:managedAgents,recovery:{preview:payload=>projectLifecycle.preview(payload),execute:payload=>projectLifecycle.execute(payload)}})});
   try{await adminAgent.start();}catch(error){console.error('Admin state unavailable',error.code??'ADMIN_STATE_UNAVAILABLE');}
   // Review-candidate documents reuse the managed controller as their sole
   // content authority; ordinary file.* operations dispatch through it.
@@ -380,6 +418,11 @@ async function main() {
   projectWatcher=new ProjectWatcher({onChange:event=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-changed',...event},event.projectId),onError:error=>workspaceNative?.broadcast('nozeli:workspace-control',{type:'file-tree-watch-error',...error},error.projectId)});
   const address=server.address();origin=`http://127.0.0.1:${address.port}/`;
   workspaceNative=new WorkspaceNative({BrowserWindow:WorkspaceWindow,WebContentsView,screen,origin,preload:path.join(APP_ROOT,'src/preload/preload.cjs'),icon:path.join(APP_ROOT,'assets/nozeli.png'),userDataDir:app.getPath('userData'),host,hidden:HIDDEN,onClose:async r=>{const recovery=windowRecovery(r.win);if(recovery){resetStaleQuitIntent(recovery);recovery.requestClose();return;}await workspaceNative.flush([...workspaceNative.senders.values()]);if(agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy()){r.wc.send('nozeli:quit-confirm');return;}await adminAgent?.stop();await managedAgents?.stop();await agents?.stopIdle?.();r.closing=true;for(const s of workspaceNative.projectRecords(r.projectId,r.windowId))workspaceNative.destroySurface(s);r.win.close();}});
+  const {ExternalOpenRouting}=await import('./external-open-routing.mjs');
+  externalRouting=new ExternalOpenRouting({host,workspace:workspaceNative,notify:()=>{const root=workspaceNative.shell;if(root&&!root.dead)root.wc.send('nozeli:open-request');}});
+  externalRouting.refused=refusedExternal;
+  for(const row of earlyExternal.splice(0))await externalRouting.admit([row.absolutePath],row.source);
+  treeRecovery = new (await import('./tree-recovery.mjs')).TreeRecovery(host,{workspace:workspaceNative});
   workspaceNative.managedAgents=managedAgents;
   const {NativeTooltip}=await import('./native-tooltip.mjs');
   workspaceNative.tooltips=new NativeTooltip({workspace:workspaceNative,BrowserWindow,screen,appRoot:APP_ROOT});
@@ -387,7 +430,7 @@ async function main() {
   isolatedPreview=new IsolatedPreviewManager({View,WebContentsView,session,workspace:workspaceNative,host,managedAgents,dialog});
   const {NativeReviewDiscussionManager,runReviewDiscard}=await import('./native-review-discussion.mjs');
   workspaceNative.reviewDiscussions=new NativeReviewDiscussionManager({workspace:workspaceNative,BrowserWindow,preload:path.join(APP_ROOT,'src/preload/review-discussion.cjs'),managed:managedAgents,dialog});
-  try{const saved=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'appearance.json'),'utf8'));if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}catch{}
+  try{const saved=await host.readProfileRecord(path.join(app.getPath('userData'),'appearance.json'),{maxBytes:65536});if(saved){if(['light','dark'].includes(saved.theme))nativeTheme.themeSource=saved.theme;isolatedPreview.setAppearance({palette:saved.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});}}catch(error){console.error('appearance load failed',error.code||'INVALID_RECORD');}
   nativeTheme.on('updated',()=>{isolatedPreview.setAppearance({palette:isolatedPreview.appearance?.palette??'sage',mode:nativeTheme.shouldUseDarkColors?'dark':'light'});});
   workspaceNative.isolatedPreview=isolatedPreview;
   const {OnlineBrowserManager}=await import('./online-browser.mjs');
@@ -424,7 +467,7 @@ async function main() {
     }catch(error){await managedAgents.reportConnectionError(projectId,error);throw error;}
   };
   workspaceNative.setupWindow=r=>{
-    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(record=>record.role==='surface'));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),stop:stopForWindowClose,forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:finalizeWindowClose});
+    const recovery=new WindowRecovery(r.win,{dialog,prepareClose:()=>finishDrawing(),settle:async()=>{await workspaceNative.flush([...workspaceNative.senders.values()].filter(record=>record.role==='surface'||record.discussionRow?.workMode));await host.settled();},busy:()=>agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy(),stop:stopForWindowClose,forceQuit:forceQuitApplication,reveal:()=>revealWindow(r.win),onClose:finalizeWindowClose});
     r.wc.on('did-start-navigation',(_e,_url,_inPlace,isMain)=>{if(isMain)recovery.navigation();});
     r.wc.on('did-finish-load',()=>recovery.loaded());r.wc.on('render-process-gone',(_e,details)=>recovery.rendererGone(details));r.win.on('closed',()=>recovery.destroyed());
   };
@@ -466,7 +509,17 @@ async function main() {
   });
   const {AutoUpdater,acknowledgeUpdateHealth:health,trustedUpdaterRequest}=await import('./auto-update.mjs');acknowledgeUpdateHealth=health;
   const {createUpdateLifecycle}=await import('./update-lifecycle.mjs');
-  const updateTest=ISOLATED_TEST_INSTANCE&&process.env.NOZELI_TEST_UPDATE_FEED&&process.env.NOZELI_CONFIG_ROOT&&process.env.NOZELI_USER_DATA;
+  if(installedBinding&&process.env.NOZELI_TEST_UPDATE_INSTALLATION===installedBinding.installationId&&process.env.NOZELI_TEST_UPDATE_FEED){
+    try{
+      const url=new URL(process.env.NOZELI_TEST_UPDATE_FEED);
+      if(url.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(url.hostname)&&!url.username&&!url.password){
+        const {createWindowsDesktopProfileIO}=await import('../platform/windows/desktop-profile.mjs');
+        const record=await createWindowsDesktopProfileIO(installedBinding.installRoot).read(path.join(installedBinding.installRoot,'WINDOWS-UPDATE-TEST.json'),{maxBytes:16384});
+        if(record.bytes){const proof=JSON.parse(record.bytes.toString('utf8'));installedUpdateTest=proof.schema===1&&proof.synthetic===true&&proof.installationId===installedBinding.installationId&&proof.feed===url.href;}
+      }
+    }catch(error){console.error('Windows update test authority rejected:',error.code||error.name);}
+  }
+  const updateTest=installedUpdateTest||ISOLATED_TEST_INSTANCE&&process.env.NOZELI_TEST_UPDATE_FEED&&process.env.NOZELI_CONFIG_ROOT&&process.env.NOZELI_USER_DATA;
   const updateTestOptions=updateTest?{idleInterval:100,dependencies:{feed:process.env.NOZELI_TEST_UPDATE_FEED,tagApiBase:new URL(process.env.NOZELI_TEST_UPDATE_FEED).origin,allowLoopback:true}}:{};
   // Updater traffic uses a dedicated non-persistent session on Chromium's network stack:
   // Node's global fetch ignores the OS proxy and its direct TLS to GitHub's asset CDN is
@@ -486,17 +539,34 @@ async function main() {
   if(piRuntime?.env?.ELECTRON_RUN_AS_NODE)searchEnv.ELECTRON_RUN_AS_NODE=piRuntime.env.ELECTRON_RUN_AS_NODE;
   const readSearchDocument=piRuntime?createSearchDocumentReader({command:piRuntime.command,env:searchEnv}):async()=>{throw new HostError('SEARCH_RUNTIME','独立文档提取运行时不可用，文本搜索不受影响。');};
   const projectSearch=new ProjectSearchSessions({host,workspace:workspaceNative,engine:new ProjectSearchEngine({host,readDocument:readSearchDocument}),readDocument:readSearchDocument});
+  ipcMain.handle('nozeli:file-drop',async(event,paths)=>{
+    try{
+      const scope=trusted(event,'tree.mutate',{}),projectId=scope.projectId,generation=scope.generation;
+      if(scope.role!=='shell'||!projectId||quitting||updateFrozen)throw new HostError('PROJECT_SCOPE_DENIED','只能向当前打开的项目拖入文件。');
+      await host.requireProject(projectId);const value=await nativeFileClipboard.drop(paths,event.sender.id,projectId);
+      if(scope.dead||scope.projectId!==projectId||scope.generation!==generation){nativeFileClipboard.tickets.delete(value.ticket);throw new HostError('PROJECT_SCOPE_DENIED','项目已切换，请重新拖入。');}
+      return {ok:true,value};
+    }catch(error){return respond(error);}
+  });
   ipcMain.handle('nozeli:invoke', async (event, op, payload) => {
     try {
       const scope=trusted(event,'workspace.bootstrap',{});
+      const scopeGeneration=scope.generation;
       if (payload != null && (typeof payload !== 'object' || Array.isArray(payload))) {
         throw new HostError('INVALID_PAYLOAD', 'Payload must be an object.');
       }
       if(typeof op!=='string')throw new HostError('UNKNOWN_OP','Unknown host operation.');
+      const boundsScope=op==='workspace.bounds'?{generation:scope.generation,projectId:scope.projectId}:null;
       if(op.startsWith('admin.'))return {ok:true,value:await adminOperation({scope,op,payload:payload??{},admin:adminAgent,prepareSend:()=>managedAgents.initializeResources(),frozen:updateFrozen||quitting||quitPending})};
       if(op==='workspace.tooltip.show'||op==='workspace.tooltip.hide'){
         trusted(event,op,payload??{});
         return {ok:true,value:await workspaceNative.tooltips[op.endsWith('.show')?'show':'hide'](scope,payload??{})};
+      }
+      if(op==='session.takeOpen'){trusted(event,op,payload??{});throw new HostError('OPEN_PROTOCOL_REQUIRED','外部打开必须通过持久队列与实际显示确认，未移除任何请求。');}
+      if(op.startsWith('session.external.')||op==='workspace.externalDisplayed'){
+        trusted(event,op,payload??{});
+        if(op==='session.external.begin'&&(updateFrozen||quitting||forceQuitting))throw new HostError('UPDATE_RESTART_PENDING','应用正在保留并关闭，打开请求已保留，请稍后重试。');
+        return {ok:true,value:await externalRouting.invoke(scope,op,payload??{})};
       }
       // Force quit is a trusted renderer control, not a storage operation. It
       // must remain reachable while another quit invocation awaits flush/stop.
@@ -505,6 +575,7 @@ async function main() {
         forceQuitApplication();
         return {ok:true,value:{closing:true,forced:true}};
       }
+      await workspaceNative.treeRecovery.journal.ensure(scope);
       payload=await workspaceNative.resolvePayload(scope,op,payload??{});
       if(scope.role==='surface'&&scope.kind==='task-process'&&op.startsWith('managed.')&&op!=='managed.timeline.export')return {ok:true,value:await workspaceNative.taskManagedRead(scope,op,payload)};
       if(['project.search.start','project.search.poll','project.search.cancel','project.search.reveal'].includes(op)){
@@ -561,14 +632,30 @@ async function main() {
         catch(error){void managedAgents.diagnoseProject(payload.projectId,error).catch(()=>{});throw error;}
       }
       const admissionProject=payload?.projectId??scope.projectId;
+      const openDeadline=op==='workspace.reviewDiscussion.show'?performance.now()+15000:undefined;
+      let admissionTimer;
       const execute=async()=>{
+      if(boundsScope&&(scope.dead||scope.generation!==boundsScope.generation||scope.projectId!==boundsScope.projectId))return {ok:true,value:{stale:true}};
+      if(openDeadline!==undefined){
+        clearTimeout(admissionTimer);
+        if(performance.now()>=openDeadline)throw new HostError('REVIEW_OPEN_TIMEOUT','打开讨论超时：等待项目准入。请重试');
+      }
       trusted(event,op,payload??{});
+      if(boundsScope&&!Number.isSafeInteger(payload?.navigationGeneration))throw new HostError('INVALID_BOUNDS','工作面视口缺少导航代次。');
       if(op.startsWith('workspace.demoControls.'))return {ok:true,value:await workspaceNative.invoke(scope,op,payload??{})};
       // Admission is established before asynchronous business work begins.
       // Business payloads stay strict: the admission envelope is consumed by
       // authorize/assertRecoveryAdmission/lifecycleFlushOwner above and never
       // reaches managed.review.* or other controllers.
       const businessPayload=stripFlushEnvelope(payload??{});
+      if(op==='ppt.draft'&&payload.model===undefined&&scope.role==='surface'&&(scope.treeRecoveryHolds?.size||scope.readOnly)){
+        const retained=await workspaceNative.readDocument(scope,{projectId:scope.projectId,relPath:scope.relPath,documentSource:scope.documentSource});
+        if(retained.treeRecoveryRetained)return {ok:true,value:{model:retained.treeRecoverySnapshot?.candidate?.model??null,sourceChanged:false}};
+        if(scope.treeRecoveryHolds?.size)throw new HostError('TRANSFER_HELD','原演示文稿仍在恢复保护中。');
+      }
+      const intakeRead=op==='managed.intake.reconcile',intakeWithdraw=op==='managed.intake.withdraw';
+      if((intakeRead||intakeWithdraw)&&(scope.role!=='shell'||!scope.projectId||payload.projectId!==scope.projectId||workspaceNative.activeProjectId!==scope.projectId||guidedDemo.isDemo(scope.projectId)))throw new HostError('IPC_DENIED','仅当前真实项目的主窗口可以核对或撤销请求。');
+      if(op.startsWith('managed.frontdesk.memory.'))throw new HostError('IPC_DENIED','请从项目前台对话的技能列表发起交接。');
       if(op.startsWith('demo.'))return {ok:true,value:await guidedDemo.invoke(scope,op,payload??{})};
       if(admissionProject&&guidedDemo.isDemo(admissionProject)){
         await guidedDemo.verify(admissionProject);
@@ -581,7 +668,58 @@ async function main() {
       // project.remove alone bypasses this blanket assertActive and is then
       // validated by ProjectLifecycle.removeProject's conservative guard;
       // ordinary writes stay blocked while any hold exists.
-      if(admissionProject&&!['managed.collaboration.status','managed.model.options','managed.fault.status','managed.fault.results','managed.work.control.status','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','session.flushed','workspace.bootstrap','project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile','project.remove','project.open','project.retry'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op,payload))host.storage.assertActive(admissionProject);
+      if(admissionProject&&!['managed.collaboration.status','managed.model.options','managed.fault.status','managed.fault.results','managed.work.control.status','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','workspace.recovery.tree.preview','workspace.recovery.tree.settle','session.flushed','workspace.bootstrap','project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile','project.remove','project.open','project.retry'].includes(op)&&!workspaceNative.lifecycleFlushOwner(scope,payload?.flushRequestId,op,payload))host.storage.assertActive(admissionProject);
+      if(op.startsWith('store.')){
+        const {projectId}=businessPayload;
+        const isMemory=/^store\.memory\.(available|list|sources|prepare|adopt)$/.test(op),action=op.split('.').at(-1);
+        const conversationOwner=()=>isMemory&&scope.role==='surface'&&scope.kind==='conversation'&&scope.conversationTarget==='frontdesk'&&Boolean(projectId)&&['available','sources','prepare'].includes(action);
+        const assertCurrent=()=>{
+          if((scope.role!=='shell'&&!conversationOwner())||scope.dead||scope.generation!==scopeGeneration||scope.held||scope.transferring||scope.recoveryHeld||scope.syncHolds?.size||workspaceNative.senders.get(scope.wc.id)!==scope)throw new HostError('IPC_DENIED','此窗口不能执行该技能操作。');
+          if(projectId!==undefined){
+            if(!projectId||scope.projectId!==projectId||workspaceNative.activeProjectId!==projectId||guidedDemo.isDemo(projectId))throw new HostError('PROJECT_SCOPE_DENIED','资源商店操作不属于当前真实项目。');
+            host.storage.assertActive(projectId);
+          }
+        };
+        assertCurrent();
+        if(op.startsWith('store.imports.')){
+          const project=projectId===undefined?null:await host.requireRegisteredProject(projectId);
+          assertCurrent();
+          if(['prepareMigration','reviewedList','capacityConfig','saveCapacityConfig'].includes(action)){
+            const fields=action==='saveCapacityConfig'?['projectId','config']:['projectId'];
+            if(!project||Object.keys(businessPayload).some(key=>!fields.includes(key)))throw new HostError('INVALID_PAYLOAD','请在明确选定的项目中操作。');
+            if(action==='prepareMigration')return {ok:true,value:await adminOperation({scope,op:'admin.prepareSkillMigration',payload:{projectId},admin:adminAgent,frozen:updateFrozen||quitting||quitPending})};
+            if(action==='reviewedList'){
+              const {state}=await managedAgents.projectionSource(projectId);assertCurrent();
+              return {ok:true,value:state.works.slice().reverse().flatMap(work=>{const objectId=work.closure?.binding?.objectId;return reviewedCapacityIdentity(state,work.id,objectId)?[{workId:work.id,objectId,relPath:capacitySkillPath,name:work.name}]:[];}).slice(0,32)};
+            }
+            if(action==='saveCapacityConfig'){
+              const {config}=businessPayload;
+              if(config!==null&&(!validateCapacityConfig(config)||Object.keys(config).some(key=>!['sshAlias','partition','allowJobWrites'].includes(key))||!Object.hasOwn(config,'sshAlias')||!Object.hasOwn(config,'partition')||config.allowJobWrites!==undefined&&typeof config.allowJobWrites!=='boolean'))throw new HostError('INVALID_PAYLOAD','ParaCloud 连接或作业授权无效。');
+              assertCurrent();await host.storage.putLocal(projectId,capacityConfigKey,config);
+            }
+            const row=await host.storage.getLocalRecord(projectId,capacityConfigKey);assertCurrent();return {ok:true,value:row?.value??null};
+          }
+          const value=await localSkillImports.invoke(action,businessPayload,{project,assertCurrent,analyze:async input=>{await managedAgents.initializeResources();assertCurrent();return adminAgent.analyzeSkills(input);},readReviewed:async ref=>{
+            assertCurrent();const {state}=await managedAgents.projectionSource(projectId);
+            return readReviewedCapacity({state,project,...ref});
+          }});
+          if(projectId&&['enable','disable','install'].includes(action)){
+            try{workspaceNative.broadcast('nozeli:workspace-control',{type:'imported-skills-changed',projectId},projectId);}catch(error){console.error('Local skill refresh notification',error.code??'IPC_UNAVAILABLE');}
+          }
+          return {ok:true,value};
+        }
+        if(!isMemory&&!/^store\.skills\.(list|install|uninstall|enable|disable)$/.test(op))throw new HostError('UNKNOWN_OP','未知商店操作。');
+        const project=projectId===undefined?null:await host.requireRegisteredProject(projectId);
+        if(isMemory&&action==='available'){
+          if(!project||Object.keys(businessPayload).some(key=>key!=='projectId'))throw new HostError('INVALID_PAYLOAD','技能项目参数无效。');
+          try{await storeSkills.use(contextTransfer,'frontdesk',project,assertCurrent,()=>null);}
+          catch(error){if(error.code==='STORE_SKILL_NOT_ENABLED')return {ok:true,value:false};throw error;}
+          assertCurrent();return {ok:true,value:true};
+        }
+        const value=isMemory?await storeSkills.use(contextTransfer,'frontdesk',project,assertCurrent,()=>managedAgents.frontdeskMemory(op,businessPayload,assertCurrent)):
+          await storeSkills.invoke(action,businessPayload,{project,assertCurrent,active:(id,role)=>id===contextTransfer&&role==='frontdesk'&&[...managedAgents.controllers.values()].some(c=>c.store.state.jobs.some(j=>(j.type==='frontdesk-memory'||['work-handoff','handoff-dispatch'].includes(j.context?.restrictedMode))&&['queued','running','transferring'].includes(j.status)))});
+        assertCurrent();return {ok:true,value};
+      }
       if(['project.lifecycle.preview','project.lifecycle.execute','project.lifecycle.reconcile'].includes(op)){
         if(scope.role!=='shell')throw new HostError('IPC_DENIED','只能在主窗口管理项目');
         const projectId=op==='project.lifecycle.execute'?projectLifecycle.tokens.get(payload.token)?.projectId:payload.projectId;
@@ -594,26 +732,32 @@ async function main() {
       }
       if(op==='project.retry'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可重试项目');await managedAgents.stopProject(payload.projectId);const value=await host.storage.retry(payload.projectId);workspaceNative.unavailableProjects?.delete(payload.projectId);return {ok:true,value};}
       if(op==='workspace.recovery.settle'){if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗可明确结算保留成果');return {ok:true,value:await projectLifecycle.settleManaged(payload)};}
+      if(['workspace.recovery.tree.preview','workspace.recovery.tree.settle'].includes(op)){
+        if(scope.role!=='shell')throw new HostError('IPC_DENIED','仅主窗口可核对文件操作');
+        const generation=scope.generation,owner=String(event.sender.id)+':'+generation;
+        const guard=()=>{if(scope.dead||scope.generation!==generation||event.sender.isDestroyed())throw new HostError('IPC_DENIED','核对窗口已变化，请重新查看。');};
+        return {ok:true,value:await treeRecovery[op.endsWith('.preview')?'preview':'settle'](payload,owner,guard)};
+      }
       if(op==='workspace.recovery.export'){
-        if(scope.role!=='shell'||!payload||Object.keys(payload).some(key=>!['projectId','id','revision','version','reference','receiptId'].includes(key))||typeof payload.id!=='string'||! /^(workspace:|managed:(pending:|object-pending:|publication:))/.test(payload.id)||!Number.isSafeInteger(payload.revision)||payload.revision<1||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version)||payload.reference!==undefined&&!['object','report','receipt'].includes(payload.reference))throw new HostError('IPC_DENIED','仅主窗口可导出其登记项目的恢复记录');
+        if(scope.role!=='shell'||!payload||Object.keys(payload).some(key=>!['projectId','id','revision','version','reference','receiptId'].includes(key))||typeof payload.id!=='string'||! /^(workspace:|tree-operation:|managed:(pending:|object-pending:|publication:))/.test(payload.id)||!Number.isSafeInteger(payload.revision)||payload.revision<1||typeof payload.version!=='string'||! /^[a-f0-9]{64}$/.test(payload.version)||payload.reference!==undefined&&!['object','report','receipt'].includes(payload.reference))throw new HostError('IPC_DENIED','仅主窗口可导出其登记项目的恢复记录');
         const {exportRecoveryRecord}=await import('./recovery-export.mjs');
         return {ok:true,value:await exportRecoveryRecord({storage:host.storage,dialog,scope,...payload})};
       }
       if(op==='workspace.capture.begin')return {ok:true,value:await workspaceCapture.begin(scope,payload??{})};
       if(op.startsWith('workspace.capture.'))return {ok:true,value:await workspaceCapture.invoke(event,op.slice('workspace.capture.'.length),payload??{})};
       if(op==='settings.appearance.read'||op==='settings.appearance.save'){
+        return await host.metaLock(async()=>{
         const file=path.join(app.getPath('userData'),'appearance.json');
         if(op==='settings.appearance.read'){
-          try{return {ok:true,value:JSON.parse(await fs.readFile(file,'utf8'))};}catch(error){if(error.code==='ENOENT')return {ok:true,value:null};throw error;}
+          return {ok:true,value:await host.readProfileRecord(file,{maxBytes:65536})};
         }
         if(!payload||Object.keys(payload).some(k=>!['theme','palette','font','size'].includes(k))||!['system','light','dark'].includes(payload.theme)||(Object.hasOwn(payload,'palette')&&!['sage','slate'].includes(payload.palette))||!['system','sans','serif','mono'].includes(payload.font)||!Number.isInteger(payload.size)||payload.size<12||payload.size>20)throw new HostError('INVALID_PAYLOAD','外观配置无效。');
         if(!Object.hasOwn(payload,'palette')){
           let palette='sage';
-          try{const previous=JSON.parse(await fs.readFile(file,'utf8'));if(['sage','slate'].includes(previous?.palette))palette=previous.palette;}catch(error){if(error.code!=='ENOENT')throw error;}
+          const previous=await host.readProfileRecord(file,{maxBytes:65536});if(['sage','slate'].includes(previous?.palette))palette=previous.palette;
           payload={...payload,palette};
         }
-        const {platformPersistence}=await import('../platform/shared/persistence.mjs');
-        await platformPersistence.writeAtomic(file,JSON.stringify(payload));
+        await host.writeProfileRecord(file,payload);
         workspaceNative.broadcast('nozeli:workspace-control',{type:'appearance',value:payload});
         // The explicit appearance choice is also Chromium's preferred scheme:
         // every renderer (including isolated report views) then resolves
@@ -622,6 +766,7 @@ async function main() {
         if(nativeTheme.themeSource!==payload.theme)nativeTheme.themeSource=payload.theme;
         isolatedPreview?.setAppearance({palette:payload.palette,mode:nativeTheme.shouldUseDarkColors?'dark':'light'});
         return {ok:true,value:payload};
+        });
       }
       if(['workspace.review.prepareDiscard','workspace.review.discard'].includes(op))return {ok:true,value:await runReviewDiscard({workspace:workspaceNative,managed:managedAgents,scope,payload:payload??{},prepare:op==='workspace.review.prepareDiscard'})};
       if(op==='workspace.review.decide'){
@@ -638,12 +783,12 @@ async function main() {
       if(op==='document.export.read')return {ok:true,value:await workspaceNative.documentExportRead(scope,payload??{})};
       if(op.startsWith('workspace.')){
         const priorProject=scope.projectId;
-        const value=await workspaceNative.invoke(scope,op,payload??{});
+        const value=await workspaceNative.invoke(scope,op,payload??{},openDeadline);
         if(op==='workspace.project'){
           if(priorProject&&priorProject!==scope.projectId)projectWatcher?.unwatchProject(priorProject);
           const activatedProjectId=scope.projectId;
           if(!guidedDemo.isDemo(activatedProjectId))void managedAgents.setActiveProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'managed-error',text:'Agent 资源状态未能更新，文件仍可打开：'+error.message},activatedProjectId));
-          if(activatedProjectId&&!guidedDemo.isDemo(activatedProjectId))void managedAgents.initializeProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'initialization-status',text:'项目资料尚未整理：'+error.message},activatedProjectId));
+          if(projectInitializationSupported()&&activatedProjectId&&!guidedDemo.isDemo(activatedProjectId))void managedAgents.initializeProject(activatedProjectId).catch(error=>workspaceNative.broadcast('nozeli:agent',{projectId:activatedProjectId,kind:'initialization-status',text:'项目资料尚未整理：'+error.message},activatedProjectId));
         }
         return {ok:true,value};
       }
@@ -718,7 +863,6 @@ async function main() {
         await shell.openExternal(url.href);
         return {ok:true,value:{opened:true}};
       }
-      if (op === 'session.takeOpen') { const file=externalFiles.shift();return {ok:true,value:file?await externalTarget(host,file):null}; }
       if (op === 'session.requestClose') {
         scope.win.close();
         return { ok: true, value: { closing: true } };
@@ -807,7 +951,7 @@ async function main() {
           if(payload.action==='cut')return;
           const affected=workspaceNative.projectRecords(projectId).filter(r=>r.relPath&&(!r.documentSource||r.documentSource.type==='project')&&payload.paths?.some(rel=>r.relPath===rel||r.relPath.startsWith(rel+'/')));
           for(const r of affected){
-            if(!r.ready||r.dead||r.held||r.transferring||r.recoveryHeld||r.contentFailed)throw new HostError('SOURCE_UNSAVED','请先保存并确认源文件状态。');
+            if(!r.ready||r.dead||r.held||r.transferring||r.recoveryHeld||r.treeRecoveryHolds?.size||r.contentFailed)throw new HostError('SOURCE_UNSAVED','请先保存并确认源文件状态。');
             let timer;try{const state=await Promise.race([r.wc.executeJavaScript('window.__nozeliUpdateState?.()'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('源文件仍在处理编辑')),3000);})]);if(!state?.ready||state.dirty||state.blocked)throw new HostError('SOURCE_UNSAVED','源文件存在未保存编辑或待处理操作，请先保存后再复制。');}finally{clearTimeout(timer);}
           }
           if(scope.dead||scope.projectId!==projectId||scope.generation!==generation)throw new HostError('PROJECT_SCOPE_DENIED','项目已切换，请重新复制文件。');
@@ -823,7 +967,11 @@ async function main() {
           for(const source of sources){
             await host.requireProject(source.id);
             const affected=workspaceNative.projectRecords(source.id).filter(record=>record.relPath&&(!record.documentSource||record.documentSource.type==='project')&&items.some(item=>{const rel=path.relative(item.source,path.join(source.root,record.relPath));return rel===''||rel!=='..'&&!rel.startsWith('..'+path.sep)&&!path.isAbsolute(rel);}));
-            if(affected.length)await workspaceNative.flush(affected);
+            for(const record of affected){
+              if(!record.ready||record.dead||record.held||record.transferring||record.recoveryHeld||record.treeRecoveryHolds?.size||record.contentFailed)throw new HostError('SOURCE_UNSAVED','源文件尚未保存或处于恢复状态，请先处理。');
+              const state=await record.wc.executeJavaScript('window.__nozeliUpdateState?.()');
+              if(!state?.ready||state.dirty||state.blocked)throw new HostError('SOURCE_UNSAVED','源文件有未保存编辑，请先保存后再复制。');
+            }
           }
           return {ok:true,value:await importClipboardFiles(fileTreeOps,items,request)};
         }
@@ -833,7 +981,7 @@ async function main() {
           // (destination) project only; the global authorize stays untouched.
           if (scope.role !== 'shell' || request.projectId !== scope.projectId) throw new HostError('PROJECT_SCOPE_DENIED', '只能在当前打开的目标项目中粘贴。');
         }
-        const perform=()=>workspaceNative.mutateTree(request,()=>fileTreeOps.run(request));
+        const perform=()=>workspaceNative.mutateTree(request,context=>fileTreeOps.run(request,context));
         const cross=request.sourceProjectId&&request.sourceProjectId!==request.projectId;
         return { ok:true, value:await (cross?host.storage.withProjectOperation(request.sourceProjectId,perform):perform()) };
       }
@@ -930,23 +1078,31 @@ async function main() {
         return {ok:true,value:await exportTimelineOriginal({managed:managedAgents,dialog,scope,...payload})};
       }
       if(typeof op==='string'&&op.startsWith('managed.')){
-        const historyOnly=['managed.initialization.status','managed.initialization.read','managed.initialization.cancel','managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.work.progress.read','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.timeline.locate','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
+        if(op==='managed.initialization.retry'){await host.requireRegisteredProject(payload.projectId);requireProjectInitializationSupport();}
+        const historyOnly=['managed.chat.read','managed.work.chat.read','managed.initialization.status','managed.initialization.read','managed.initialization.cancel','managed.collaboration.status','managed.model.options','managed.status','managed.maintenance.status','managed.fault.status','managed.fault.results','managed.work.control.status','managed.work.progress.read','managed.history.list','managed.history.read','managed.artifact.read','managed.artifact.list','managed.timeline.page','managed.timeline.read','managed.timeline.request','managed.timeline.locate','managed.changes.list','managed.changes.read','managed.worker.history','managed.resident.history','managed.draft','managed.disposition','managed.terminal.screen','managed.review.read','managed.review.instruction.read','managed.review.discussion.read'].includes(op);
         // Local disposition still passes sender/project/mutation authorization above.
-        const localDisposition=['managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
-        let blocked=piRuntimeError&&!historyOnly&&!localDisposition?piRuntimeError:null;
-        if(!blocked&&!historyOnly&&!localDisposition&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)blocked=new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
+        const localDisposition=['managed.chat.retract','managed.work.chat.retract','managed.end','managed.retry','managed.merge.consent','managed.merge.constraint','managed.deviation.resolve','managed.problem.resolve','managed.effect.response','managed.todo.manage','managed.attention.ack','managed.attention.respond','managed.attention.draft.read','managed.attention.draft.write','managed.review.save','managed.review.accept','managed.review.instruction.save'].includes(op);
+        const needsRuntime=!historyOnly&&!localDisposition&&!intakeRead&&!intakeWithdraw;
+        let blocked=needsRuntime?piRuntimeError:null;
+        if(!blocked&&needsRuntime&&(await readNozeliConfiguration(nozeliPaths)).choiceRequired)blocked=new HostError('CONFIG_SETUP_REQUIRED','请先完成Nozeli独立配置初始化；本地阅读不受影响。');
         if(blocked){if(payload.projectId){await host.requireRegisteredProject(payload.projectId);await managedAgents.reportConnectionError(payload.projectId,blocked);}throw blocked;}
         // One cross-project release action per click: main window only, so a
         // stray surface cannot act across project boundaries.
         if(op==='managed.fault.release'&&scope.role!=='shell')throw new HostError('IPC_DENIED','跨项目故障解除仅允许主窗口。');
+        if((op==='managed.skill.options'||businessPayload.importedSkill!==undefined)&&scope.role!=='shell'&&scope.role!=='review-discussion'&&!(scope.role==='surface'&&scope.kind==='conversation'&&scope.projectId===businessPayload.projectId))throw new HostError('IPC_DENIED','技能选择仅可从对应角色工作面发起。');
+        if(businessPayload.importedSkill!==undefined&&!['managed.send','managed.task','managed.work.chat.send','managed.review.discussion.send','workspace.reviewDiscussion.receipt'].includes(op))throw new HostError('INVALID_PAYLOAD','该操作不接受本地技能。');
+        if(op==='managed.skill.options'&&scope.role==='surface'&&!['frontdesk','orchestrator'].includes(businessPayload.target))throw new HostError('IPC_DENIED','工作助手的技能只从所属讨论窗读取。');
+        if(op==='managed.skill.options')return {ok:true,value:await managedAgents.invoke(op,businessPayload)};
         if(op==='managed.review.discussion.send')return {ok:true,value:await runReviewDecision({workspace:workspaceNative,managed:managedAgents,host,payload:{...businessPayload,action:'discuss'}})};
-        const value=await managedAgents.invoke(op,businessPayload);workspaceNative.reviewDiscussions?.capture(scope,op,value);return {ok:true,value};
+        const options=op==='managed.model.set'&&scope.role==='review-discussion'?{assertModelScope:()=>trusted(event,op,payload)}:undefined;
+        const value=await managedAgents.invoke(op,businessPayload,null,options);workspaceNative.reviewDiscussions?.capture(scope,op,value);return {ok:true,value};
       }
       if (Object.hasOwn(agentHandlers, op)) return { ok: true, value: await agentHandlers[op](businessPayload) };
       const handler = Object.hasOwn(ops, op) ? ops[op] : null;
       if (!handler || op === 'project.pick') throw new HostError('UNKNOWN_OP', 'Unknown host operation.');
       if(op==='project.remove'){await finishDrawing({projectId:payload.projectId});return {ok:true,value:await projectLifecycle.removeProject(payload.projectId,{operationId:payload.operationId})};}
-      const value = await handler(host, businessPayload);
+      const retainedAnnotations=op==='annotation.list'&&scope.role==='surface'&&scope.kind==='document'?[...(scope.treeRecoveryHolds?.values()??[])].findLast(hold=>Array.isArray(hold.coldCapsule?.annotations?.annotations))?.coldCapsule.annotations:undefined;
+      const value = retainedAnnotations!==undefined?structuredClone(retainedAnnotations):op==='file.read'&&scope.role==='surface'&&scope.kind==='document'?await workspaceNative.readDocument(scope,businessPayload):await handler(host, businessPayload);
       if(['file.save','word.save','sheet.save'].includes(op)&&guidedDemo.isDemo(payload.projectId))await guidedDemo.recordTutorialSave(scope,op,payload,value);
       return { ok: true, value };
       };
@@ -954,7 +1110,12 @@ async function main() {
       // Only a genuine registered storage hold enters withLifecycleOwner; a
       // workspace-close receipt owner was already authorized precisely above.
       if(flushOwner&&host.storage.lifecycleHolds.get(scope.projectId)===flushOwner)return await host.storage.withLifecycleOwner(scope.projectId,flushOwner,execute);
-      const control=op==='demo.create'||op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['managed.collaboration.status','managed.model.options','project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export'].includes(op);
+      const control=op==='demo.create'||op==='demo.exit'||op.startsWith('session.')||op.startsWith('project.lifecycle.')||['managed.collaboration.status','managed.model.options','project.pick','project.remove','project.retry','project.recent','workspace.closeProject','workspace.recovery.settle','workspace.bootstrap','workspace.recovery','workspace.recovery.list','workspace.recovery.detail','workspace.recovery.object','workspace.recovery.export','workspace.recovery.tree.preview','workspace.recovery.tree.settle'].includes(op);
+      if(openDeadline!==undefined&&admissionProject){
+        const waiting=new Promise((_,reject)=>{admissionTimer=setTimeout(()=>reject(new HostError('REVIEW_OPEN_TIMEOUT','打开讨论超时：等待项目准入。请重试')),Math.max(0,openDeadline-performance.now()));});
+        try{return await Promise.race([waiting,host.storage.withProjectOperation(admissionProject,execute)]);}
+        finally{clearTimeout(admissionTimer);}
+      }
       return admissionProject&&!control ? await host.storage.withProjectOperation(admissionProject,execute) : await execute();
     } catch (error) {
       if(['PROJECT_ROOT_MISSING','PROJECT_METADATA_MISSING','PROJECT_METADATA_CONFLICT','PROJECT_IDENTITY_CONFLICT'].includes(error.code)&&payload?.projectId)host.storage.onUnavailable(payload.projectId,error);
@@ -966,13 +1127,29 @@ async function main() {
   const startupConfiguration=await readNozeliConfiguration(nozeliPaths);
   // Confirmed local dispositions must finish even before AI setup is complete.
   void managedAgents.resumeUnfinishedProjects({hostOnly:!!piRuntimeError||startupConfiguration.choiceRequired}).catch(error=>console.error('Task restart recovery',error.message));
-  if(process.env.NOZELI_UPDATE_RECEIPT){await initialWindow.webContents.executeJavaScript('new Promise((resolve,reject)=>{const deadline=Date.now()+20000;const timer=setInterval(()=>{if(window.__nozeliReady){clearInterval(timer);resolve(true);}else if(Date.now()>deadline){clearInterval(timer);reject(Error("应用工作面尚未就绪"));}},50);})');await acknowledgeUpdateHealth({appRoot:APP_ROOT});}
+  if(process.platform==='win32'&&!installedBinding&&process.env.NOZELI_UPDATE_RECEIPT){
+    delete process.env.NOZELI_UPDATE_RECEIPT;
+    delete process.env.NOZELI_UPDATE_TOKEN;
+    console.error('Windows update health handoff rejected: original installation unavailable');
+  }
+  if((process.env.NOZELI_UPDATE_RECEIPT||autoUpdater.windowsAwaitingAcknowledgment)&&autoUpdater.status().checksSupported){
+    await initialWindow.webContents.executeJavaScript('new Promise((resolve,reject)=>{const deadline=Date.now()+20000;const timer=setInterval(()=>{if(window.__nozeliReady){clearInterval(timer);resolve(true);}else if(Date.now()>deadline){clearInterval(timer);reject(Error("应用工作面尚未就绪"));}},50);})');
+    if(autoUpdater.windowsAwaitingAcknowledgment){
+      try{
+        const {acknowledgeWindowsUpdateRecoveryHealth}=await import('./auto-update-windows.mjs');
+        await acknowledgeWindowsUpdateRecoveryHealth({appRoot:APP_ROOT,stateDir:path.join(app.getPath('userData'),'updates')});
+        await autoUpdater.refreshWindowsRecovery();
+      }catch(error){console.error('Windows update recovery health acknowledgment rejected:',error.message);}
+    }
+    else await acknowledgeUpdateHealth({appRoot:APP_ROOT});
+  }
   const shutdownForQuit=async()=>{
     autoUpdater?.stop();
     await projectSearch.stop();
     await texManager?.stopAll();
     await texLanguage?.stopAll();
     await lspManager?.stopAll();
+    await externalRouting?.settled();
     await workspaceNative.projectTerminals.stopAll().catch(error=>console.error('project terminal cleanup failed',error.message));
     await host.settled();
     await adminAgent?.stop().catch(error=>console.error('admin cleanup failed',error.message));

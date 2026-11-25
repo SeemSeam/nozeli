@@ -33,6 +33,10 @@ export function decodeRecoveryBytes(value) {
 }
 
 export function recoveryPptModel(value) {
+  // A model that is absent is reported as exactly that; only a present but
+  // unusable model is "invalid or oversized". An original source read never
+  // reaches here: it holds no editing proof to validate.
+  if (value === undefined) throw invalid('PPTX 恢复缺少编辑模型；未把原件当作编辑成果。');
   const text = JSON.stringify(value);
   if (!text || text.length > LIMIT) throw invalid('PPTX 恢复模型无效或过大。');
   const model = JSON.parse(text);

@@ -1,7 +1,7 @@
 import {treeMenuItems} from '../main/file-tree-menu.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {panelButton,panelMenuPosition,menuNotice} from './panel-menu.mjs';
-export function mountFileTreeActions({ invoke, projectId, perform, open, openAt, targets=()=>[], quickOpen, selection=()=>[], openExternal, label, collapse, refresh, toast, visibility, changeVisibility }) {
+export function mountFileTreeActions({ invoke, projectId, perform, open, openAt, targets=()=>[], quickOpen, selection=()=>[], openExternal, label, collapse, refresh, toast, visibility, changeVisibility,dropFiles=files=>window.nozeli.fileDrop(files) }) {
   const tree = document.getElementById('file-tree');
   tree.tabIndex = 0;
   let buffer = null, busy = false, menuVersion = 0;
@@ -71,7 +71,7 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
         if(!clip){toast('剪贴板中没有可粘贴的文件');return;}
         if(clip.kind==='external'){
           const names=clip.items.map(item=>item.name);
-          if(!await confirmBatch('从系统剪贴板复制文件',names,destination||'项目根目录'))return;
+          if(!await confirmBatch(clip.origin==='drop'?'复制拖入的文件':'从系统剪贴板复制文件',names,destination||'项目根目录'))return;
           if(ctx.projectId!==projectId())throw Error('项目已切换，请重新选择操作。');
           let result;
           try {result=await perform({projectId:ctx.projectId,action:'import',ticket:clip.ticket,target:destination});}
@@ -127,8 +127,8 @@ export function mountFileTreeActions({ invoke, projectId, perform, open, openAt,
     if(action){e.preventDefault();e.stopPropagation();void execute(action,target(node));}
   });
   tree.addEventListener('dragstart',event=>{const node=event.target.closest('button[data-path]');if(!node)return;const ctx=target(node);event.dataTransfer.setData('application/x-nozeli-files',JSON.stringify({projectId:ctx.projectId,paths:sources(ctx)}));event.dataTransfer.effectAllowed='copyMove';});
-  tree.addEventListener('dragover',event=>{event.preventDefault();for(const b of tree.querySelectorAll('.tree-drop-target'))b.classList.remove('tree-drop-target');event.target.closest('button.dir')?.classList.add('tree-drop-target');if(event.dataTransfer)event.dataTransfer.dropEffect=event.ctrlKey||event.metaKey?'copy':'move';});
+  tree.addEventListener('dragover',event=>{event.preventDefault();for(const b of tree.querySelectorAll('.tree-drop-target'))b.classList.remove('tree-drop-target');event.target.closest('button.dir')?.classList.add('tree-drop-target');if(event.dataTransfer)event.dataTransfer.dropEffect=Array.from(event.dataTransfer.types).includes('application/x-nozeli-files')?event.ctrlKey||event.metaKey?'copy':'move':'copy';});
   tree.addEventListener('dragleave',event=>event.target.closest('.tree-drop-target')?.classList.remove('tree-drop-target'));
-  tree.addEventListener('drop',event=>{event.preventDefault();for(const b of tree.querySelectorAll('.tree-drop-target'))b.classList.remove('tree-drop-target');try{const raw=event.dataTransfer.getData('application/x-nozeli-files');if(!raw)throw Error('不接受外部文件拖入；请使用复制、粘贴。');const data=JSON.parse(raw);if(data.projectId!==projectId())throw Error('不能跨项目拖动文件。');if(!Array.isArray(data.paths)||!data.paths.length||data.paths.some(p=>typeof p!=='string'||!p||p.startsWith('/')||p.split('/').includes('..')))throw Error('无效拖动路径');const ctx=target(event.target.closest('button[data-path]'));const dropped={projectId:data.projectId,source:data.paths[0],sources:data.paths,action:event.ctrlKey||event.metaKey?'copy':'cut'};void execute('paste',ctx,dropped);}catch(error){toast(error.message);}});
+  tree.addEventListener('drop',event=>{event.preventDefault();for(const b of tree.querySelectorAll('.tree-drop-target'))b.classList.remove('tree-drop-target');const ctx=target(event.target.closest('button[data-path]'));void(async()=>{try{const raw=event.dataTransfer.getData('application/x-nozeli-files');if(!raw){const result=await dropFiles([...event.dataTransfer.files]);if(!result.ok)throw Error(result.error.message);await execute('paste',ctx,result.value);return;}const data=JSON.parse(raw);if(data.projectId!==projectId())throw Error('不能跨项目拖动文件。');if(!Array.isArray(data.paths)||!data.paths.length||data.paths.some(p=>typeof p!=='string'||!p||p.startsWith('/')||p.split('/').includes('..')))throw Error('无效拖动路径');const dropped={projectId:data.projectId,source:data.paths[0],sources:data.paths,action:event.ctrlKey||event.metaKey?'copy':'cut'};await execute('paste',ctx,dropped);}catch(error){toast(error.message);}})();});
   paint();return {paint};
 }

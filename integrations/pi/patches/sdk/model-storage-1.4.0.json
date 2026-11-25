@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "package": "@earendil-works/pi-coding-agent",
+  "version": "1.4.0",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "dist/core/model-config.js",
+      "upstreamSha256": "b4ecb1165c328fdb5f8b767519f2b632c31737f86d0ce1d7a05959e7c8354d93",
+      "sha256": "a5997ad8be612abf4634b90812b8d066d0d75015432b6da5fddbcf23ee7dd27c",
+      "replacements": [
+        {
+          "before": "static async load(modelsJsonPath) {",
+          "after": "static async load(modelsJsonPath, readContent) {"
+        },
+        {
+          "before": "content = await readFile(path, \"utf-8\");",
+          "after": "content = readContent ? await readContent(path) : await readFile(path, \"utf-8\");"
+        },
+        {
+          "before": "catch (error) {\n            if (error.code === \"ENOENT\")",
+          "after": "catch (error) {\n            if (readContent) throw error;\n            if (error.code === \"ENOENT\")"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/model-runtime.js",
+      "upstreamSha256": "44d8017928eff6721d5a56b4e71f98bcafb124f5aa6e7d3f016491e11fcf6461",
+      "sha256": "7517048d6b608de3c04e3d757add727384ba430231a7bda59b99b54baaf46283",
+      "replacements": [
+        {
+          "before": "const config = await ModelConfig.load(modelsPath);",
+          "after": "const loadModelConfig = options.loadModelConfig ?? (path => ModelConfig.load(path));\n        const config = await loadModelConfig(modelsPath);"
+        },
+        {
+          "before": "runtime.configureRadiusProviders();\n        runtime.rebuildProviders();",
+          "after": "runtime.loadModelConfig = loadModelConfig;\n        runtime.configureRadiusProviders();\n        runtime.rebuildProviders();"
+        },
+        {
+          "before": "this.config = await ModelConfig.load(this.modelsPath);",
+          "after": "this.config = await (this.loadModelConfig ?? (path => ModelConfig.load(path)))(this.modelsPath);"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/models-store.js",
+      "upstreamSha256": "acef4e29470ea2ed5adc4f8e8d4981e9214c79ebf4e7eba4ad705ff81da68ed4",
+      "sha256": "fd4e7cf29ca5506cd3de2e614d195ccdd62e8ebc188c042f47a34e9b16b9ee57",
+      "replacements": [
+        {
+          "before": "constructor(path = join(getAgentDir(), \"models-store.json\")) {\n        this.path = normalizePath(path);\n        this.storage = new FileAuthStorageBackend(this.path);",
+          "after": "constructor(path = join(getAgentDir(), \"models-store.json\"), storage) {\n        this.path = storage ? undefined : normalizePath(path);\n        this.storage = storage ?? new FileAuthStorageBackend(this.path);"
+        },
+        {
+          "before": "sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };",
+          "after": "this.path && sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };"
+        },
+        {
+          "before": "if (!sharedModelsFileReadState) {",
+          "after": "if (this.path && !sharedModelsFileReadState) {"
+        },
+        {
+          "before": "getFileRevision(this.path)",
+          "after": "(this.path ? getFileRevision(this.path) : undefined)"
+        },
+        {
+          "before": "options?.signal?.throwIfAborted();\n        const revision =",
+          "after": "options?.signal?.throwIfAborted();\n        if (!this.path) return this.reloadFromStorage(readState, options);\n        const revision ="
+        }
+      ]
+    },
+    {
+      "path": "dist/core/model-config.d.ts",
+      "upstreamSha256": "dc3f9f514227aa156da1e0bf1d8b3d332b2dc0bbaf56bbef20c8b0a100fe5381",
+      "sha256": "bf014e9d8238268a395dea6f95c8b0327e53571a992c8cff70ae3f3c7445c388",
+      "replacements": [
+        {
+          "before": "static load(modelsJsonPath: string | undefined): Promise<ModelConfig>;",
+          "after": "static load(modelsJsonPath: string | undefined, readContent?: (path: string) => string | Promise<string>): Promise<ModelConfig>;"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/model-runtime.d.ts",
+      "upstreamSha256": "5a7aac47a83c20316f593c74798f60ec4e521a0fddff03a0608dbc5514012bf5",
+      "sha256": "66f7431db1066167d527b528fae801dcf6390b279de0ab95ea0087df1aa9af23",
+      "replacements": [
+        {
+          "before": "export interface CreateModelRuntimeOptions {",
+          "after": "import type { ModelConfig } from \"./model-config.ts\";\nexport interface CreateModelRuntimeOptions {"
+        },
+        {
+          "before": "    modelsPath?: string | null;",
+          "after": "    modelsPath?: string | null;\n    /** Optional models.json loader, reused by refresh. Defaults to ModelConfig.load. */\n    loadModelConfig?: (path: string | undefined) => ModelConfig | Promise<ModelConfig>;"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/models-store.d.ts",
+      "upstreamSha256": "33f6ba12e7ce9825f7420f081f6bc48fa0d5f4065a3c339592723ea19fd59fba",
+      "sha256": "7c5e31f58d6c5efc48c4ce75ce43b3603affb67441984349a3eb59ced39bf1b1",
+      "replacements": [
+        {
+          "before": "export declare class InMemoryCodingAgentModelsStore",
+          "after": "import type { AuthStorageBackend } from \"./auth-storage.ts\";\nexport declare class InMemoryCodingAgentModelsStore"
+        },
+        {
+          "before": "    constructor(path?: string);",
+          "after": "    constructor(path?: string, storage?: Pick<AuthStorageBackend, \"withLockAsync\">);"
+        }
+      ]
+    },
+    {
+      "path": "dist/utils/paths.js",
+      "upstreamSha256": "d5d48c2b2b2442c7e72aee6e98a79d828a52dce9526b152288186834c1dcf4a5",
+      "sha256": "95a0ddc25bff9d6609a709c5945a47a574ada7c5699a926f46258e2233a42d37",
+      "replacements": [
+        {
+          "before": "    if (options.expandTilde ?? true) {\n        const home = options.homeDir ?? homedir();\n        if (normalized === \"~\")\n            return home;\n        if (normalized.startsWith(\"~/\") || (process.platform === \"win32\" && normalized.startsWith(\"~\\\\\"))) {\n            return join(home, normalized.slice(2));\n        }\n    }",
+          "after": "    if (options.expandTilde ?? true) {\n        if (normalized === \"~\")\n            return options.homeDir ?? homedir();\n        if (normalized.startsWith(\"~/\") || (process.platform === \"win32\" && normalized.startsWith(\"~\\\\\"))) {\n            return join(options.homeDir ?? homedir(), normalized.slice(2));\n        }\n    }"
+        }
+      ]
+    }
+  ]
+}

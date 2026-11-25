@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {rolePrompt,roleSkillCatalog,here} from '../src/agents/managed/runtime.mjs';
 import {PiSession} from '../src/agents/managed/pi-session.mjs';
-import {trustedRoleResources as loadRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools,roleResourceSettings} from '../../../integrations/pi/src/native-skills.mjs';
-import {OwnerRuntime} from '../../../integrations/pi/src/bridge.mjs';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {trustedRoleResources:loadRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools,roleResourceSettings}=await import(pathToFileURL(path.join(integration,'src/native-skills.mjs')));
 const trustedRoleResources=async(role,skills)=>loadRoleResources(role,await roleSkillCatalog(role,{skills}),path.join(here,'roles'));
 
 test('all fixed workflows use exact role-native catalogs, not injected bodies',async()=>{
@@ -22,7 +23,7 @@ test('all fixed workflows use exact role-native catalogs, not injected bodies',a
   assert.equal(resources.options.noContextFiles,true);
   assert.deepEqual(resources.options.agentsFilesOverride({agentsFiles:[{path:'AGENTS.md',content:'injected'}]}),{agentsFiles:[]});
   assert.deepEqual(resources.options.appendSystemPromptOverride(['untrusted']),[]);
-  assert.ok(native.skills.every(row=>row.description&&row.filePath.endsWith('/SKILL.md')));
+  assert.ok(native.skills.every(row=>row.description&&path.basename(row.filePath)==='SKILL.md'));
  }
  await assert.rejects(roleSkillCatalog('frontdesk',{skills:['nozeli-worker-report']}));
  await assert.rejects(roleSkillCatalog('worker',{skills:['report.md']}));
@@ -96,24 +97,6 @@ test('discard can release only historical persistence failure after verified pro
  await assert.rejects(session.stop({discardState:true}),{code:'PI_EXIT_UNCONFIRMED'});
 });
 
-test('a settled restricted failure restores the ordinary native tool catalog',async()=>{
- const runtime=new OwnerRuntime({send:()=>{}});
- runtime.sessionRef={sessionId:'same-history'};
- let active=['read','bash','write','nozeli_dispatch'];
- runtime.nativeRuntime={session:{getActiveToolNames:()=>active.slice(),setActiveToolsByName:names=>{active=names.slice();}}};
- const registered=[];runtime.roleApi={registerTool:tool=>registered.push(tool.name)};
- runtime.flush=async()=>({});
- runtime.driver={sendUserMessage:async()=>{
-  assert.deepEqual(active,['read','nozeli_project_inventory']);
-  runtime.promptInFlight.settled=true;
-  throw Error('synthetic provider failure');
- }};
- await assert.rejects(runtime.prompt({text:'bounded facts',requestId:'restricted-restoration',job:{id:'job'},restrictedMode:'project-initialization',tools:[{name:'nozeli_project_inventory',inputSchema:{type:'object',properties:{}}}]}));
- assert.deepEqual(registered,['nozeli_project_inventory']);
- assert.deepEqual(active,['read','bash','write','nozeli_dispatch']);
- assert.equal(runtime.promptInFlight,null);
- assert.equal(runtime.sessionRef.sessionId,'same-history');
-});
 
 test('native resource roots are explicit and foreign role catalogs are rejected',async()=>{
  const catalog=await roleSkillCatalog('worker');

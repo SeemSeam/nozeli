@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -6,6 +6,8 @@ import os from 'node:os';
 import { ensureProjectGit } from '../src/main/project-git.mjs';
 import { runGit } from '../src/agents/managed/git-runtime.mjs';
 
+// This suite exercises the default POSIX adapter; Windows has its own native suite.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@localhost', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@localhost' };
 const git = (root, args) => runGit(root, args, { env, encoding: 'utf8' });
 async function fixture(t) {

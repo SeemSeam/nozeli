@@ -14,7 +14,7 @@ async function fixture() {
   await writeFile(path.join(root, 'src', 'data.json'), '{"name":"Nozeli","items":[1,2]}');
   await writeFile(path.join(root, 'src', 'style.css'), 'body{color:red;margin:0  ;}\n');
   const host = new DesktopHost(userData); const opened = await host.pick(root);
-  return { root, userData, host, projectId: opened.project.id, async cleanup() { await rm(root, { recursive: true, force: true }); await rm(userData, { recursive: true, force: true }); } };
+  return { root, userData, host, projectId: opened.project.id, async cleanup() { await host.storage.db.close(); await rm(root, { recursive: true, force: true }); await rm(userData, { recursive: true, force: true }); } };
 }
 
 test('real Prettier formats TypeScript JSON and CSS in memory', async () => {

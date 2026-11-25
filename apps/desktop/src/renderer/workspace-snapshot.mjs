@@ -420,7 +420,7 @@ export function mountWorkspaceSnapshot({invoke,getProjectId,toast=()=>{},openCon
     cardStatusLine=document.createElement('span');cardStatusLine.className='snapshot-card-status';cardStatusLine.setAttribute('role','status');cardStatusLine.hidden=true;cardHeading.append(cardStatusLine);
     const row=document.createElement('div');row.className='snapshot-card-actions snapshot-card-secondary';row.hidden=true;
     cardSend=document.createElement('button');cardSend.type='button';setActionButton(cardSend,'send',{label:'发送讨论'});cardSend.className='snapshot-card-send';
-    cardTask=document.createElement('button');cardTask.type='button';cardTask.textContent='提交后台任务';cardTask.className='snapshot-card-task';cardTask.title='将当前要求与同一冻结截图交给后台，不先等待前台回复';
+    cardTask=document.createElement('button');cardTask.type='button';cardTask.textContent='后台任务';cardTask.className='snapshot-card-task';cardTask.title='将当前要求与同一冻结截图交给后台，不先等待前台回复';
     const primary=document.createElement('div');primary.className='snapshot-card-actions snapshot-card-primary';primary.setAttribute('role','group');primary.setAttribute('aria-label','提交方式');
     const composer=document.createElement('div');composer.className='tag-composer snapshot-card-composer';
     cardDraft=document.createElement('button');cardDraft.type='button';cardDraft.textContent='加入对话草稿';cardDraft.className='snapshot-card-local';

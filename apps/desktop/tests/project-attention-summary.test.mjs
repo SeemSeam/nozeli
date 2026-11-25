@@ -78,6 +78,11 @@ test('directory loss is unknown, does not invalidate or stop owners, and recover
  const {dir,read,host}=await fixture(t);
  const [before]=await read();assert.equal(before.pendingCount,0);
  host.storage.onUnavailable=forbidden;
+ if(process.platform==='win32'){
+  await assert.rejects(fs.rename(dir,dir+'-away'),{code:'EBUSY'});
+  const [pinned]=await read();assert.equal(pinned.complete,true);assert.equal(pinned.pendingCount,0);
+  assert.equal(host.storage.unavailable.size,0);return;
+ }
  await fs.rename(dir,dir+'-away');
  const [missing]=await read();assert.equal(missing.complete,false);assert.equal(missing.pendingCount,null);assert.equal(missing.freshness,'unknown');
  assert.equal(host.storage.unavailable.size,0);

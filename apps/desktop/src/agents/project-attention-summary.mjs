@@ -15,17 +15,13 @@ function validateState(state){
  if(!object(state)||collections.some(key=>!Array.isArray(state[key])||state[key].some(row=>!object(row)||typeof row.id!=='string')))throw fail('ATTENTION_FACTS_INCOMPLETE');
  return state;
 }
-async function directory(root,expected){
- const stat=await fs.lstat(root);
- if(!expected||!stat.isDirectory()||stat.isSymbolicLink()||String(stat.dev)!==String(expected.dev)||String(stat.ino)!==String(expected.ino)||await fs.realpath(root)!==root)throw fail('PROJECT_IDENTITY_CONFLICT');
-}
 // Deliberately not requireOnline: its failure path invalidates the project and
 // stops owners. A sidebar read must never enter that lifecycle mutation path.
 async function available(storage,project){
  storage.assertActive?.(project.id);
  if(storage.unavailable?.has(project.id))throw fail('PROJECT_UNAVAILABLE');
- await directory(project.root,project.identity);
- await directory(project.metadataRoot,project.metadataIdentity);
+ await storage.io.directoryIdentity(project.root,project.identity);
+ await storage.io.directoryIdentity(project.metadataRoot,project.metadataIdentity);
  for(const name of ['project.json','project.sqlite','project.sqlite-journal','project.sqlite-wal','project.sqlite-shm']){
   let stat;try{stat=await fs.lstat(path.join(project.metadataRoot,name));}catch(error){if(error.code==='ENOENT'&&!['project.json','project.sqlite'].includes(name))continue;throw error;}
   if(!stat.isFile()||stat.isSymbolicLink())throw fail('PROJECT_METADATA_CONFLICT');

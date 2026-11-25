@@ -2,6 +2,7 @@ import './admin-agent.css';
 import './local-window.css';
 import {mountLocalWindow,ensureLocalWindowLayer,viewportWindowEnvironment} from './local-window.mjs';
 import {setActionButton} from './ui-actions.mjs';
+import {renderTagMarkdown} from './tag-markdown.mjs';
 
 // One application-owned surface. No project identity, materials, or pane store.
 export function mountAdminAgent({invoke,onOpenProject,document=window.document}) {
@@ -11,6 +12,10 @@ export function mountAdminAgent({invoke,onOpenProject,document=window.document})
  const caption=node('span',null,{class:'admin-caption'});caption.append(node('span','nozeli 全局助手',{class:'admin-title'}));
  const button=(parent,label,id,run)=>{const b=node('button',label,{type:'button',...(id?{id}: {})});b.onclick=()=>void run().catch(report);parent.append(b);return b;};
  const error=node('p','',{id:'admin-error',role:'alert'}),notice=node('p','',{id:'admin-notice',role:'status','aria-live':'polite'});
+ const skillStatus=node('p',null,{role:'status','data-admin-skill-status':''});
+ const skillHandoff=node('section',null,{class:'admin-proposal admin-skill-handoff',hidden:''});
+ skillHandoff.append(node('strong','本地技能移植'),skillStatus);
+ const returnToStore=button(skillHandoff,'返回资源商店','admin-return-store',async()=>{await hide();document.querySelector('#local-resource-store:not([hidden]) [data-import-candidate], #local-resource-store:not([hidden]) [data-import-action="analyze"]')?.focus();});
  let state=null,localDraft='',dirty=false,edit=0,working=false,submitting=false,timer=null,polling=false,disposed=false,queue=Promise.resolve(),saveFlight=null,viewReady=null,opening=null;
  let composing=false;
  const forceControls=new Map(),forceAttempts=new Set();
@@ -34,7 +39,7 @@ export function mountAdminAgent({invoke,onOpenProject,document=window.document})
  const retry=button(footer,'重试保存草稿','admin-retry-draft',()=>saveDraft());retry.hidden=true;
  const cancel=button(footer,'停止生成','admin-cancel',()=>mutate('cancel',{}));cancel.hidden=true;
  const delivery=node('div',null,{class:'tag-delivery'});delivery.append(error,notice);
- footer.append(draftNote);form.append(input,send,footer);content.append(projects,quick,transcript,form,delivery);
+ footer.append(draftNote);form.append(input,send,footer);content.append(projects,quick,skillHandoff,transcript,form,delivery);
  const layer=ensureLocalWindowLayer(document.body);
  const environment=viewportWindowEnvironment(layer,{defaultRect:()=>{const bounds=windowBounds();const width=Math.min(560,bounds.width),height=Math.min(640,bounds.height);return {x:bounds.x+(bounds.width-width)/2,y:bounds.y,width,height};}});
  const measure=environment.measure;environment.measure=()=>{const measured=measure(),bounds=windowBounds(),right=Math.min(measured.bounds.x+measured.bounds.width,bounds.x+bounds.width),bottom=Math.min(measured.bounds.y+measured.bounds.height,bounds.y+bounds.height);const x=Math.max(measured.bounds.x,bounds.x),y=Math.max(measured.bounds.y,bounds.y);return {...measured,bounds:{x,y,width:Math.max(0,right-x),height:Math.max(0,bottom-y)}};};
@@ -78,30 +83,81 @@ export function mountAdminAgent({invoke,onOpenProject,document=window.document})
  else if(p.status==='expired'||p.status==='stale')card.append(node('p','预览已过期，请从原项目行重新准备；必须重新核对并勾选确认。',{role:'status'}));
  const details=node('details',null,{class:'admin-proposal-details'});details.append(node('summary','恢复预览与执行回执'),node('pre',JSON.stringify(p,null,2)));card.append(details);return card;
  }
- function proposalRows(){forceControls.clear();for(const p of state.pendingChanges||[]){if(p.kind==='force-recovery'){proposals.append(forceCard(p));continue;}if(p.kind==='repair'){proposals.append(repairCard(p));continue;}const role=p.role||Object.keys(p.after||{}).find(key=>JSON.stringify(p.before?.[key])!==JSON.stringify(p.after?.[key]))||'角色';const card=node('article',null,{class:'admin-proposal','data-admin-proposal':p.id,'data-admin-proposal-kind':'defaults'});card.append(node('strong',role+' · 默认模型变更'),node('p','变更前：'+roleSummary(p.before?.[role])),node('p','变更后：'+roleSummary(p.after?.[role])),node('p','影响全局默认与同角色会话；项目覆盖保留。运行中会话可能延后应用。',{class:'admin-impact'}));
+ function developmentReceiptSummary(receipt){const submitted=receipt.status==='submitted'&&receipt.submitted===true&&typeof receipt.jobId==='string'&&receipt.jobId.trim();const result=submitted?'已提交开发任务（submitted），intake jobId：'+receipt.jobId+'；尚不代表开发完成':receipt.status==='blocked'&&receipt.submitted===false?'开发提交受阻（blocked），未提交任务':'开发提交结果未知（unknown），不会重复提交';return result+(receipt.message?'：'+receipt.message:'');}
+ function developmentCard(p){
+ const card=node('article',null,{class:'admin-proposal','data-admin-proposal':p.id,'data-admin-proposal-kind':'development'});
+ card.append(node('strong','项目开发提案'),node('p','开发类型：'+(p.developmentKind||'未报告')),node('p','项目：'+(p.project?.name||'未报告')),node('p','项目 ID：'+(p.project?.id||'未报告')),node('code',p.project?.root||'项目根目录未报告',{'data-admin-development-root':''}),node('p','完整开发请求：'),node('pre',p.request||'未报告',{'data-admin-development-request':''}),node('p',typeof p.scope==='string'?p.scope:JSON.stringify(p.scope??null),{class:'admin-impact','data-admin-development-scope':''}),node('p','使用已有项目上下文与权限；YOLO 普通 Worker 并非 OS 沙箱。输入快照在实际派工时生成，确认不冻结源码。接受成果可能包含本地 Git 整合提交；不会自动 push 或安装。',{class:'admin-impact'}),node('p','状态：'+p.status,{'data-admin-proposal-status':p.status}));
+ const key=JSON.stringify(['development',p.id,p.expectedVersion]),complete=[p.id,p.expectedVersion,p.project?.id,p.project?.name,p.project?.root,p.request].every(v=>typeof v==='string'&&v.trim())&&['skill','role','application'].includes(p.developmentKind)&&Boolean(p.scope);
+ if(p.status==='prepared'&&!p.receipt&&!forceAttempts.has(key)){
+ const label=node('label'),consent=node('input',null,{type:'checkbox','data-admin-development-consent':p.id});consent.checked=false;label.append(consent,node('span','我已核对目标项目和完整请求，理解使用已有项目上下文和非沙箱 Worker，接受可能产生本地提交；不自动安装或 push。'));card.append(label);
+ if(!complete)card.append(node('p','开发预览信息不完整，不能确认。请重新准备提案。',{role:'status'}));
+ const row=node('div',null,{class:'admin-actions'}),confirm=button(row,'确认提交开发任务',null,async()=>{if(working||state?.busy||!consent.checked||!complete||forceAttempts.has(key))return;forceAttempts.add(key);try{await mutate('confirm',{id:p.id,expectedVersion:p.expectedVersion,confirmDevelopment:true});}catch(e){if(e.code==='ADMIN_BUSY'){forceAttempts.delete(key);consent.checked=false;controls();}throw e;}});confirm.dataset.adminConfirm=p.id;forceControls.set(confirm,{consent,complete,key,development:true});consent.addEventListener('change',controls);const dismiss=button(row,'放弃开发提案',null,()=>mutate('dismiss',{id:p.id}));dismiss.dataset.adminDismiss=p.id;card.append(row);
+ }else if(p.status==='prepared'&&!p.receipt)card.append(node('p','开发提交结果未知（unknown），不会重复提交。',{role:'status'}));
+ if(p.receipt){card.append(node('p',developmentReceiptSummary(p.receipt),{'data-admin-development-receipt':p.receipt.status||'unknown',role:'status'}));if(p.receipt.status==='submitted'&&p.receipt.submitted===true&&typeof p.receipt.jobId==='string'&&p.receipt.jobId.trim()){const row=node('div',null,{class:'admin-actions'}),open=button(row,'打开目标项目查看任务',null,async()=>{const saved=await flushDraft();if(!saved.ok)throw Error(saved.error.message);const result=await serial(()=>call('openProject',{projectId:p.project.id}));await onOpenProject(result.projectId);await hide();});open.dataset.adminDevelopmentProject=p.project.id;card.append(row);}}
+ else if(p.status==='unknown')card.append(node('p','开发提交结果未知（unknown），不会重复提交。',{'data-admin-development-receipt':'unknown',role:'status'}));
+ const details=node('details',null,{class:'admin-proposal-details'});details.append(node('summary','开发提案与提交回执'),node('pre',JSON.stringify(p,null,2)));card.append(details);return card;
+ }
+ function proposalRows(){forceControls.clear();for(const p of state.pendingChanges||[]){if(p.kind==='development'){proposals.append(developmentCard(p));continue;}if(p.kind==='force-recovery'){proposals.append(forceCard(p));continue;}if(p.kind==='repair'){proposals.append(repairCard(p));continue;}const role=p.role||Object.keys(p.after||{}).find(key=>JSON.stringify(p.before?.[key])!==JSON.stringify(p.after?.[key]))||'角色';const card=node('article',null,{class:'admin-proposal','data-admin-proposal':p.id,'data-admin-proposal-kind':'defaults'});card.append(node('strong',role+' · 默认模型变更'),node('p','变更前：'+roleSummary(p.before?.[role])),node('p','变更后：'+roleSummary(p.after?.[role])),node('p','影响全局默认与同角色会话；项目覆盖保留。运行中会话可能延后应用。',{class:'admin-impact'}));
  const details=node('details',null,{class:'admin-proposal-details'});details.append(node('summary','完整变更 JSON'),node('pre',JSON.stringify({before:p.before,after:p.after},null,2)));card.append(details,node('p','状态：'+p.status));
  if(p.status==='prepared'){const row=node('div',null,{class:'admin-actions'});const confirm=button(row,'确认并保存',null,()=>mutate('confirm',{id:p.id,expectedVersion:p.expectedVersion}));confirm.dataset.adminConfirm=p.id;const dismiss=button(row,'放弃变更',null,()=>mutate('dismiss',{id:p.id}));dismiss.dataset.adminDismiss=p.id;card.append(row);}
  if(p.receipt){card.append(node('p',receiptSummary(p.receipt)));if(p.receipt.error)card.append(node('p',typeof p.receipt.error==='string'?p.receipt.error:p.receipt.error.message||p.receipt.error.code));const receipt=node('details');receipt.append(node('summary','完整执行回执'),node('pre',JSON.stringify(p.receipt,null,2)));card.append(receipt);}proposals.append(card);}}
+ let renderedMessages=[],followLatest=true;
+ function renderMessages(messages){
+  let shared=0;
+  while(shared<renderedMessages.length&&shared<messages.length&&renderedMessages[shared].id===messages[shared].id)shared++;
+  if(shared===renderedMessages.length&&shared===messages.length&&!followLatest)return;
+  const atEnd=followLatest||Math.abs(log.getBoundingClientRect().bottom-transcript.getBoundingClientRect().bottom)<32;
+  if(!renderedMessages.length||!messages.length)log.replaceChildren();
+  else for(let i=renderedMessages.length-1;i>=shared;i--)log.childNodes[i].remove();
+  for(const m of messages.slice(shared)){
+   const article=node('article',null,{class:'tag-message tag-message-'+m.role,'data-admin-message':m.id});
+   const body=node('div',null,{class:'agent-message-body'});
+   for(const block of m.blocks){
+    if(block.type==='text'){
+     const text=node('div');if(m.role==='assistant')renderTagMarkdown(text,block.text);else text.textContent=block.text;
+     body.append(text);
+    }else{
+     const label=block.type==='toolCall'?'调用工具：'+(block.name||'未命名'):block.type==='toolResult'?(block.error?'工具失败：':'工具返回：')+(block.name||'未命名'):block.reason==='aborted'?'生成已停止':'本次生成未完成';
+     body.append(node('div',label,{class:'admin-native-event'}));
+    }
+   }
+   article.append(node('strong',m.role==='user'?'你':m.role==='assistant'?'全局助手':'工具'),body);log.append(article);
+  }
+  if(!messages.length)log.append(node('p','有什么需要帮忙的？',{class:'tag-conversation-empty'}));
+  renderedMessages=messages;
+  if(atEnd&&messages.length){
+   transcript.scrollTop+=log.getBoundingClientRect().bottom-transcript.getBoundingClientRect().bottom;
+   followLatest=false;
+  }
+ }
  function update(next){state=next;if(!dirty&&!submitting&&!composing){localDraft=next.draft||'';if(input.value!==localDraft)input.value=localDraft;}
- replace('messages',log,next.messages||[],()=>{const visible=(next.messages||[]).filter(m=>typeof m.text==='string'&&m.text.trim());for(const m of visible){const article=node('article',null,{class:'tag-message tag-message-'+m.role,'data-admin-message':m.id});article.append(node('strong',m.role==='user'?'你':m.role==='assistant'?'全局助手':'系统'),node('div',m.text));log.append(article);}if(!visible.length)log.append(node('p','有什么需要帮忙的？',{class:'tag-conversation-empty'}));});
+ renderMessages(next.messages||[]);
  projectSummary.textContent='已登记项目 ('+(next.projects||[]).length+')';
  replace('projects',projectList,next.projects||[],projectRows);replace('proposals',proposals,next.pendingChanges||[],proposalRows);
  replace('suggestions',suggestions,next.suggestions||[],()=>{for(const item of next.suggestions||[]){const row=node('article',null,{class:'admin-project','data-admin-suggestion':item.id});if(item.action==='openProject'){row.append(node('strong',item.name||'建议打开项目'),node('code',item.root||''));const b=button(row,'打开建议的项目',null,async()=>{const result=await serial(()=>call('openProject',{projectId:item.projectId}));await onOpenProject(result.projectId);await hide();});b.dataset.adminSuggestedProject=item.projectId;}else if(item.action==='openSettings'){const labels={'settings-provider':'AI 连接与账号','settings-models':'默认模型','settings-appearance':'外观','settings-agents':'Agent 资源'};if(!labels[item.section])continue;button(row,'打开'+labels[item.section],null,()=>settings(item.section));}suggestions.append(row);}});
  notice.textContent=[next.busy?'正在生成…':!next.model?'请在默认模型设置中配置全局助手模型。':'',typeof next.error==='string'?next.error:next.error?.message||''].filter(Boolean).join(' ');controls();}
- function controls(){input.disabled=!state||submitting;send.disabled=!state||working||submitting||composing||state.busy||!state.model||!input.value.trim()||dirty&&Boolean(error.textContent);cancel.hidden=!state?.busy;cancel.disabled=working;for(const b of proposals.querySelectorAll('button')){const force=forceControls.get(b);b.disabled=working||Boolean(force&&(!force.complete||!force.consent.checked||forceAttempts.has(force.key)));}for(const {consent} of forceControls.values())consent.disabled=working;for(const b of projectList.querySelectorAll('[data-admin-prepare-force-recovery]'))b.disabled=working;draftNote.textContent=!state?'正在读取草稿…':dirty?'草稿尚未保存（保留在当前窗口）':'草稿已保存';retry.hidden=!dirty||!error.textContent;}
+ function controls(){input.disabled=!state||submitting;send.disabled=!state||working||submitting||composing||state.busy||!state.model||!input.value.trim()||dirty&&Boolean(error.textContent);cancel.hidden=!state?.busy;cancel.disabled=working;for(const b of proposals.querySelectorAll('button')){const force=forceControls.get(b);b.disabled=working||Boolean(force&&(!force.complete||!force.consent.checked||forceAttempts.has(force.key)||force.development&&state?.busy));}for(const {consent,development} of forceControls.values())consent.disabled=working||Boolean(development&&state?.busy);for(const b of projectList.querySelectorAll('[data-admin-prepare-force-recovery]'))b.disabled=working;draftNote.textContent=!state?'正在读取草稿…':dirty?'草稿尚未保存（保留在当前窗口）':'草稿已保存';retry.hidden=!dirty||!error.textContent;}
  async function refresh(){return serial(async()=>{const next=await call('status');update(next);return next;});}
- async function mutate(op,payload){if(working)return;working=true;error.textContent='';controls();try{await serial(async()=>{const kind=(state?.pendingChanges||[]).find(p=>p.id===payload.id)?.kind;const next=await call(op,payload);update(next);if(next.receipt){const repair=kind==='repair'||(next.pendingChanges||[]).some(p=>p.kind==='repair'&&p.id===payload.id),force=kind==='force-recovery';notice.textContent=force?forceReceiptSummary(next.receipt):repair?repairReceiptSummary(next.receipt):receiptSummary(next.receipt);if(!(next.pendingChanges||[]).some(p=>p.receipt&&(p.id===payload.id||p.id===next.receipt.operationId))){const receipt=node('details',null,{'data-admin-receipt':''});receipt.append(node('summary','执行回执技术详情'),node('pre',JSON.stringify(next.receipt,null,2)));proposals.append(receipt);}}});}finally{working=false;controls();}}
+ async function mutate(op,payload){if(working)return;working=true;error.textContent='';controls();try{await serial(async()=>{const kind=(state?.pendingChanges||[]).find(p=>p.id===payload.id)?.kind;const next=await call(op,payload);update(next);if(next.receipt){const repair=kind==='repair'||(next.pendingChanges||[]).some(p=>p.kind==='repair'&&p.id===payload.id),force=kind==='force-recovery',development=kind==='development';notice.textContent=development?developmentReceiptSummary(next.receipt):force?forceReceiptSummary(next.receipt):repair?repairReceiptSummary(next.receipt):receiptSummary(next.receipt);if(!(next.pendingChanges||[]).some(p=>p.receipt&&(p.id===payload.id||p.id===next.receipt.operationId))){const receipt=node('details',null,{'data-admin-receipt':''});receipt.append(node('summary','执行回执技术详情'),node('pre',JSON.stringify(next.receipt,null,2)));proposals.append(receipt);}}});}finally{working=false;controls();}}
  function saveDraft(){if(saveFlight)return saveFlight;if(!dirty||!state)return Promise.resolve();error.textContent='';saveFlight=serial(async()=>{while(dirty){const text=localDraft,version=edit;try{const next=await call('draft',{text,expectedRevision:state.draftRevision});if(edit===version)dirty=false;update(next);}catch(e){report(e);try{update(await call('status'));}catch{}throw e;}}}).finally(()=>{saveFlight=null;controls();});return saveFlight;}
  input.addEventListener('input',()=>{localDraft=input.value;dirty=true;edit++;controls();void saveDraft().catch(report);});
  input.addEventListener('compositionstart',()=>{composing=true;controls();});
  input.addEventListener('compositionend',()=>{composing=false;controls();});
- form.onsubmit=event=>{event.preventDefault();if(send.disabled)return;void (async()=>{submitting=true;error.textContent='';controls();try{await saveDraft();const text=localDraft;await serial(async()=>{await call('send',{text,requestKey:crypto.randomUUID(),draftRevision:state.draftRevision});dirty=false;submitting=false;update(await call('status'));});}finally{submitting=false;controls();}})().catch(report);};
+ form.onsubmit=event=>{event.preventDefault();if(send.disabled)return;void (async()=>{submitting=true;error.textContent='';controls();try{await saveDraft();const text=localDraft;await serial(async()=>{await call('send',{text,requestKey:crypto.randomUUID(),draftRevision:state.draftRevision});dirty=false;submitting=false;followLatest=true;update(await call('status'));});}finally{submitting=false;controls();}})().catch(report);};
  input.onkeydown=event=>{if((event.ctrlKey||event.metaKey)&&event.key==='Enter'&&!event.isComposing){event.preventDefault();form.requestSubmit();}};
  function stopPoll(){clearTimeout(timer);timer=null;}
  async function poll(){if(disposed||localWindow.node.hidden||polling)return;polling=true;try{await refresh();}catch(e){report(e);}finally{polling=false;if(!localWindow.node.hidden&&!disposed)timer=setTimeout(poll,state?.busy?900:3000);}}
- async function hide(){await localWindow.hide();stopPoll();}
+ async function hide(){await localWindow.hide();stopPoll();skillHandoff.hidden=true;delete localWindow.node.dataset.storeAnalysis;}
  controls();
  function open(){if(disposed)return Promise.resolve();if(opening)return opening;if(!localWindow.node.hidden)return Promise.resolve();opening=(async()=>{if(!viewReady){viewReady=call('view.read').then(({state})=>localWindow.update({state:{...state,hidden:true}})).catch(error=>{viewReady=null;throw error;});}await viewReady;if(disposed)return;await localWindow.show();input.focus();stopPoll();await poll();})().catch(report).finally(()=>{opening=null;});return opening;}
+ async function openSkillAnalysis(){
+  localWindow.node.dataset.storeAnalysis='';skillHandoff.hidden=false;
+  skillStatus.textContent='正在准备分析。模型响应较慢时最多等待 60 秒；不会自动安装。';
+  await open();
+  if(localWindow.node.hidden)throw Error('管理助手窗口未能打开；未发送分析。');
+  returnToStore.focus({preventScroll:true});
+  return message=>{skillStatus.textContent=message;};
+ }
  const openEvent=()=>void open();window.addEventListener('nozeli-open-admin',openEvent);
  // The start page is replaced on project close. Observe only that host, not the
  // conversation DOM; opening remains the same application singleton.
@@ -112,5 +168,5 @@ export function mountAdminAgent({invoke,onOpenProject,document=window.document})
  async function flush(){const result=await flushDraft();if(!result.ok)return result;try{await localWindow.flush();return {ok:true};}catch(e){report(e);return {ok:false,error:{code:e.code||'ADMIN_VIEW_SAVE_FAILED',message:e.message}};}}
  function dispose(){disposed=true;stopPoll();observer.disconnect();window.removeEventListener('nozeli-open-admin',openEvent);window.removeEventListener('pagehide',dispose);return localWindow.dispose().catch(report);}
  window.addEventListener('pagehide',dispose,{once:true});
- return {open,close:hide,dispose,flush,getState:()=>({dirty:Boolean(dirty||saveFlight||composing||submitting||working),blocked:Boolean(dirty&&error.textContent)})};
+ return {open,openSkillAnalysis,close:hide,dispose,flush,getState:()=>({dirty:Boolean(dirty||saveFlight||composing||submitting||working),blocked:Boolean(dirty&&error.textContent)})};
 }

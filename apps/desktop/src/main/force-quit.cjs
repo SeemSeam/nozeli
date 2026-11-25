@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const path = require('node:path');
 
 // A captured birth tick and uid bind every signal to a descendant observed in
 // this invocation. Never signal a process group or rediscover by command name.
@@ -35,6 +36,11 @@ async function chromiumChild(pid, rootExecutable) {
 }
 
 async function snapshotDescendants(rootPid = process.pid) {
+  if (process.platform === 'win32') {
+    if (rootPid !== process.pid) throw Object.assign(new Error('Windows force-quit requires the current process root.'), {code:'PROCESS_ROOT_INVALID'});
+    return require('../../native/windows-process/build/Release/nozeli_windows_process.node')
+      .captureForceQuitDescendants(rootPid, !!process.versions.electron);
+  }
   if (process.platform !== 'linux') return [];
   const root = await identity(rootPid);
   if (!root || root.uid !== process.getuid()) return [];
@@ -75,6 +81,11 @@ async function snapshotDescendants(rootPid = process.pid) {
 }
 
 async function killSnapshot(snapshot, {active = () => true} = {}) {
+  if (process.platform === 'win32') {
+    try { if (active()) return snapshot.terminate(); }
+    finally { snapshot.close(); }
+    return;
+  }
   if (process.platform !== 'linux') return;
   // Leaves first: stopping a parent must not hide an already captured child.
   for (const captured of [...snapshot].reverse()) {
@@ -93,6 +104,20 @@ async function killSnapshot(snapshot, {active = () => true} = {}) {
 }
 
 async function killOwnedDescendants(options) {
+  if (process.platform === 'win32') {
+    if (options?.active?.() === false) return;
+    const {Worker} = require('node:worker_threads');
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, 'force-quit-worker.cjs'), {
+        execArgv: [], workerData: {rootPid: process.pid, preserveSameImage: !!process.versions.electron},
+      });
+      let received = false;
+      worker.once('message', result => { received = true; if (result.errorCode) reject(Object.assign(new Error('Native force-quit inspection was unconfirmed'), {code:result.errorCode})); else resolve(result); });
+      worker.once('error', reject);
+      worker.once('exit', () => { if (!received) reject(Object.assign(new Error('Native force-quit worker exited without confirmation'), {code:'FORCE_QUIT_CAPTURE_UNKNOWN'})); });
+      worker.unref();
+    });
+  }
   const snapshot = await snapshotDescendants();
   await killSnapshot(snapshot, options);
 }

@@ -5,6 +5,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {atomicJson, ownedDirectory, readJson, semver, compareVersions, detectInstallation, extractPackage, validatePackage, downloadFile, processIdentity, MAX_ARCHIVE} from './auto-update-files.mjs';
 import {acquireInstallLock} from './auto-update-helper.mjs';
+import {updatePlatformSupport, requireUpdatePlatform} from './auto-update-platform.mjs';
 import {prepareMacHelper} from './auto-update-macos.mjs';
 export {detectInstallation} from './auto-update-files.mjs';
 export {acknowledgeUpdateHealth} from './auto-update-helper.mjs';
@@ -14,9 +15,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const safeMessage = error => String(error?.message || error).replace(/https?:\/\/[^\s]+/g, '[release endpoint]').slice(0, 300);
 export function selectRelease(releases, currentVersion, platform = process.platform, arch = process.arch) {
   if (!Array.isArray(releases)) throw Error('Invalid release feed');
-  return releases.filter(release => !release.draft && semver(release.tag_name) && compareVersions(release.tag_name, currentVersion) > 0).map(release => {
+  const prereleases=semver(currentVersion)?.pre.length>0;
+  return releases.filter(release => !release.draft && semver(release.tag_name) && (prereleases||!release.prerelease&&!semver(release.tag_name).pre.length) && compareVersions(release.tag_name, currentVersion) > 0).map(release => {
     const version = semver(release.tag_name).version;
-    const suffix = platform === 'darwin' && arch === 'arm64' ? 'macos-arm64.zip' : platform === 'linux' && arch === 'x64' ? 'linux-x64.tar.gz' : null;
+    const suffix = platform === 'darwin' && arch === 'arm64' ? 'macos-arm64.zip' : platform === 'linux' && arch === 'x64' ? 'linux-x64.tar.gz' : platform === 'win32' && arch === 'x64' ? 'windows-x64.zip' : null;
     if (!suffix) return null;
     const name = 'Nozeli-' + version + '-' + suffix;
     const assets = release.assets || [];
@@ -90,7 +92,8 @@ export class AutoUpdater {
     this.testEndpoint = dependencies.allowLoopback === true;
     this.spawn = dependencies.spawn || spawn;
     this.clock = dependencies.now || Date.now;
-    this.state = {phase: 'stopped', currentVersion, availableVersion: null, progress: null, message: '', enabled, supported: false};
+    this.platformSupport = updatePlatformSupport();
+    this.state = {phase: this.platformSupport.checksSupported ? 'stopped' : 'unsupported', currentVersion, availableVersion: null, progress: null, message: this.platformSupport.checksSupported ? '' : this.platformSupport.policy, enabled: this.platformSupport.checksSupported && enabled, supported: false, ...this.platformSupport};
     this.initialized = false; this.running = null; this.installing = false; this.timer = null; this.idleTimer = null;
   }
   status() { return structuredClone(this.state); }
@@ -98,19 +101,32 @@ export class AutoUpdater {
     // detectInstallation collapses marker-less, marker-mismatched, and foreign-platform
     // layouts into null; broken real installations throw their own precise error instead.
     // None of the null cases is necessarily a source checkout, so never claim one.
+    if(process.platform==='win32'&&process.arch==='x64')return this.installation&&!this.installation.updater?'当前已登记安装不包含原生健康确认更新协议，仅检查更新；首次须手动安装支持该协议的版本':'当前为源码或未绑定原生安装所有权，仅检查 Windows 更新；通过正式独立安装入口安装支持更新的版本后重试';
     if (!(process.platform === 'linux' && process.arch === 'x64') && !(process.platform === 'darwin' && process.arch === 'arm64')) return '当前平台 ' + process.platform + '/' + process.arch + ' 暂不支持自动安装；保留当前版本，仅执行更新检查';
     return '当前平台或安装布局/权限不支持自动安装；保留当前版本；通过正式安装入口安装后重试';
   }
   async initialize() {
     if (this.initialized) return;
-    await fs.mkdir(this.options.stateDir, {recursive: true, mode: 0o700});
+    if (!this.platformSupport.checksSupported) { this.initialized = true; this.installation = null; return; }
+    if(process.platform!=='win32')await fs.mkdir(this.options.stateDir,{recursive:true,mode:0o700});
     await ownedDirectory(this.options.stateDir);
     const preferences = await readJson(path.join(this.options.stateDir, 'preferences.json')).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
     if (preferences && typeof preferences.enabled === 'boolean') this.state.enabled = preferences.enabled;
     this.installation = await detectInstallation(this.options.appRoot);
-    this.state.supported = Boolean(this.installation);
-    this.initialized = true;
+    this.state.supported=Boolean(this.installation&&(this.installation.kind!=='windows'||this.installation.updater===true));
+    if(process.platform!=='win32')this.initialized = true;
     // Persisted status is informational only. Candidates are never trusted across restarts.
+    if(process.platform==='win32'){
+      const recovered=await (await import('./auto-update-windows.mjs')).recoverWindowsUpdate({appRoot:this.options.appRoot,stateDir:this.options.stateDir});
+      if(recovered?.failedVersion){this.quarantinedVersion=recovered.failedVersion;this.state.failedVersion=recovered.failedVersion;}
+      if(recovered?.message)this.state.message=recovered.message;
+      this.windowsPending=recovered?.pending===true;
+      this.windowsRecoveryBlocked=recovered?.phase==='error'||recovered?.phase==='recovery-blocked';
+      this.windowsAwaitingAcknowledgment=recovered?.awaitingAcknowledgment===true;
+      if(recovered?.phase==='error'||recovered?.phase==='recovery-blocked')this.state.phase='error';
+      this.initialized = true;
+      return;
+    }
     const prior = await readJson(path.join(this.options.stateDir, 'handoff.json')).catch(() => null);
     if (prior?.phase === 'rolled-back' && semver(prior.version)) {
       this.quarantinedVersion = prior.version;
@@ -130,16 +146,33 @@ export class AutoUpdater {
       }
     }
   }
+  async refreshWindowsRecovery(){
+    if(process.platform!=='win32'||!this.initialized)return;
+    const recovered=await (await import('./auto-update-windows.mjs')).recoverWindowsUpdate({appRoot:this.options.appRoot,stateDir:this.options.stateDir});
+    this.windowsPending=recovered?.pending===true;
+    this.windowsRecoveryBlocked=['error','recovery-blocked'].includes(recovered?.phase);
+    this.windowsAwaitingAcknowledgment=recovered?.awaitingAcknowledgment===true;
+    if(recovered?.failedVersion){this.quarantinedVersion=recovered.failedVersion;this.state.failedVersion=recovered.failedVersion;}
+    if(recovered?.message)this.state.message=recovered.message;
+  }
   update(fields) {
     Object.assign(this.state, fields);
+    if (!this.platformSupport.checksSupported) {
+      Object.assign(this.state, {phase: 'unsupported', enabled: false, supported: false, progress: null, availableVersion: null, message: this.platformSupport.policy, ...this.platformSupport});
+      this.options.onStatus(this.status());
+      return;
+    }
     this.options.onStatus(this.status());
+    if(this.windowsInitializationFailed)return;
     // Queue state persistence to prevent an older progress write winning a newer phase.
     const snapshot = this.status();
     this.persist = (this.persist || Promise.resolve()).catch(() => {}).then(() => atomicJson(path.join(this.options.stateDir, 'status.json'), snapshot)).catch(() => {});
   }
   async setEnabled(enabled) {
     if (typeof enabled !== 'boolean') throw Error('enabled must be boolean');
+    if(this.windowsInitializationFailed)return this.status();
     await this.initialize();
+    if (!this.platformSupport.checksSupported) return this.status();
     await atomicJson(path.join(this.options.stateDir, 'preferences.json'), {enabled});
     this.update({enabled});
     if (!enabled) this.cancel();
@@ -147,6 +180,8 @@ export class AutoUpdater {
     return this.status();
   }
   async start() {
+    if (!this.platformSupport.checksSupported) { await this.initialize(); this.update({}); return this.status(); }
+    if(this.windowsInitializationFailed)return this.status();
     try {
       await this.initialize();
     } catch (error) {
@@ -156,11 +191,12 @@ export class AutoUpdater {
       clearInterval(this.timer); clearInterval(this.idleTimer);
       this.timer = this.idleTimer = null;
       this.controller?.abort();
+      if(process.platform==='win32')this.windowsInitializationFailed=true;
       this.update({phase: 'error', enabled: false, progress: null, message: 'Automatic updates disabled: ' + safeMessage(error)});
       return this.status();
     }
     if (this.timer) return this.status();
-    this.update({phase: this.recovery ? 'ready' : this.installation ? 'current' : 'unsupported', message: this.installation ? this.state.message : this.installationNotice()});
+    this.update({phase:this.windowsPending?'installing':this.windowsRecoveryBlocked?'error':this.recovery?'ready':this.state.supported?'current':'unsupported',message:this.state.supported?this.state.message:this.installationNotice()});
     this.timer = setInterval(() => { if (this.state.enabled) void this.check({automatic: true}); }, this.options.checkInterval); this.timer.unref?.();
     this.idleTimer = setInterval(() => { if (this.state.enabled) void this.installIfIdle(); }, this.options.idleInterval); this.idleTimer.unref?.();
     if (this.state.enabled) void this.check({automatic: true});
@@ -181,6 +217,7 @@ export class AutoUpdater {
     throw Error('Untrusted release URL');
   }
   async request(url, kind, signal) {
+    requireUpdatePlatform();
     const value = this.url(url, kind);
     // GitHub assets redirect to an HTTPS object store; fetch never carries credentials.
     // The production wiring installs a session guard that allowlists the host of every
@@ -195,6 +232,7 @@ export class AutoUpdater {
     return response;
   }
   async resolveTagCommit(tag, signal) {
+    requireUpdatePlatform();
     const base = new URL(this.tagApiBase);
     const loopback = this.testEndpoint && base.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(base.hostname);
     if ((!loopback && base.href !== 'https://api.github.com/repos/SeemSeam/nozeli') || base.username || base.password || base.search || base.hash) throw Error('Untrusted tag API');
@@ -218,15 +256,22 @@ export class AutoUpdater {
     throw Error('Annotated release tag exceeds peeling limit');
   }
   async check({automatic = false} = {}) {
+    if (!this.platformSupport.checksSupported) return this.status();
+    if(this.windowsInitializationFailed)return this.status();
     if (this.running) return this.running;
     if (this.installing) return this.status();
     this.running = this.performCheck({automatic}).finally(() => { this.running = null; });
-    return this.running;
+    const checked=this.running;
+    if(process.platform==='win32')void checked.then(status=>{if(status.phase==='ready'&&this.state.enabled)return this.installIfIdle();}).catch(()=>{});
+    return checked;
   }
   async performCheck({automatic = false} = {}) {
+    if (!this.platformSupport.checksSupported) return this.status();
     let staging, archive, timeout;
     try {
       await this.initialize();
+      await this.refreshWindowsRecovery();
+      if(this.windowsPending||this.windowsRecoveryBlocked){this.update({phase:'error',message:this.state.message||'原生更新交接尚待核验，未开始另一更新'});return this.status();}
       // Only an explicit host/user check opts into retrying a rolled-back release.
       if (!automatic) this.quarantinedVersion = null;
       if (this.recovery && this.candidate) { this.update({phase: 'ready', message: 'Interrupted update requires safe idle rollback'}); await this.installIfIdle(); return this.status(); }
@@ -250,14 +295,15 @@ export class AutoUpdater {
       const applicable = this.quarantinedVersion ? releases.filter(item => !semver(item.tag_name) || compareVersions(item.tag_name, this.quarantinedVersion) !== 0) : releases;
       const release = selectRelease(applicable, this.options.currentVersion);
       if (!release) {
-        this.update(this.quarantinedVersion ? {phase: 'error', availableVersion: this.quarantinedVersion, message: 'Update ' + this.quarantinedVersion + ' failed startup and was rolled back; automatic retry is paused. Check manually to retry.'} : {phase: this.installation ? 'current' : 'unsupported', availableVersion: null, message: 'No newer applicable release'});
+        this.update(this.quarantinedVersion ? {phase: 'error', availableVersion: this.quarantinedVersion, message: 'Update ' + this.quarantinedVersion + ' failed startup and was rolled back; automatic retry is paused. Check manually to retry.'} : {phase: this.state.supported ? 'current' : 'unsupported', availableVersion: null, message: 'No newer applicable release'});
         return this.status();
       }
       this.update({availableVersion: release.version});
-      if (!this.installation) { this.update({phase: 'unsupported', message: '新版本 ' + release.version + ' 可用；' + this.installationNotice()}); return this.status(); }
+      if (!this.state.supported) { this.update({phase: 'unsupported', message: '新版本 ' + release.version + ' 可用；' + this.installationNotice()}); return this.status(); }
       const expectedCommit = await this.resolveTagCommit(release.tag, signal);
       if (this.candidate?.version === release.version && this.candidate.commit === expectedCommit) {
-        await validatePackage(this.candidate.path, release.version, expectedCommit);
+        const validated=await validatePackage(this.candidate.path, release.version, expectedCommit);
+        if(this.installation.kind==='windows'&&validated.candidateDigest!==this.candidate.digest)throw Error('Staged Windows candidate changed');
         this.update({phase: 'ready', progress: null, message: 'Verified staged update reused; waiting for safe idle restart'});
         await this.installIfIdle();
         return this.status();
@@ -265,7 +311,20 @@ export class AutoUpdater {
       const manifest = await boundedText(await this.request(release.manifest, 'asset', signal), 256 * 1024, signal);
       const expected = manifestChecksum(manifest, release.name);
       const nonce = crypto.randomUUID();
-      archive = path.join(this.options.stateDir, 'download-' + nonce + (this.installation.kind === 'macos' ? '.zip' : '.tar.gz'));
+      if(this.installation.kind==='windows'){
+        // The archive's retained read lease excludes writers to its immediate
+        // parent. Keep concurrent status and preference writes one level up.
+        const {openExperimentalPersistenceParent}=await import('../platform/windows/experimental-persistence.mjs');
+        const name='download-'+nonce;
+        const parent=openExperimentalPersistenceParent(this.options.stateDir,name);
+        let directory;
+        try{
+          signal.throwIfAborted();
+          directory=parent.createPrivateTreeRootExclusive(name);
+          directory.syncDirectory();parent.syncDirectory();
+        }finally{try{directory?.close();}finally{parent.close();}}
+        archive=path.join(this.options.stateDir,name,'update.zip');
+      }else archive=path.join(this.options.stateDir,'download-'+nonce+(this.installation.kind==='macos'?'.zip':'.tar.gz'));
       this.update({phase: 'downloading', progress: {received: 0, total: 0}});
       let lastProgress = 0;
       await downloadFile({response: await this.request(release.archive, 'asset', signal), file: archive, expected, signal, onProgress: progress => {
@@ -274,23 +333,38 @@ export class AutoUpdater {
       this.update({phase: 'staging', progress: null});
       const base = this.installation.kind === 'managed' ? path.join(this.installation.root, 'releases') : this.installation.root;
       staging = path.join(base, '.nozeli-staging-' + nonce);
-      const extracted = await extractPackage(archive, staging, release.version, signal, expectedCommit);
+      const extracted = await extractPackage(archive, staging, release.version, signal, expectedCommit, expected);
       const candidate = path.join(base, '.nozeli-update-' + release.version + '-' + nonce + (this.installation.kind === 'macos' ? '.app' : ''));
-      await fs.rename(extracted, candidate); await fs.rmdir(staging); staging = null;
-      this.candidate = {path: candidate, version: release.version, commit: expectedCommit};
+      let digest;
+      if(this.installation.kind==='windows'){
+        const before=await validatePackage(extracted,release.version,expectedCommit);
+        if(before.autoUpdate!=='native-windows-health-v1')throw Error('Target Windows candidate does not implement update health acknowledgment');
+        await (await import('./auto-update-windows-package.mjs')).promoteWindowsUpdatePackage(extracted,candidate,this.installation.root,{signal});
+        const after=await validatePackage(candidate,release.version,expectedCommit);
+        if(after.candidateDigest!==before.candidateDigest)throw Error('Windows candidate changed during same-volume promotion');
+        digest=after.candidateDigest;
+      }else{await fs.rename(extracted,candidate);await fs.rmdir(staging);staging=null;}
+      this.candidate = {path: candidate, version: release.version, commit: expectedCommit, ...(digest?{digest}:{})};
       this.update({phase: 'ready', message: 'Update downloaded and verified; waiting for safe idle restart'});
       await this.installIfIdle();
     } catch (error) {
       this.update({phase: this.controller?.signal.aborted ? 'current' : 'error', message: this.controller?.signal.aborted ? 'Update cancelled' : safeMessage(error), progress: null});
     } finally {
       clearTimeout(timeout); this.controller = null;
-      if (archive) await fs.rm(archive, {force: true}).catch(() => {});
-      if (staging) await fs.rm(staging, {recursive: true, force: true}).catch(() => {});
+      // A native private staging allocation is retained on cancellation/error;
+      // pathname-only recursive deletion cannot prove ownership after drift.
+      if(process.platform!=='win32'){
+        if (archive) await fs.rm(archive, {force: true}).catch(() => {});
+        if (staging) await fs.rm(staging, {recursive: true, force: true}).catch(() => {});
+      }
     }
     return this.status();
   }
   async installIfIdle({manual=false} = {}) {
-    if (this.installing) return this.status();
+    if (!this.platformSupport.checksSupported) return this.status();
+    if(this.windowsInitializationFailed)return this.status();
+    if (this.installing || (process.platform==='win32'&&this.running)) return this.status();
+    if(this.windowsPending||this.windowsRecoveryBlocked)return this.status();
     if (!this.candidate) {
       if (manual) this.update({message: this.installation ? '请先检查更新，等待下载和校验完成后再安装' : this.installationNotice()});
       return this.status();
@@ -302,12 +376,28 @@ export class AutoUpdater {
     this.installing = true;
     let lock, helper, helperRuntime, shutdownAttempted = false;
     try {
+      if(process.platform==='win32'){
+        await this.refreshWindowsRecovery();
+        if(this.windowsPending||this.windowsRecoveryBlocked){this.update({phase:this.windowsPending?'installing':'error',message:this.state.message||'原生更新交接尚待核验'});return this.status();}
+      }
       const readiness = await canInstall(mode);
       if (!readiness?.ready) { this.update({phase: 'waiting-idle', message: readiness?.reason || 'Waiting for idle and no unsaved work'}); return this.status(); }
       // Revalidate installation identity immediately before taking the shared installer lock.
       const current = await detectInstallation(this.options.appRoot);
       if (!current || current.release !== this.installation.release || current.root !== this.installation.root) throw Error('Installation identity changed');
       const token = crypto.randomBytes(32).toString('hex');
+      if(current.kind==='windows'){
+        shutdownAttempted=true;
+        if(await prepareShutdown(mode)!==true){this.update({phase:'waiting-idle',message:'Shutdown guard declined update restart'});return this.status();}
+        const final=await canInstall(mode);if(!final?.ready){this.update({phase:'waiting-idle',message:final?.reason||'New work appeared before restart'});return this.status();}
+        const handoff=await (await import('./auto-update-windows.mjs')).startWindowsUpdateHelper({installation:current,candidate:this.candidate,version:this.candidate.version,expectedCommit:this.candidate.commit,stateDir:this.options.stateDir,token,parent:await processIdentity(process.pid),spawnProcess:this.spawn,clock:this.clock});
+        if(handoff?.token!==token||typeof handoff.cancel!=='function')throw Error('Windows helper did not retain the original update authority');
+        try{
+          const ready=await canInstall(mode);if(!ready?.ready){await handoff.cancel();this.update({phase:'waiting-idle',message:ready?.reason||'交接期间出现新活动，未退出更新'});return this.status();}
+          this.update({phase:'installing',message:'原生更新交接已确认，正在正常退出以切换版本'});await quit(mode);
+        }catch(error){await handoff.cancel();throw error;}
+        return this.status();
+      }
       if (!this.recovery) lock = await acquireInstallLock(current.root, token, {macos: current.kind === 'macos'});
       shutdownAttempted = true;
       if (await prepareShutdown(mode) !== true) { this.update({phase: 'waiting-idle', message: 'Shutdown guard declined update restart'}); return this.status(); }
@@ -362,7 +452,7 @@ export class AutoUpdater {
           if (helperRuntime) await fs.rm(helperRuntime.directory, {recursive: true, force: true});
         }
       }
-      if (this.state.phase !== 'installing') {
+      if (this.state.phase !== 'installing' || !shutdownAttempted) {
         this.installing = false;
         if (shutdownAttempted) await this.options.resumeShutdown?.();
       }

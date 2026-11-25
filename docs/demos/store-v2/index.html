@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Nozeli Store · 交互 Demo</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="./index.html" aria-label="Nozeli Store 首页"><span class="brand-mark">n.</span><span>Nozeli <strong>Store</strong></span></a><span class="demo-tag">DEMO · 内存模拟</span><div class="top-actions"><button data-action="theme" aria-label="切换深浅色">深色</button><button data-action="reset">重置</button></div></header>
+  <div class="demo-notice">独立交互原型 · 不下载、不调用模型、不派工、不读写真实项目；刷新即重置。版本、体积与兼容性均为示例。</div>
+  <div class="shell"><aside class="sidebar"><p class="eyebrow">RESOURCE LIBRARY</p><nav aria-label="Store 导航"><button data-view="discover">发现 <span>01</span></button><button data-view="installed">已安装 <span data-installed-count>0</span></button><button data-view="projects">项目能力 <span>02</span></button></nav><div class="sidebar-note"><span class="dot"></span> 能力按需，边界清晰<p>全局安装 ≠ 项目引入<br>项目引入 ≠ 启动任务</p></div><div class="builtin"><strong>基础能力始终在这里</strong><p>基础图片阅读、批注与涂鸦继续内置，不迁入可选或付费引擎。</p></div></aside><main id="main" tabindex="-1"></main></div>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-header"><span class="eyebrow" id="dialog-kicker">STORE / RESOURCE</span><button data-action="close" aria-label="关闭对话框">×</button></div><div id="dialog-content"></div><footer id="dialog-actions"></footer></dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>

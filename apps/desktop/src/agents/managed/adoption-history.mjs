@@ -4,7 +4,7 @@ import { FileChanges } from '../../domain/file-changes.mjs';
 import { userActor } from '../../domain/document-changes.mjs';
 import { textChangeSet } from '../../domain/tag-anchors.mjs';
 import { runGit } from './git-runtime.mjs';
-import {inspectFile,writablePath as workPath} from './file-stream.mjs';
+import {createFileStream,writablePath as workPath} from './file-stream.mjs';
 import {gitStream} from './git-service.mjs';
 
 const digest = bytes => bytes === null ? null : bytes.contentDigest ?? createHash('sha256').update(bytes).digest('hex');
@@ -34,8 +34,9 @@ async function blob(root, commit, rel, env) {
 }
 
 /** Record already-integrated bytes, never write/merge/reset original content. */
-export async function recordAdoption({ host, projectId, work, receipt }) {
+export async function recordAdoption({ host, projectId, work, receipt, filesystem }) {
   if (receipt?.status !== 'merged' || !/^[a-f0-9]{40,64}$/.test(receipt.commit || '') || !Array.isArray(receipt.operations) || !work?.id) fail('ADOPTION_RECEIPT_INVALID', 'A completed integration receipt is required for attribution');
+  const {inspectFile}=createFileStream({filesystem});
   const candidateCommit=work.execution?.candidate?.commit;
   if(!/^[a-f0-9]{40,64}$/.test(candidateCommit||''))fail('ADOPTION_RECEIPT_INVALID','A frozen candidate is required to verify the accepted input baseline');
   const project = await host.requireProject(projectId), root = project.root;

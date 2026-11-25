@@ -1,7 +1,10 @@
 // Bounded activity and owner-generation regressions. No Pi process is spawned.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createActivityState} from '../../../integrations/pi/src/activity.mjs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const runtimeRoot=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {createActivityState}=await import(pathToFileURL(path.join(runtimeRoot,'src/activity.mjs')).href);
 import {PiSession} from '../src/agents/managed/pi-session.mjs';
 
 const spec=()=>({role:'worker',home:'/tmp/nozeli-activity-test',cwd:'/tmp',tools:[]});

@@ -1,10 +1,10 @@
+import {desktopHosts} from './fixtures/desktop-hosts.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { digestBytes } from '../src/domain/material-store.mjs';
-import { DesktopHost } from '../src/main/host.mjs';
 
 // One real PNG (1x1 white pixel) and a truncated header for failure paths.
 const realPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC', 'base64');
@@ -14,10 +14,10 @@ const brokenBytes = Buffer.from('not an image at all');
 async function scratch() {
   const userData = await mkdtemp(path.join(os.tmpdir(), 'nozeli-img-user-'));
   const root = await mkdtemp(path.join(os.tmpdir(), 'nozeli-img-proj-'));
-  const host = new DesktopHost(userData);
+  const hosts=desktopHosts(),host = hosts.create(userData);
   const picked = await host.pick(root);
   const projectId = picked.project.id;
-  return { userData, root, host, projectId, async cleanup() { await rm(userData, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); } };
+  return { userData, root, host, projectId, async cleanup() { await hosts.close();await rm(userData, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); } };
 }
 
 async function seed(root, rel, bytes) {

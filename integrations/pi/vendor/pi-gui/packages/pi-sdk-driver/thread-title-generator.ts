@@ -20,6 +20,7 @@ export interface GenerateThreadTitleOptions {
 
 interface ThreadTitleGeneratorDeps {
   readonly agentDir: string;
+  readonly createModelRuntime?: typeof ModelRuntime.create;
 }
 
 const MAX_THREAD_TITLE_LENGTH = 36;
@@ -47,7 +48,7 @@ export async function generateThreadTitle(
     retry: { enabled: false },
   });
   const resourceLoader = createThreadTitleResourceLoader();
-  const modelRuntime = await ModelRuntime.create({
+  const modelRuntime = await (deps.createModelRuntime ?? ModelRuntime.create.bind(ModelRuntime))({
     authPath: join(deps.agentDir, "auth.json"),
     modelsPath: join(deps.agentDir, "models.json"),
     refreshOnCreate: false,

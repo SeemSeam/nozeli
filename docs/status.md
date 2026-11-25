@@ -1,5 +1,96 @@
 # 当前状态与能力边界
 
+当前源码基线：`0.1.0-beta.9`，目标 Linux x64、macOS arm64 与 Windows x64；下列旧版本验证不替代候选版本资格。
+
+## 2026-11-18 Windows 本地整合（完成，未发布）
+
+用户授权将虚拟机最终开发状态本地合入 main，并补 Windows release 支持；不推送、不创建公开发行、不替换日常安装。统一产品版本保持 `0.1.0-beta.8`，保留 beta8 的 Linux/macOS 更新器和显式 TeX 编译补丁。VM 源码由 `cb07c51` 加最终未提交修改导出，隔离导入提交 `a04a4dd`；原 VM 文件及本机管理助手未提交改动均不改写。
+
+原 VM 安装版真实模型成果采用记录（四文件合入、Work ended／closure complete、quota=0、采用后11/11测试）保留为历史候选证据，不替代本轮整合后的限定验收。
+
+最终运行源码 `95d14e5` 已本地合 main；真实 Windows 新编原生组件及发行ZIP、独立解压21943文件一致性、可见GUI保存／正常退出／冷恢复7项、托管业务与CAS／UNKNOWN／Job／ACL限定14项全部通过。包位于 `C:/NozeliValidation/release-95d14e5-20261118`，完整命令、SHA256及限制见[测试记录](testing.md#2026-11-18-windows-本地整合验证限定通过未公开发布)。跨平台Pi构建输入已修复LF与cwd确定性，未放宽干净源码门。文档后续提交不改包绑定；旧UNKNOWN／个人配置和原未提交开发保持。Windows自动更新、签名／SmartScreen、物理IME／多屏与完整W0–W5仍不宣称通过。
+
+## Windows VM 历史阶段记录（按原始日期保留）
+
+2026-11-14 Windows VM 续作：当前目标已扩展为完整 W0–W5，不再以 v57 小范围通过为停止条件。官方签名 VS 安装器经主机监督真实 UAC 同意后补齐 Spectre14.44（exit0）；文件／进程组件保持 Spectre、CFG、SDL 实际构建。新源代码模型/auth 含异步递归拒绝、8MiB分块CAS、私密解析错误与证据目录实体约束；源码两宿主配置完整矩阵各94/94、Pi owner各56/56、Worker各2/2、archive-focused各2/2通过，Electron集成辅助18/18通过。此前应用选择器期间的 Electron 通过声明已作废，现仅计子进程实际报告身份的结果。原 archive-focused Electron 0/2失败输出保留，短临时根新fixture已通过；这些计数不代表独立v57包通过。
+
+Windows chrome WebContentsView 随原生显示／隐藏／最小化／恢复／加载及内容视图重新挂接同步可见性；实际GUI证据从 hidden、无输入恢复为 visible、trusted键盘与点击。`source-gui-terminal-composition-order-v13`真实窗口五项通过：Job内Shell、Unicode／空格路径独立Node及文件oracle、Ctrl-C后原Shell继续、正常关闭原owner退出、冷恢复明确点击启动且不重放。保留xterm屏幕阅读模式，Unicode使用Chromium原生composition协议并等待其提交任务；不等于物理中文IME或多屏／设备资格。
+
+原生 ConPTY 项目终端、工具 Job、独立强退线程、随包 Node 的语言服务，以及显式隔离目录的 Windows 手工安装／升级／回退已实施；CLI专项与真实窗口分别记证，不把源码存在或局部通过当整体完成。原 helper/home 释放、完整材料闭包、pending/default 托管入口和其余产品门仍未完成。正式基线v50、productionReady/goalComplete=false。当前[完整清单](windows-w0-w5-qualification.md)；实时JSON：`N:/dev-cache/windows-supervisor/goal-status.json`，证据：`N:/restored-20261112/nozeli-test/20261114-windows-goal`。旧D盘记录保留为历史，不是本VM实体custody。
+
+本轮新增metadata原生消费／FileID与字节CAS／版本交接及原始stdio冷读取链；模型工具定义升级仍允许，竞争者和不确定发布保留。metadata／准入专项两宿主各58/58，私密解析canary有失败前／修复后证据；真实原owner冷链另行核对，未拿合成stdio夹具冒充实际owner。Pi／OMP显式隔离、reset恢复和初始化状态已补前置拒绝；拒绝专项各43通过、13个能力前提跳过，不计为Windows实现通过。真实GUI初始化重试先于配置门返回unsupported，随后普通终端五项仍通过。
+
+独立v57-v1从已核验v56v2生成，ZIP SHA256 `906f77a43c751639cb5ab5f1d50adecc2b73ca403d2fb46a362e4e3ad9ffa6ef`。包内Node／Electron配置各94/94、启动／读取／CAS／冲突草稿／重启六项通过；执行后26111文件、18 native输出、32 native输入及6 SDK输出完整性通过。原包终端关闭15s超时仍保留，inspector诊断正常退出不替代该失败；当前metadata／拒绝修改晚于v1冻结，不能外推为v1已覆盖。隔离安装使用独立Unicode根，不替换日常安装。
+
+上述owner56/56是metadata新增之前的原源码快照；后续完整owner最新Node／Electron各55/56，真实metadata冷链Node专项2/2已有证据，Electron专项仍有15s宿主准备及8s存储结果未知失败，保留原fence且未放宽期限。中断前包内Worker／archive只有started/TAP头，没有完成receipt，不计通过。当前11/11安装回归证明同步／异步原生未准入可保留草稿并显式回退；v1长路径及v3 PowerShell Join-Path失败均保留，新.NET Path.Combine修复继续真实安装验收。阅读／角色材料／强退由独占文件的task代理实现，主流程统一集成并实测，不将代理完成或语法检查当产品通过。
+
+后续真实检查：Node原生文件／实体／CAS／安全／持久化72/72；Electron同组62/72，十项集中在独立PowerShell ACL夹具spawn入口，未跳过，已交task代理定位。冻结v4包metadata两宿主各58/58，Node拒绝组43通过／13能力跳过，资源11/11；v4安装新Unicode根已成功，完整生成启动器GUI仍待前台独占验收。生成启动器永久回归9/9运行真实PowerShell与固定Node，对长路径/非ASCII/篡改/重解析拒绝逐项记证；它不等于Electron产品验收。当前源码Electron真实owner metadata／角色原始stdio冷链专项2/2，不外推完整owner矩阵或释放资格。
+
+默认源码桌面入口真实单次发送阅读验收`agent-reading-v9-source-single-submit-v1`七项通过：普通选项目／Markdown、精确Unicode批注与不可变材料、本地保存零派工、Ctrl+S独立文件oracle、未发送草稿、外部赢家冲突保留、完整重启与两次正常退出0。v4真实生成启动器完整校验后启动／偏好重启通过，完整载荷升级／显式回退保留原版本与全部profile字节；复用同一候选不冒充新版本迁移。默认ManagedProjects Work入口仍在实施与验收，显式Controller适配器通过不能替代它；不把可选sandbox拒绝扩展为普通功能拒绝，不直接翻绿全局能力。
+
+强退v13仅部分通过：卡住renderer的原生对话框强退1761ms、四个原HANDLE后代退出、sentinel存活、冷恢复原赢家／草稿及正常关闭均通过；崩溃renderer强退观测14763ms超过8s检查，完整场景仍失败，继续记录调用／退出时间链定位，不从核心成功推整组完成。Spectre开发安装UAC已成功exit0，产品UAC通道/token/effect/ACL验收仍独立未完成。
+
+后续独占前台`source-gui-forcequit-final-v18`完整八项通过：卡住／崩溃renderer原生对话框强退OS退出402ms／359ms、原HANDLE后代退出与独立sentinel存活、两种冷恢复精确草稿／赢家／终端显式启动及正常退出。v13的14.7s异常只记未重现、原因未定；inspector realm错误导致无法证明当时产品调用与OS退出的分界，不据此宣称全部旧失败均为driver问题。此证据仍非物理IME／多屏或最终包完整资格。
+
+<!-- windows-v56-settings-cold -->
+2026-11-12 Windows v56：配置读取证据增加记录/blob原生FileID链和stdout head身份；原host冷检查、完整home归档及独立只读读取器核对同一确认前缀，未确认尾部/孤立文件/历史流/旧schema明确保留UNKNOWN。源码Node/Electron完整Pi各56/56；四宿主配置9、冷读取19、真实冷owner替换拒绝及正常/ready丢回复归档专项通过，独立包资源/实际owner/Worker通过。正式v50基线保持；完整读取生命周期、models/auth/import/角色/metadata/journal、helper/home处置、pending/default及其余W0–W5产品发行门仍未完成。见[本批记录](windows-alpha6-settings-cold.md)。
+
+证据 `D:\nozeli-test\20261112-alpha6-settings-cold\development-status.json`。最终v2 ZIP SHA256 `d0c7e682cbef5fa1c71bfaf8dbe3cd1bdbcf51467181f0fc6cc69771f28580b3`。
+<!-- /windows-v56-settings-cold -->
+
+<!-- windows-v55-settings-read-boundary -->
+2026-11-12 Windows v55：SDK配置存储接入原生实际读取字节与FileID证据；项目优先级、迁移、dirty-field合并及reload保留，写入比较身份与字节后原子提交。源码Node/Electron完整Pi各56/56通过。独立包两宿主各配置9/资源技能11/读写23/替换ACL持久化49/进程25/实际owner6/Worker布局2通过，包与冻结输入核对通过。正式v50基线不变，完整恢复材料闭包、helper/home释放、pending/default及W0–W5产品发行门继续未完成。见[本批记录](windows-alpha6-settings-read-boundary.md)。
+
+证据 `D:\nozeli-test\20261112-alpha6-settings-reads\development-status.json`。最终ZIP SHA256 `189565b3fcb6acd739a7aed3e9013d4762ec530531bc3f81727ca6f7fc8a554e`；43639文件、1793冻结输入及36项本轮重建native输入/输出核对一致。
+<!-- /windows-v55-settings-read-boundary -->
+
+2026-11-12 Windows v54：修复配置管理层在角色会话前自动执行项目JS扩展的提前加载链。可选driver资源策略保持上游默认行为和SDK项目模型设置权限，Nozeli owner提前过滤非发行包资源；显式空SYSTEM/APPEND来源避免先读后覆盖。最终源码Node/Electron完整Pi各55/55、provider回归各26/26通过；独立v2包两宿主各资源3/技能8/真实owner1/恢复意图3/显式续作2/Worker布局2通过。v50正式基线不变，完整W0–W5未完成。见[本批记录](windows-alpha6-runtime-resource-boundary.md)。
+
+2026-11-12 Windows v53 原生恢复意图：通过私有native HANDLE和create-only发布续作栅栏，发布后失败保留UNKNOWN；恢复检查复用已确认journal字节。源码Node/Electron完整Pi各54/54；四宿主意图各3、实际续作各2，独立包Worker各2通过；ready丢回复4/4。新包完整性核对通过，v50正式基线、v53开发候选，完整恢复闭包/helper释放/pending/default和W0–W5仍未完成。见[本批记录](windows-alpha6-recovery-intent.md)。
+
+
+2026-11-12 Windows journal 确认字节投影：原生 flush/read 的同一份字节严格解析后构建 SDK 内存视图，避免按路径再次读取及 SDK 自动迁移；损坏 UTF-8/JSON、重复身份和缺失父条目在本轮投影前拒绝。源码 Node/Electron 完整 Pi 各52/52、四宿主 parser4/Pi5/ready丢回复1、独立包两布局Worker各2通过；运行后包与冻结输入完整性核对通过，v50 正式基线不变。见[恢复材料设计及本轮实现](windows-recovery-material-closure-design.md)。
+
+2026-11-12 Windows Git 路径资格：实际 commonDir、linked worktree 和数字冲突后缀在初始化/写证据前检查，UTF-16 边界保留中文长字节路径。源码/独立包 Node、Electron 四组路径专项各 11 项、完整 Work 生命周期各 31/31、ready 丢回复各 1/1 通过。新包独立核对，v50 正式基线、v51 开发中，完整 W0–W5 未完成。见[本轮记录](windows-alpha6-git-path-qualification.md)。
+
+2026-11-12 Windows：D 盘恢复开发，源码 Node 冷归档矩阵 8/8、ready 丢回复四宿主、SQLite 四组各14和长文件路径四组各1实际通过。renderer 重建，新候选独立解压核对通过；深 cwd/worktree、一次 owner 启动失败及其他三宿主完整归档矩阵仍未完成。正式基线 v50、v51 开发中，完整 W0–W5 未完成。见[本轮记录](windows-alpha6-archive-resumed.md)。
+
+2026-11-11 Windows v50：原owner home目录身份/ACL及父链在首次resume前交给helper，真实host退出后仍保持并约束cold journal/归档；修复伪造home重连在拒绝前的接收HANDLE清理，重复拒绝回归通过。完整恢复材料生命周期、归档协调、资源释放及默认入口仍未完成，见[本批记录](windows-alpha6-home-custody.md)。下文为历史。
+
+2026-11-10 Windows v49：原inspection持久归档完整观察到的owner home、原helper三路stdio和账本；完整集合CAS intent/ready、独立摘要复核、并发赢家/丢回复UNKNOWN，原home/helper保留。正常归档后实际Controller启动和warm停止通过。原home全生命周期custody、完整恢复闭包、归档协调、资源释放及默认入口仍未完成；实际矩阵/包见[本批记录](windows-alpha6-cold-evidence-archive.md)。下文为历史。
+
+2026-11-10 Windows v48：两次真实host死亡后第三共享Controller接管并启动两个resident；完整跨代原helper/launch-set/stdio/source与历史回执核验，旧retired Worker行及revision、paused/候选/草稿保持且零旧输入重放。源码/独立解压Node各8模式、Electron各3，详细实际矩阵与新包见[本批记录](windows-alpha6-repeat-cold.md)。旧资源释放、pending/default入口、完整W0–W5仍未完成；beta.1 main尚未整合。下文为历史阶段。
+
+2026-11-10 Windows 单次冷接管：原受限anchor完整custody连续转移，一次性原inspection token和完整集合CAS接续精确原退休代次；共享Controller核对旧provider、竞争只一赢家并启动两个新resident，旧Worker interrupted／review／草稿保留且零旧输入重放。第二轮cold、资源释放、pending协调、默认入口与完整W0–W5仍未完成。原生文件／进程及renderer实编，新独立包与实际矩阵见[本批记录](windows-alpha6-cold-handoff.md)。远端main已推进beta.1增量，当前包仍固定alpha.6＋PR27。下文为历史阶段。
+
+2026-11-10 Windows 原 host/owner 记录冷退休：精确 business hold 与原 anchor 领取后，同一 SQLite 事务比较五个完整集合，单调增加 host/owner 修订并保留原 generation 历史。退休后由原 inspection 内部绑定读入口继续核对原 journal；并发变化与提交后丢回复保留 UNKNOWN、不重试。记录退休已资格化，实际资源释放、新代接续、默认 ManagedProjects 与 W0–W5 仍未完成。当前包、实际矩阵和下一代设计见[本批记录](windows-alpha6-cold-retirement.md)。
+
+2026-11-10 Windows 原 anchor 冷领取：协议v9／launch-set v2由原helper跨连接单向仲裁，只复制原文件对象的受限不可继承HANDLE，保留原写共享排他。managed入口先业务hold再复核原checkpoint／source／完整owner／kernel／journal／tool／business／pending；后检查变化或丢回复保留UNKNOWN、不重试。原host/owner未退休，新代与默认执行未开放，W0–W5仍未完成。当前包和实际矩阵见[本批记录](windows-alpha6-cold-anchor.md)。
+
+2026-11-10 Windows 原中断业务待核对处置：显式原生custody／业务回执核验后原子中断精确Worker job，保留review／候选／草稿；共享重启、调度准入、激活与启动扫描尊重恢复门。同值修订赢家及提交后checkpoint／pending变化拒绝或UNKNOWN、不重试。仅限定无pending处置，owner退休／下一代／默认ManagedProjects与W0–W5完整资格仍未完成。当前包和真实测试范围见[本批记录](windows-alpha6-business-hold.md)。
+
+2026-11-10 Windows 工具处理持久记录：显式 registered launch 在调用前先登记原工具身份，处理返回后持久精确结果，再向原 Pi 回复。冷检查区分未返回与已返回未送达，检查点前后复核 SQLite 原记录，缺行／并发赢家／UNKNOWN 不重放。正常文档修改和成果发布关联既有业务回执；业务 pending／projection／owner 冷接管与默认执行仍未完成。见 [本批记录](windows-alpha6-tool-custody.md)。
+
+2026-11-10 Windows 强杀journal前缀：Pi启动／prompt／flush返回原生同步快照；宿主退出后核对原File ID与已确认前缀，保留未知尾部。工具效果已发生但未回复仍unresolved、不重放，文件／快照篡改拒绝。源码／解压Node与Electron各52项、cold各15项、Worker各2项，GUI各6项通过；业务冷接管与默认入口仍未完成。当前包见[本批记录](windows-alpha6-abrupt-journal.md)。
+
+2026-11-10 Windows 原始请求／journal 冷核验：原始stdin、Pi返回、原生journal和输入摘要逐项匹配；缺回复保留execution-unknown，工具回复不等于业务完成。显式journal检查点在SQLite CAS前后复核metadata／journal，提交后变化保留UNKNOWN与外部赢家。源码／解压Node及Electron完整定向各47项、cold各15项、Worker各2项，GUI各6项通过；业务冷接管和默认入口仍未开放。当前包与边界见[本批记录](windows-alpha6-journal-reconciliation.md)。
+2026-11-10 Windows 原生启动集合：每次启动意图先记入原生追加历史，supervisor保留只读mapping；原宿主退出后逐项核验完整历史、Job和原stdin/out/err。删除owner行／未完成意图／替代身份的真实回归均拒绝确认。仅原项目host lease的完整集合与进程停稳取得本批证据，业务冷接管和默认ManagedProjects仍未开放；当前包与实际结果见[本批记录](windows-alpha6-launch-set.md)。
+
+2026-11-09 19:39（Asia/Shanghai）上游再次核对：GitHub 最新 alpha.6／已合并 PR27 与本地 HEAD `cb07c518` 一致，无新增上游增量需要合并；开放依赖升级未纳入基线。原始 API 和核对收据见[合并记录](windows-alpha6-pr27-merged.md)，当前包仍以[冷恢复前置记录](windows-alpha6-cold-checkpoint.md)为准。本次仅更新上游核对与文档，没有重建或重跑前批测试。
+
+2026-11-09 Windows 冷恢复前置：原生 helper 现保留已观察且退出的后代 HANDLE，新冷连接可取得受限原实体；当前已登记 Job 的原流／来源检查点复用本机 CAS／UNKNOWN。完整宿主启动集合、任务接管与默认入口仍未完成；实际验证与当前包见[本批记录](windows-alpha6-cold-checkpoint.md)。
+
+2026-11-09 Windows managed 分离目录接入：已验证原登记存储逐路径原生宿主／来源、跨根执行证据、隔离 Git 长 ref，以及真实 Controller／Pi／Git 的编辑、明确审阅接受、归档和 warm reopen。生产默认选择与冷恢复仍未开放；当前验证包、实际计数和路径 unsupported 边界见[本批记录](windows-alpha6-managed-roots.md)。
+
+2026-11-09 Windows 新进展：正式外部启动已接入原生持久队列及实际文档显示确认，冷恢复不重放；四宿主各179通过/0失败/1跳过，源码/解压生产GUI各8项通过。完整边界和当前ZIP见[外部打开记录](windows-alpha6-external-routing.md)；W1–W5完整资格仍未完成。
+
+
+2026-11-09 Windows 本地最新整合：已迁到上游 main `cb07c51`／最终 PR27 `b72e744`；Windows 整合、限定通过与未通过项见[最终合并版记录](windows-alpha6-pr27-merged.md)。本机证据不外推上游平台或 Windows 完整发行资格，下方早期 PR 候选记录保留为历史。
+
+历史 Windows 工作树版本：`0.1.0-alpha.6`；该描述只记录当时的上游状态，不是本次整合后的产品版本。
+
+## Linux/macOS 发行基线及历史
+
 状态基线：`0.1.0-beta.8`（Linux x64＋macOS arm64双平台预发行候选，公开状态以[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.8)为准）。2026-11-16用户获知六项分发义务未签收后明确授权本版公开Beta例外；六项仍pending，`--public`仍阻断，不构成合规签收，不标稳定版/latest，不替换日常安装。本版聚焦Linux发行副本去特殊权限，以及Mac arm64原生更新签名验证、同卷原子交换、独立helper、新renderer健康确认、失败回退／中断恢复及父退出竞态；不放宽旧Linux更新器的危险归档拒绝、不更改宿主sandbox。Linux旧版可更新beta.8；旧Mac首次须手动安装beta.8后才支持未来自动升级。最终精确提交完整CI与双平台最终解压包尚须实际验收，不预填通过。Mac仅ad-hoc签名、无Developer ID或公证，Intel Mac与Windows未发行；旧Beta7 tag与附件不变。
 
 2026-11-16 **更新器既有证据与本版资格分开**：此前Linux本地更新／失败回退旅程及[原生Mac运行43821746428](https://github.com/SeemSeam/nozeli/actions/runs/43821746428)在`a838a64a2de2656265f936f3d60982e997e37988`通过成功升级、启动失败回退和中断恢复。原生实跑修正了握手前整包复核耗时与身份快照期间父进程退出竞态：完整复核移至父退出后、交换前，内核确认退出视为停止，活跃身份变化／未知归属仍拒绝。该证据不是beta.8最终SHA的CI或最终发行包资格；详见[测试记录](testing.md)。

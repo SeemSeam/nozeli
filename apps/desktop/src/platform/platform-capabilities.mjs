@@ -57,7 +57,7 @@ const MATRIX = {
   },
   'recovery-source-ownership': {
     owner: 'platform/linux/recovery-owner.mjs + platform/darwin/recovery-owner.mjs via main/project-recovery-owner.mjs',
-    note: 'Platform-native project-recovery ownership checks refuse live or unverified source owners. Missing helpers or unreadable ownership facts do not authorize lock takeover.',
+    note: 'Platform-native project-recovery ownership checks refuse live or unverified source owners. Missing helpers or unreadable ownership facts do not authorize lock takeover. Windows remains unsupported: the required system-wide open-handle enumeration (or an exclusive directory-oplock proof across the full publication transaction) is not implemented, and neither the OS single-instance lock (profile-scoped) nor NTFS renames (FILE_SHARE_DELETE) exclude concurrent writers.',
     platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
   },
   'execution-isolation': {
@@ -82,8 +82,8 @@ const MATRIX = {
   },
   'bundled-node-runtime': {
     owner: 'apps/desktop/tools/node-runtime.lock.json + runtime/node NODE-RUNTIME.json',
-    note: 'Packaged builds run their own SHA-256-pinned Node archive, selected for Linux x64 or macOS arm64. Windows has no pinned archive and packaging refuses it.',
-    platforms: { linux: 'implemented', win32: 'unsupported', darwin: 'implemented' },
+    note: 'Packaged builds run their own SHA-256-pinned Node archive, selected for Linux x64, macOS arm64 or Windows x64. Windows has a fixed archive and native packaging implementation; independent Windows package qualification is still required before promoting its capability status.',
+    platforms: { linux: 'implemented', win32: 'not-run', darwin: 'implemented' },
   },
   'system-terminal-attach': {
     owner: 'agents/managed/system-terminal-launch.mjs',
@@ -111,17 +111,17 @@ export const CAPABILITY_IDS = Object.freeze(Object.keys(MATRIX));
 // few migrated modules.
 const RESIDUAL_BOUNDARIES = [
   { id: 'custom-transaction-durability', file: 'main/project-git.mjs + main/file-clipboard-import.mjs + main/file-tree-ops.mjs', note: 'Phase1 decision: custom rename/link/move transactions keep their existing Linux journal/reconciliation and concurrency semantics; a successful return is not a new power-loss durability promise. Mutation entry points explicitly require safe-file-io and durable-persistence before effects. Phase2 MUST qualify each native transaction with identity, rollback/recovery and post-publication barrier tests before enabling these capabilities; do not reuse plain writeAtomic as a multi-file transaction.' },
-  { id: 'privilege-elevation-mechanisms', file: 'main/privilege-broker.mjs', note: 'Per-platform OS elevation strategies (pkexec/osascript/UAC) and root-facts verification; darwin/win32 implemented-untested, readRootResults returns null on win32. Phase2: native verification.' },
-  { id: 'force-quit-process-tree', file: 'main/force-quit.cjs', note: '/proc exe/cmdline/task-children walking plus SIGKILL; on other platforms the tree walk yields nothing and only app.exit remains. Phase2: per-platform tree mechanism.' },
+  { id: 'privilege-elevation-mechanisms', file: 'main/privilege-broker.mjs', note: 'Per-platform OS elevation strategies and protected receipts: Windows has a distinct UAC/ACL result channel, but actual product-broker token/effect verification remains unqualified. Installing development components through the official installer does not qualify product elevation.' },
+  { id: 'force-quit-process-tree', file: 'main/force-quit.cjs', note: 'Linux walks /proc identities; Windows captures current-root same-account descendant HANDLEs, verifies ancestry and excludes same-image Chromium conservatively. Windows termination is bounded best-effort over the captured set and never claims whole-tree exit. Native tool Jobs and terminal Jobs have separate exact cleanup proof. macOS force-quit remains unverified.' },
   { id: 'omp-tui-reap-assumptions', file: 'agents/managed/omp-tui-session.mjs', note: 'Legacy OMP: platform-default group reap result and PTY/terminal assumptions; read-only history recovery, never a portability precedent.' },
-  { id: 'process-tree-kill', file: 'main/tex-build-manager.mjs + main/auto-update.mjs + main/auto-update-helper.mjs', note: 'POSIX kill(-pgid) vs win32 taskkill.exe /T /F branches; tree-termination semantics unverified outside Linux. Managed Pi sessions no longer branch here (processTree contract). Phase2.' },
+  { id: 'process-tree-kill', file: 'main/tool-process.mjs + tex-build-manager.mjs + auto-update-windows-helper.mjs', note: 'Windows TeX/TexLab/JS-TS tools use suspended native Jobs and retain unconfirmed stops; no taskkill-based success claim. Linux keeps existing process-group behavior. The native Windows updater uses its own exact parent process HANDLE and successor Job; installing an update is a separate qualification gate.' },
   { id: 'win32-path-env-branches', file: 'agents/managed/controller.mjs + shadow-versions.mjs + main/project-git.mjs + git-service.mjs + agents/system-terminal-client.mjs', note: 'PATHEXT executable discovery, NUL vs /dev/null git isolation, win32 hook exec-bit skip, terminal-client ticket permission assumptions: unverified non-Linux branches. Phase2 verification.' },
-  { id: 'updater-installation-layout', file: 'main/auto-update.mjs + auto-update-helper.mjs + auto-update-files.mjs', note: 'Symlink current/previous swap, /proc-based helper identity, process-group stop, tar.gz releases: managed installations are Linux-only by design. Phase2 W5/M5.' },
-  { id: 'lsp-external-node', file: 'main/language-service-manager.mjs', note: 'Optional JS/TS language service spawns NOZELI_LSP_NODE/NODE/ambient "node"; the only production path that may consult an ambient runtime (optional capability, degrades honestly). Phase2 bundle-or-gate decision.' },
+  { id: 'updater-installation-layout', file: 'main/auto-update.mjs + auto-update-helper.mjs + auto-update-windows-helper.mjs + tools/install-windows.mjs', note: 'Linux uses symlink/current/previous, /proc identity and tar.gz promotion. Windows uses a separate versioned layout with a native lock, ACTIVE.json CAS, ZIP candidate and renderer health receipt. Installed acceptance is incomplete and evidence applies only to the tested build pair and scenario.' },
+  { id: 'lsp-external-node', file: 'main/language-service-manager.mjs', note: 'Packaged JS/TS language service verifies bundled Node; development uses the current process executable, including explicit Electron Node mode. NODE/NOZELI_LSP_NODE/PATH runtime discovery is removed. Windows tools retain their original Job/session after unconfirmed stop; packaged qualification remains separate from source evidence.' },
   { id: 'electron-native-surface', file: 'main/main.cjs + window-recovery.cjs + isolated-preview.mjs', note: 'Native dialogs (incl. unparented Wayland open dialog), clipboard items, shell.reveal, error boxes: real-host verification is gate W4/M4.' },
   { id: 'linux-session-flags', file: 'main/main.cjs + agents/managed-projects.mjs', note: 'ozone headless/wayland switches, wayland dialog parenting, disable-gpu fallback: Linux session integration.' },
   { id: 'runtime-audit-proc-scan', file: 'agents/managed/runtime-audit.mjs', note: 'Linux scans /proc environ; macOS scans same-user KERN_PROCARGS2 through the native process adapter and propagates failures. Windows audit is unverified; an empty list there is not verified-none.' },
-  { id: 'packaging-tools', file: 'apps/desktop/tools/package-portable.mjs + package-candidate.mjs + package-macos.mjs + package-pi-runtime.mjs', note: 'Linux portable/candidate installers remain Linux-only. macOS arm64 has a local ad-hoc-signed Nozeli.app builder with bundled Node/Git/Pi, not Developer ID signing, notarization or auto-update qualification. Windows packaging remains unavailable.' },
+  { id: 'packaging-tools', file: 'apps/desktop/tools/package-portable.mjs + package-candidate.mjs + package-macos.mjs + package-windows-candidate.mjs + install-windows.mjs', note: 'Linux portable/candidate tools remain Linux-only; macOS has a local ad-hoc-signed builder. Windows has explicit immutable candidate/manual isolated install/upgrade/rollback tools, private profile ownership and CAS state. Packaging does not qualify the native updater, authorize signing or authorize public release.' },
 ];
 
 export function capabilityStatus(capability, { platform = process.platform } = {}) {

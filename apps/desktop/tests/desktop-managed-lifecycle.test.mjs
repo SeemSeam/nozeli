@@ -137,7 +137,7 @@ try {
   const beforeKeys=(await state()).jobs.length;
   await page.$eval('#composer',node=>{for(const extra of [{isComposing:true},{keyCode:229},{repeat:true}])node.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,...extra}));});
   assert.equal((await state()).jobs.length,beforeKeys);
-  await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');
+  await page.focus('#composer');await page.keyboard.press('Enter');
   await wait(s=>s.jobs.length===beforeKeys+1&&s.jobs.at(-1).status==='completed'&&!s.busyTargets.length);
   assert.equal((await state()).jobs.at(-1).text,'LIGHT preserved closed draft');
   assert.deepEqual((await state()).jobs.slice(0,beforeKeys),beforeClosed.jobs,'explicit send must not replay prior jobs');

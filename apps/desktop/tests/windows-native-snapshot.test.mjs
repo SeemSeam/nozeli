@@ -1,0 +1,80 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {ExecutionWorkspace} from '../src/agents/managed/execution-workspace.mjs';
+import {git,str,commitTree} from '../src/agents/managed/git-service.mjs';
+import {experimentalWindowsReadFilesystem as filesystem} from '../src/platform/windows/experimental-filesystem.mjs';
+
+const native = {skip:process.platform !== 'win32' || process.arch !== 'x64'};
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+async function fixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-native-snapshot-'));
+  t.after(() => fs.rm(root, {recursive:true,force:true}));
+  const repo = path.join(root,'project'), state = path.join(root,'state');
+  await fs.mkdir(repo); await fs.mkdir(state);
+  await git(repo,['init','--initial-branch=synthetic']);
+  for (const file of ['keep','removed','staged']) await fs.writeFile(path.join(repo,file), 'baseline ' + file);
+  await git(repo,['add','--','keep','removed','staged']);
+  const tree = await str(repo,['write-tree']);
+  const parent = await commitTree(repo,tree,[],'synthetic snapshot baseline',path.join(state,'evidence'));
+  await git(repo,['update-ref','refs/heads/synthetic',parent,'0'.repeat(40)]);
+  const store = {root:state,content:repo};
+  const workspace = new ExecutionWorkspace(store,{filesystem});
+  const manifest = {repo,workId:'synthetic'};
+  return {root,repo,state,parent,store,workspace,manifest};
+}
+
+test('ExecutionWorkspace snapshot uses the injected HANDLE reader and preserves branch, user index and disk drafts', native, async t => {
+  const {repo,state,parent,workspace,manifest} = await fixture(t);
+  await fs.writeFile(path.join(repo,'keep'),'changed disk\r\n');
+  await fs.unlink(path.join(repo,'removed'));
+  await fs.writeFile(path.join(repo,'staged'),'user staged bytes');
+  await git(repo,['add','--','staged']);
+  await fs.writeFile(path.join(repo,'staged'),'unsaved-on-index disk bytes');
+  const binary = Buffer.concat([Buffer.from('中文\0'),Buffer.alloc(600000,0x5a)]);
+  await fs.writeFile(path.join(repo,'中文 空格.bin'),binary);
+  await fs.writeFile(path.join(repo,'.env'),'synthetic private token');
+  await fs.mkdir(path.join(repo,'node_modules'));
+  await fs.writeFile(path.join(repo,'node_modules','excluded'),'synthetic dependency');
+  const index = path.join(repo,'.git','index'), beforeIndex = await fs.readFile(index);
+  const refs = await git(repo,['for-each-ref']), status = await git(repo,['status','--porcelain=v1','-z']);
+  const captured = await workspace.snapshot(manifest,repo,parent,'synthetic frozen disk input');
+  assert.deepEqual(Object.keys(captured.files).sort(),['keep','staged','中文 空格.bin'].sort());
+  assert.equal(captured.files['中文 空格.bin'].digest,sha(binary));
+  assert.equal((await git(repo,['show',captured.commit + ':keep'])).toString(),'changed disk\r\n');
+  assert.equal((await git(repo,['show',captured.commit + ':staged'])).toString(),'unsaved-on-index disk bytes');
+  assert.deepEqual(await git(repo,['show',captured.commit + ':中文 空格.bin']),binary);
+  assert.equal(await str(repo,['rev-parse',captured.commit + '^']),parent);
+  const treeRows = (await git(repo,['ls-tree','--name-only',captured.tree])).toString();
+  assert.doesNotMatch(treeRows,/removed|\.env|node_modules/);
+  assert.deepEqual(await fs.readFile(index),beforeIndex);
+  assert.deepEqual(await git(repo,['for-each-ref']),refs);
+  assert.deepEqual(await git(repo,['status','--porcelain=v1','-z']),status);
+  assert.equal(await fs.readFile(path.join(repo,'.env'),'utf8'),'synthetic private token');
+  assert.equal(await fs.readFile(path.join(repo,'staged'),'utf8'),'unsaved-on-index disk bytes');
+  assert.deepEqual(await fs.readdir(path.join(state,'evidence')),[]);
+});
+
+test('snapshot refusal retains source/index/refs and cleans only its own temporary index', native, async t => {
+  const {root,repo,state,parent,store,workspace,manifest} = await fixture(t);
+  const target = path.join(repo,'keep'), alias = path.join(root,'external-alias');
+  await fs.link(target,alias);
+  const index = path.join(repo,'.git','index'), before = await fs.readFile(index);
+  const refs = await git(repo,['for-each-ref']);
+  await assert.rejects(workspace.snapshot(manifest,repo,parent,'must reject'),{code:'FS_ENTRY_REJECTED'});
+  assert.equal(await fs.readFile(target,'utf8'),'baseline keep');
+  assert.equal(await fs.readFile(alias,'utf8'),'baseline keep');
+  assert.deepEqual(await fs.readFile(index),before);
+  assert.deepEqual(await git(repo,['for-each-ref']),refs);
+  assert.deepEqual(await fs.readdir(path.join(state,'evidence')),[]);
+  await fs.unlink(alias);
+  await fs.writeFile(target,'released after refusal');
+  const production = new ExecutionWorkspace(store);
+  await assert.rejects(production.snapshot(manifest,repo,parent,'default still refuses'),{code:'FS_PLATFORM_UNSUPPORTED'});
+  assert.deepEqual(await fs.readFile(index),before);
+  assert.deepEqual(await git(repo,['for-each-ref']),refs);
+  assert.deepEqual(await fs.readdir(path.join(state,'evidence')),[]);
+});

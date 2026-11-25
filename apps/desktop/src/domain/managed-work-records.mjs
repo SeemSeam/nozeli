@@ -2,8 +2,8 @@ import {deviationHeld,deviationPresentation} from './work-deviation.mjs';
 // A projection of durable jobs/routes/Works/publications, never a second queue.
 export function intakeLineage(state,job){
  const chain=[job],seen=new Set([job.id]);let cursor=job;
- while(cursor.context?.routingQuestionId||cursor.context?.retryOf||cursor.context?.pendingIntakeId){
-  const sourceId=cursor.context.retryOf||cursor.context.pendingIntakeId||state.todos?.find(t=>t.id===cursor.context.routingQuestionId&&t.kind==='routing')?.sourceJobId;
+ while(cursor.context?.effectSourceJobId||cursor.context?.routingQuestionId||cursor.context?.retryOf||cursor.context?.pendingIntakeId){
+  const sourceId=cursor.context.effectSourceJobId||cursor.context.retryOf||cursor.context.pendingIntakeId||state.todos?.find(t=>t.id===cursor.context.routingQuestionId&&t.kind==='routing')?.sourceJobId;
   const source=state.jobs?.find(j=>j.id===sourceId&&j.type==='intake');if(!source)break;
   if(seen.has(source.id))throw Error('routing clarification lineage cycle');seen.add(source.id);chain.unshift(source);cursor=source;
  }
@@ -83,6 +83,7 @@ export function publicationIsCurrent(state,workId,objectId,kind='result'){
 export function userTodoEligible(todo){
  if(!todo||todo.userActionable===false)return false;
  if(todo.kind==='result')return true;
+ if(todo.kind==='recovery'&&todo.userRecoveryRequired===true)return true;
  const destination=todo.destination;
  if(destination?.kind==='effect-permission')return true;
  if(todo.kind==='merge-consent'&&['merge-conflict-override','never-commit-override'].includes(todo.permissionPurpose))return true;
@@ -133,7 +134,7 @@ export function managedInboxTodos(state){
   const historical=!pending&&!finalizing&&(report?historicalResultReminder(state,todo)||todo.status!=='open':true);
   const finalPublication=ended&&(work.result?.objectId===todo.objectId||work.closure?.binding?.objectId===todo.objectId);
   let statusLabel;
-  if(pending)statusLabel=report?(live.settlementIssue?'结果已保存 · 状态待核查':'待审阅'):'待授权';
+  if(pending)statusLabel=report?(live.settlementIssue?'结果已保存 · 状态待核查':'待审阅'):todo.kind==='recovery'?'待核查原任务':'待授权';
   else if(finalizing)statusLabel=(work.outcome==='discard'?'已丢弃':work.outcome==='accept'?'已接受':'审核决定已记录')+(work.closure?.phase==='blocked'?' · 收尾受阻，尚未结束':' · 收尾未完成');
   else if(report&&todo.status==='iterating')statusLabel='已续改 · 原结果保留';
   else if(report&&todo.status==='superseded')statusLabel='已被新版替代';
@@ -141,7 +142,7 @@ export function managedInboxTodos(state){
   else statusLabel=({closed:'提醒已关闭',resolved:'已处理',cancelled:'事项已取消'})[todo.status]||(historical?'历史结果':'处理中 · 结果已保存');
   if(todo.status==='closed'&&finalPublication)statusLabel+=' · 提醒已关闭';
   if(historical&&todo.status==='open'&&todo.reopenedAt)statusLabel+=' · 历史提醒已重开';
-  const actionLabel=report?(hasReport?'查看报告':'报告暂不可读取'):pending?'查看授权详情':'查看处理记录';
+  const actionLabel=report?(hasReport?'查看报告':'报告暂不可读取'):pending?(todo.kind==='recovery'?'核查原任务':'查看授权详情'):'查看处理记录';
  const humanEdited=report&&publicationHumanEdited(state,todo);
  return {...todo,title:report?(work?.name||receipt?.report?.title||todo.title||'结果报告'):(todo.title||live?.title||'操作授权'),excerpt:receipt?.report?.excerpt||reviewExcerpt(todo.text),pending,historical,statusLabel,actionLabel,versionLabel:report?publicationVersionLabel(state,todo):'',publicationVersion:report?publicationOrdinal(state,todo.workId,todo.objectId,'result'):null,publicationLabel:report?publicationVersionLabel(state,todo):'',humanEdited,editLabel:humanEdited?'已保存人工改稿':'',icon:report?'file-text':pending?'shield-check':'archive',hasReport};
  });
@@ -182,10 +183,40 @@ export function managedWorkRecords(state){
   record.jobIds.push(job.id);record.events.push({id:job.id+':accepted',at:job.at,text:job.context?.retryOf?'已接受重试':job.context?.routingQuestionId?'已收到澄清回答':job.routing?.action==='continue'?'已接收任务补充':'已接收后台请求'});
   if(job.transfer?.settledAt)record.events.push({id:job.id+':settled',at:job.transfer.settledAt,text:'前台已停稳，转交主控'});
   if(job.startedAt)record.events.push({id:job.id+':started',at:job.startedAt,text:'主控开始整理'});
-  if(job.routing)record.events.push({id:job.id+':routed',at:job.routing.at,text:{dispatch:job.routing.hostContinuation?.bugId&&job.routing.hostContinuation.bugId===job.maintenanceBugId?'已安排工作 · 系统临时恢复，源码问题仍待修复':'已安排工作',continue:'补充已交给原工作',clarify:'主控请求澄清',cancel:'已接受用户撤销',status:'已查询状态'}[job.routing.action]});
+  if(job.routing)record.events.push({id:job.id+':routed',at:job.routing.at,text:{dispatch:job.routing.hostContinuation?.bugId&&job.routing.hostContinuation.bugId===job.maintenanceBugId?'已安排工作 · 系统临时恢复，源码问题仍待修复':'已安排工作',continue:'补充已交给原工作',clarify:'主控请求澄清',cancel:'已接受用户撤销',status:'已查询状态','read-only':'已提交只读答复'}[job.routing.action]});
   if(['failed','interrupted'].includes(job.status))record.events.push({id:job.id+':failed',at:job.finishedAt,text:job.status==='interrupted'?'主控处理被中断，未自动重放':'主控处理失败',detail:recordExcerpt(job.error)});
+  if(job.intakeWithdrawal)record.events.push({id:job.id+':withdrawn',at:job.intakeWithdrawal.at,text:'已撤销请求，保留原执行证据'});
+  if(job.intakeWithdrawal&&intakeSystemFault(job))record.events.push({id:job.id+':historical-diagnosis',at:job.finishedAt,text:'历史运行诊断',detail:[job.maintenanceBugId,recordExcerpt(job.maintenanceFault?.symptom||job.error)].filter(Boolean).join(' · ')});
   if(!record.workId){
+   if(job===latestByRoot.get(rootId)&&job.intakeWithdrawal){
+    record.status='ended';record.phase='已撤销 · 原请求与执行证据保留';
+    if(job.intakeWithdrawal.effectUnknown)record.phase+=' · 执行效果仍未知，不会自动重发';
+    delete record.maintenance;delete record.todoId;delete record.retryJobId;
+    continue;
+   }
+   if(job===latestByRoot.get(rootId)&&job.routing?.action==='read-only'){
+    record.status='ended';record.phase='已答复 · 未派工';
+    delete record.maintenance;delete record.todoId;delete record.retryJobId;
+    continue;
+   }
+   if(job===latestByRoot.get(rootId)&&job.status==='cancelled'&&job.routing?.action==='cancel'&&!job.routing.workId){
+    record.status='ended';record.phase='已撤销 · 未派工';record.description=recordExcerpt(job.error||record.request);
+    delete record.maintenance;delete record.todoId;delete record.retryJobId;
+    continue;
+   }
+   if(job.context?.restrictedMode==='work-handoff'){
+    record.name='工作状态继承';
+    record.description='旧版交接记录，不是 Worker 报告';
+    record.status=job.status==='completed'?'ended':['queued','running'].includes(job.status)?'pending':job.status;
+    record.phase=job.handoffAdopted?'已写入项目记忆（旧版）':({queued:'旧版交接待处理',running:'旧版交接处理中',completed:'旧版总结 · 无任务报告',interrupted:'已中断 · 未重放',failed:'旧版交接失败',unknown:'状态待核对',cancelled:'已取消'})[job.status]??'旧版交接';
+    continue;
+   }
    // Native host-control settlement is not business routing or task completion.
+   if(!job.routing&&job.errorCode==='INTAKE_ROUTE_REQUIRED'){
+    record.status='blocked';record.phase='未收到路由决定 · 原请求已保留';record.description=recordExcerpt(record.request);
+    delete record.maintenance;delete record.todoId;delete record.retryJobId;
+    continue;
+   }
    if(!job.routing&&intakeSystemFault(job)){
     const repair=job.maintenanceBugId&&jobs.findLast(candidate=>candidate.type==='maintenance'&&candidate.context?.bugId===job.maintenanceBugId);
     record.status=['failed','interrupted','unknown'].includes(job.status)?job.status:'blocked';
@@ -280,7 +311,7 @@ export function managedWorkRecords(state){
   const event=state.backstageEvents?.findLast(event=>event.status==='blocked'&&!record.supersededJobIds?.includes(event.sourceJobId)&&(event.revision==null||!work||event.revision===work.revision)&&(event.workId===record.workId&&record.workId||event.target===record.workId&&record.workId||event.sourceJobId&&record.jobIds.includes(event.sourceJobId)));
   if(!event)continue;
   record.backstage={status:event.status,kind:event.kind,reason:event.reason,sourceJobId:event.sourceJobId};
-  if(!work||work.status==='paused'){
+  if(!work&&record.status!=='ended'||work?.status==='paused'){
    record.phase=record.maintenance&&!work?record.phase:'后台受阻 · 进展已保留';record.description=!work?recordExcerpt(record.request):recordExcerpt(event.reason)||record.description;delete record.retryJobId;
   }
  }

@@ -21,7 +21,7 @@ export async function mountPpt({parent,bytes,name,draft,readOnly=false,onChange,
   while(!engine.store.slides.length||engine.busy()){if(Date.now()>deadline)throw Error('PPTX 导入失败或超时');await new Promise(r=>setTimeout(r,100));}
   if(draft)engine.store.$patch(draft);
   await engine.resetHistory();
-  engine.store.setTitle(name.replace(/\.pptx$/i,''));
+  if(!draft)engine.store.setTitle(name.replace(/\.pptx$/i,''));
  if(!readOnly)disposeLayout=mountPptLayout(frame);
   frame.contentWindow.onbeforeunload=null;
   const flushText=()=>{if(disposed)throw Error('PPTX 已关闭');return engine.flushText()===true;};

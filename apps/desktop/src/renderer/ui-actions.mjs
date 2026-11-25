@@ -22,7 +22,7 @@ import {setUiHint} from './ui-tooltip.mjs';
 const table = [
   ['window','窗口与布局','Windows & layout',[
     ['close-view','close','icon','关闭当前内容','Close current content'],
-    ['hide-conversation','close','icon','收起对话，保留消息与草稿','Hide conversation; keep messages and draft'],
+    ['hide-conversation','close','icon','关闭对话面板，保留消息与草稿','Close conversation panel; keep messages and draft'],
     ['show-conversation','message-square','icon','打开当前项目对话','Open project conversation','打开项目对话；消息与草稿保持不变','Open the project conversation; messages and drafts stay unchanged'],
     ['float-view','floating','icon','在独立窗口打开','Open in a separate window'],
     ['dock-view','panel-top','icon','返回主窗口','Dock to main window','将独立窗口内容移回主工作区','Move this content back to the main workspace'],
@@ -87,6 +87,7 @@ const table = [
     ['delete','trash','icon','删除备注','Delete note','仅删除选定备注；不删除原文件','Delete the selected note only; keep the source file']
   ]],
   ['app','应用入口','Application',[
+    ['open-store','storefront','icon','资源商店','Resource store'],
     ['settings','settings','icon','设置','Settings'],
     ['terminal','terminal','icon','终端','Terminal'],
     ['web','globe','icon','网页','Web'],

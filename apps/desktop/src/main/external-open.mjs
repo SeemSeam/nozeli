@@ -36,7 +36,8 @@ async function externalIdentity(file,directory=false){
  if(stat.isSymbolicLink()||!(directory?stat.isDirectory():stat.isFile()))throw Object.assign(Error('外部目标必须是本地普通文件或目录。'),{code:'OPEN_TARGET_UNAVAILABLE'});
  return {dev:String(stat.dev),ino:String(stat.ino),size:String(stat.size),mtimeNs:String(stat.mtimeNs)};
 }
-const sameObject=(a,b)=>a.ino!=='0'&&b.ino!=='0'?a.dev===b.dev&&a.ino===b.ino:true;
+// An unavailable identity cannot prove that this is the original object.
+const sameObject=(a,b)=>a.ino!=='0'&&b.ino!=='0'&&a.dev===b.dev&&a.ino===b.ino;
 export async function bindExternalOpen(host,absolutePath){
  const target=await externalTarget(host,absolutePath),project=await host.requireProject(target.projectId);
  const canonicalTarget=await fs.realpath(absolutePath),kind=target.relPath===null?'directory':'file';

@@ -38,7 +38,11 @@ const publish=async(slug,html)=>{if(workRevision>1)await store.continue(work.id)
 const legacyHtml='<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Real frozen report</title><style>:root{color-scheme:light dark}body{max-width:76ch;margin:auto;padding:1rem}pre{overflow:auto}@media print{body{color:black;background:white}}</style></head><body><h1>Real frozen report</h1><p>完成：真实不可变报告。</p><details><summary>Keyboard details</summary><p id="detail">Frozen evidence</p></details><table><tr><th>Result</th><th>Evidence</th></tr><tr><td>Complete</td><td>Actual bytes</td></tr></table><pre>Long code '+ 'wide '.repeat(70)+'</pre></body></html>';
 const shortHtml='<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>短报：登录提示文案修订</title></head><body><h1 id="top">短报：登录提示文案已修订</h1><p>结论：三处登录失败提示改为可操作表述，行为无回归；改动仍为 worktree 候选，未采用。</p><p>验证：node --test tests/login-copy.test.mjs 通过 12/12；未覆盖英文界面。</p><p><a href="#top">返回结论</a>。</p></body></html>';
 const longHtml='<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>长报：静态报告阅读排版实测</title><style>pre{border-radius:0}</style></head><body><main><h1>长报：静态报告阅读排版实测</h1><p><strong>结论</strong>：新发布的静态报告由宿主注入自包含基础阅读样式；旧对象仅在显示层补样式，不改冻结字节。本页为无主题语义 HTML 长样例，本表数值与本报告实测截图同源。</p><section id="zhengju"><h2>证据</h2><table><caption>正文对比度实测（浅色 / 深色）</caption><thead><tr><th scope="col">元素</th><th scope="col">浅色</th><th scope="col">深色</th></tr></thead><tbody><tr><td>正文段落</td><td>14.7:1</td><td>13.8:1</td></tr><tr><td>图注</td><td>6.9:1</td><td>8.3:1</td></tr><tr><td>链接</td><td>6.0:1</td><td>8.9:1</td></tr></tbody></table></section><section><h2>关键代码</h2><p>显示层注入只改写服务字节，冻结对象保持原摘要：</p><pre><code>export function withReportReaderStyle(html) {\n  if (html.includes(\'&lt;style id="nozeli-reader-style"&gt;\')) return html; // frozen bytes unchanged\n  return injected + html;\n}</code></pre></section><section><h2>图表</h2><figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120" role="img" lang="zh"><title>发布链路</title><desc>准备、校验、冻结三段流程</desc><g font-family="sans-serif" font-size="13" text-anchor="middle"><rect x="6" y="42" width="64" height="36" rx="6" fill="#f5c26b" stroke="#8a5a00"/><text x="38" y="64" fill="#4a3000">准备</text><path d="M72 60 L96 60" stroke="#8a5a00" stroke-width="2"/><rect x="100" y="42" width="64" height="36" rx="6" fill="#b9e0a5" stroke="#2f6b1f"/><text x="132" y="64" fill="#1e440f">校验</text><path d="M166 60 L190 60" stroke="#2f6b1f" stroke-width="2"/><rect x="194" y="42" width="64" height="36" rx="6" fill="#a8d5f2" stroke="#1f5a8a"/><text x="226" y="64" fill="#0f3a5f">冻结</text></g></svg><figcaption>作者图表配色与几何保持原样；宿主不全局覆盖 SVG。</figcaption></figure></section><section><h2>补充细节</h2><details><summary>验收口径</summary><p>正文与图注对比度不低于 4.5:1；390px 窄宽不产生页面级横向溢出；details 可键盘操作。</p></details><p><a href="#zhengju">回到证据表</a></p></section></main></body></html>';
-const receipt=await publish('html-smoke-report',legacyHtml);
+// Reproduce the old report's light-only colors, including a nested inline override.
+const conflictingHtml=legacyHtml.replace('</style>', 'body,h1,th,td{color:#222}th{background:#eee}.cite{color:#0a5}.warn{background:#fff3e0}code{background:#f4f4f4}</style>')
+  .replace('完成：真实不可变报告。','<strong style="color:#222 !important">完成：真实不可变报告。</strong> <span class="cite">[记录8]</span>')
+  .replace('<details>', '<p class="warn">核对 <code>frozen.json</code></p><details>');
+const receipt=await publish('html-smoke-report',conflictingHtml);
 const shortReceipt=await publish('html-short-report',shortHtml);
 const longReceipt=await publish('html-long-report',longHtml);
 // The first object becomes a genuine pre-baseline report: strip the baked
@@ -73,6 +77,7 @@ try{
   await rootPage.waitForSelector('[data-project-id="'+projectId+'"]',{visible:true});
   await rootPage.click('[data-project-id="'+projectId+'"]');
   await rootPage.waitForFunction(async id=>(await nozeli.invoke('workspace.bootstrap')).value?.projectId===id,{},projectId);
+  if(!process.env.NOZELI_HTML_REPORT_ONLY){
   await rootPage.waitForSelector('#file-tree button[data-path="index.html"]',{visible:true});
   await open('index.html');await page.waitForSelector('#web-mode-web[aria-pressed="true"]');
   const editorBefore=await page.evaluate(()=>({text:__nozeliInput.text(),selection:__nozeliInput.selection?.()}));
@@ -174,6 +179,7 @@ try{
   const htm=await isolatedPage('中文 HTM 页面');await htm.waitForFunction(()=>document.querySelector('img').naturalWidth===24);await htm.click('button');assert.equal(await htm.$eval('button',node=>node.textContent),'已点击');
   await page.click('#web-mode-source');
   report.checks.push('Default webpage, source releases native surface, compare preserves editor; Chinese spaced .htm and image paths execute local DOM');
+  }
   await rootPage.evaluate(()=>nozeli.invoke('session.resize',{width:1920,height:1000}));
   if(!process.env.NOZELI_HTML_BROWSER_ONLY){
   page=rootPage;
@@ -181,40 +187,39 @@ try{
   await setTheme('light');
   const openStatic=async(key,objectId,marker)=>{const opened=await call('isolated-preview.open',{key,profile:'staticReport',projectId,objectId,generation:1,bounds:{x:20,y:80,width:600,height:600}});assert.equal(opened.ok,true,JSON.stringify(opened));const found=await isolatedPage(marker);assert.equal(await found.evaluate(()=>typeof window.nozeli),'undefined');return found;};
   const fitWidth=async(key,handle,width)=>{const boundsResult=await call('isolated-preview.bounds',{key,bounds:{x:20,y:80,width,height:600}});assert.equal(boundsResult.ok,true,JSON.stringify(boundsResult));const deadline=Date.now()+5000;let actual;do{actual=await handle.evaluate(()=>innerWidth);if(actual===width)break;await tick(100);}while(Date.now()<deadline);assert.equal(actual,width,'native static-report viewport width '+key+' '+width);};
-  const shoot=async(handle,file)=>{for(let attempt=0;;attempt++){try{return await handle.screenshot({path:file,captureBeyondViewport:true});}catch(error){if(attempt>=1)throw error;await tick(1000);}}};
+  const shoot=async(handle,file)=>{if(process.env.NOZELI_HTML_NO_REPORT_SCREENSHOTS)return;for(let attempt=0;;attempt++){try{return await handle.screenshot({path:file,captureBeyondViewport:true});}catch(error){if(attempt>=1)throw error;await tick(1000);}}};
   const contrastOf=handle=>handle.evaluate(()=>{
     const lum=color=>{const m=String(color).match(/[\d.]+/g).map(Number);const c=m.slice(0,3).map(v=>{v/=255;return v<0.03928?v/12.92:((v+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};
     const effBg=node=>{for(let n=node;n;n=n.parentElement){const c=getComputedStyle(n).backgroundColor;if(c&&!/transparent/.test(c)&&!/rgba\(\s*0+,\s*0+,\s*0+,\s*0+\s*\)/.test(c))return c;}return 'rgb(255, 255, 255)';};
     const one=sel=>{const n=document.querySelector(sel);if(!n)return null;const a=lum(getComputedStyle(n).color),b=lum(effBg(n));return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05);};
     // Chart glyphs are author SVG artwork; reading contrast applies to document text.
-    return {body:one('p'),heading:one('h1'),caption:one('figcaption'),link:one('a')};
+    return Object.fromEntries(['p','h1','figcaption','a','th','td','.cite','.warn','.warn code','p strong'].map(sel=>[sel,one(sel)]));
   });
   const noOverflow=async handle=>{const geo=await handle.evaluate(()=>({scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth}));assert(geo.scroll<=geo.client+1,'page-level horizontal overflow '+JSON.stringify(geo));};
-  const legacyPage=await openStatic('smoke-report',receipt.objectId,'Real frozen report');
-  const shortPage=await openStatic('short-report',shortReceipt.objectId,'短报：登录提示文案已修订');
-  const longPage=await openStatic('long-report',longReceipt.objectId,'长报：静态报告阅读排版实测');
-  // Legacy bytes are pre-baseline: the display layer supplies the reader style.
-  for(const handle of[legacyPage,shortPage,longPage])assert(await handle.$eval('#nozeli-reader-style',node=>node instanceof HTMLStyleElement),'host reader style present');
   assert(!(await store.readObject(receipt.report.digest)).includes(styleOpen),'legacy frozen bytes stay pre-baseline on disk');
   const visualReport=[];
-  for(const theme of ['light','dark']){
-    // Real settings change: nativeTheme.themeSource makes every renderer,
-    // including the isolated static reports, resolve the app theme natively.
-    await setTheme(theme);
-    for(const handle of[legacyPage,shortPage,longPage])await handle.waitForFunction(theme=>matchMedia('(prefers-color-scheme: dark)').matches===(theme==='dark'),{},theme);
-    for(const[key,handle]of[['smoke-report',legacyPage],['short-report',shortPage],['long-report',longPage]]){
+  // A single visible guest at a time: overlapping native views can throttle resize/paint.
+  for(const [key,row,marker] of [['smoke-report',receipt,'Real frozen report'],['short-report',shortReceipt,'短报：登录提示文案已修订'],['long-report',longReceipt,'长报：静态报告阅读排版实测']]){
+    const handle=await openStatic(key,row.objectId,marker);
+    assert(await handle.$eval('#nozeli-reader-style',node=>node instanceof HTMLStyleElement),'host reader style present');
+    for(const theme of ['light','dark']){
+      await setTheme(theme);
+      await handle.waitForFunction(theme=>matchMedia('(prefers-color-scheme: dark)').matches===(theme==='dark'),{},theme);
       for(const width of[900,390]){
         await fitWidth(key,handle,width);
+        await handle.waitForFunction(theme=>getComputedStyle(document.documentElement).colorScheme===theme,{},theme);
         const contrast=await contrastOf(handle);
         for(const[subject,value]of Object.entries(contrast))if(value!==null)assert(value>=4.5,theme+' '+key+' '+subject+' contrast '+value.toFixed(2));
         await noOverflow(handle);
-        if(handle===legacyPage)assert(await handle.$eval('h1',node=>node.getBoundingClientRect().right)<=width);
+        if(key==='smoke-report')assert(await handle.$eval('h1',node=>node.getBoundingClientRect().right)<=width);
         await shoot(handle,path.join(output,'report-'+key+'-'+theme+'-'+width+'.png'));
         visualReport.push({theme,key,width,contrast});
       }
     }
+    assert.equal((await call('isolated-preview.close',{key})).ok,true);
   }
   report.visual=visualReport;
+  const longPage=await openStatic('long-report-controls',longReceipt.objectId,'长报：静态报告阅读排版实测');
   // Author intent wins the cascade: the long sample overrides the host radius.
   assert.equal(await longPage.$eval('pre',node=>getComputedStyle(node).borderBottomRightRadius),'0px','author style overrides host baseline');
   // Author SVG colors and geometry survive the host baseline untouched.
@@ -225,8 +230,15 @@ try{
   await longPage.focus('summary');await longPage.keyboard.press('Enter');assert(await longPage.$eval('details',node=>node.open));
   for(let step=0;step<12&&await longPage.evaluate(()=>document.activeElement!==document.querySelector('a'));step++)await longPage.keyboard.press('Tab');
   assert(await longPage.evaluate(()=>{const node=document.activeElement;return node instanceof HTMLAnchorElement&&parseFloat(getComputedStyle(node).outlineWidth)>0;}),'keyboard focus outline visible on report link');
-  report.checks.push('Real light/dark (app settings) + 390/900px screenshots, measured contrast >=4.5, no horizontal overflow, keyboard focus/disclosure, cascade and author SVG preservation for legacy/short/long reports');
-  await legacyPage.emulateMediaType('print');assert.equal(await legacyPage.$eval('body',node=>getComputedStyle(node).color),'rgb(0, 0, 0)');const staticPrint=await call('isolated-preview.print',{key:'smoke-report',silent:true});if(report.printCapable)assert.equal(staticPrint.ok,true,'host print of frozen report');else{assert.match(staticPrint.error?.message||'',/Failed to enumerate printers|default printer/i);report.printEnvironmentLimit='No CUPS default printer on this host; print media + layout still verified';}await legacyPage.emulateMediaType('screen');
+  assert.equal((await call('isolated-preview.close',{key:'long-report-controls'})).ok,true);
+  report.checks.push('Real light/dark (app settings) + 390/900px viewports, measured contrast >=4.5, no horizontal overflow, keyboard focus/disclosure, cascade and author SVG preservation for legacy/short/long reports');
+  const legacyPage=await openStatic('smoke-report-print',receipt.objectId,'Real frozen report');
+  await legacyPage.emulateMediaType('print');
+  assert.deepEqual(await legacyPage.$eval('body',node=>{const style=getComputedStyle(node);return [style.color,style.backgroundColor];}),['rgb(34, 34, 34)','rgb(255, 255, 255)'],'author print colors are not replaced by the screen palette');
+  const staticPrint=await call('isolated-preview.print',{key:'smoke-report-print',silent:true});
+  if(report.printCapable||staticPrint.ok)assert.equal(staticPrint.ok,true,'host print of frozen report');
+  else{assert.match(staticPrint.error?.message||'',/Failed to enumerate printers|default printer/i);report.printEnvironmentLimit='No CUPS default printer on this host; print media + layout still verified';}
+  await legacyPage.emulateMediaType('screen');
   // Real export: the new-format object leaves the app self-contained.
   const exported=await rootPage.evaluate(({projectId,objectId})=>nozeli.invoke('report.export',{projectId,objectId,relPath:'长报导出.html'}),{projectId,objectId:longReceipt.objectId});
   assert.equal(exported.ok,true,JSON.stringify(exported));
@@ -242,8 +254,7 @@ try{
     for(const [index,attack]of ['<script>document.title="attack"</script>','<img src="https://example.invalid/attack">','<iframe src="file:///etc/passwd"></iframe>','<p onclick="alert(1)">attack</p>'].entries())await assert.rejects(()=>attempt.publish(rejected.id,1,'result','<!doctype html><html><body>'+attack+'</body></html>','attack-'+index,{files:[]}));
   }finally{await attempt.close();}
   assert.deepEqual(await store.readObject(receipt.report.digest),original);report.checks.push('Real publication rejects HTML script/network/file/event attacks and preserves frozen bytes');
-  report.step='closing-static-slots';
-  for(const key of['smoke-report','short-report','long-report'])await call('isolated-preview.close',{key});
+  assert.equal((await call('isolated-preview.close',{key:'smoke-report-print'})).ok,true);
   report.step='opening-agent-details';
   await rootPage.evaluate(()=>window.dispatchEvent(new Event('nozeli-agent-details')));await rootPage.waitForSelector('#managed-agent-details[open]');
   report.step='opening-work-archive';
@@ -264,7 +275,9 @@ try{
   await shoot(actualReport,path.join(output,'report-from-history-light.png'));
   await setTheme('dark');
   await actualReport.waitForFunction(()=>matchMedia('(prefers-color-scheme: dark)').matches);
+  await actualReport.waitForFunction(()=>getComputedStyle(document.documentElement).colorScheme==='dark');
   assert.equal(await actualReport.$eval('h1',n=>n.textContent),'Real frozen report');
+  for(const [subject,value] of Object.entries(await contrastOf(actualReport)))if(value!==null)assert(value>=4.5,'history dark '+subject+' contrast '+value.toFixed(2));
   report.checks.push('Real UI surface follows live app theme switches on the frozen report without reopening');
   }
   await rootPage.evaluate(()=>nozeli.invoke('session.requestClose'));assert.equal((await Promise.race([exited,tick(15000).then(()=>({code:'timeout'}))])).code,0);report.ok=true;

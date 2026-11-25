@@ -55,7 +55,9 @@ function makeTerminal({ platform = 'linux', uid = 1000,
   root = '/data/projects/demo', loader } = {}) {
   const pty = fakePty(), ownership = fakeOwnership();
   const rawSpawn = pty.spawn.bind(pty);
-  pty.spawn = (...args) => { const term = rawSpawn(...args); ownership.alive.add(term.pid); return term; }; // the host stamps the leader at spawn
+  const baseline = new Set(['synthetic-inaccessible:before-spawn']);
+  let baselineCaptured = false;
+  pty.spawn = (...args) => { assert.equal(baselineCaptured,true,'capture the synthetic baseline before spawning'); const term = rawSpawn(...args); ownership.alive.add(term.pid); return term; }; // the host stamps the leader at spawn
   const layouts = new Map(), broadcasts = [], persisted = [], commands = [], surfaces = new Map(), focusCalls = [];
   let rootHold = null;
   let layout = createLayout('demo', { workspace: { minimized: true } });
@@ -77,6 +79,8 @@ function makeTerminal({ platform = 'linux', uid = 1000,
     access: async () => {},
     now: () => 1700000000000,
   });
+  // This harness models Linux ownership; never read the real host's /proc.
+  ownership.selection.implementation.captureUninspectableBaseline = async () => { baselineCaptured = true; return baseline; };
   const attachView = () => Object.values(layout.views).find(view => view.kind === 'project-terminal')?.id ?? null;
   return { terminal, workspace, pty, ownership, broadcasts, persisted, commands, surfaces, focusCalls, layoutRef: () => layout, attachView,
     holdRoot() { rootHold = Promise.withResolvers(); return rootHold; },
@@ -146,12 +150,6 @@ test('only the exact project-terminal surface reaches runtime ops', async () => 
   await assert.rejects(terminal.open({ role: 'surface', projectId: 'demo', kind: 'project-terminal' }, { projectId: 'demo' }), error => error.code === 'IPC_DENIED');
 });
 
-test('unsupported platforms get an honest error, never a fake terminal', async () => {
-  const { terminal, shell, surface, attachView, pty } = makeTerminal({ platform: 'win32' });
-  await terminal.open(shell(), { projectId: 'demo' });
-  await assert.rejects(terminal.attach(surface(), { projectId: 'demo', viewId: attachView() }), error => error.code === 'UNSUPPORTED_PLATFORM' && error.platform === 'windows');
-  assert.equal(pty.sessions.length, 0);
-});
 
 test('the default ESM pty loader resolves node-pty instead of a bare require', async () => {
   // Without an injected loader the host must attempt a real module resolution;

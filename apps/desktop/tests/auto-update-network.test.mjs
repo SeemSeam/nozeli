@@ -92,15 +92,15 @@ test('rate-limited manifest keeps version visibility and explains the throttle',
   await fs.writeFile(path.join(releaseDir, 'AppRun'), '', {mode: 0o755});
   const route = async input => {
     const url = String(input);
-    if (url.includes('/git/ref/tags/')) return new Response(JSON.stringify({ref: 'refs/tags/v1.0.1-alpha.1', object: {sha: commit, type: 'commit'}}), {headers: {'content-type': 'application/json'}});
+    if (url.includes('/git/ref/tags/')) return new Response(JSON.stringify({ref: 'refs/tags/v1.0.1', object: {sha: commit, type: 'commit'}}), {headers: {'content-type': 'application/json'}});
     if (url.includes('/releases/download/')) return rateLimited();
-    return new Response(JSON.stringify([release('1.0.1-alpha.1')]), {headers: {'content-type': 'application/json'}});
+    return new Response(JSON.stringify([release('1.0.1')]), {headers: {'content-type': 'application/json'}});
   };
   const updater = new AutoUpdater({currentVersion: '1.0.0', appRoot: path.join(releaseDir, 'resources/app'), stateDir: path.join(root, 'state'), enabled: false, dependencies: {fetch: route}});
   const status = await updater.check();
   assert.equal(status.supported, true);
   assert.equal(status.phase, 'error');
-  assert.equal(status.availableVersion, '1.0.1-alpha.1');
+  assert.equal(status.availableVersion, '1.0.1');
   assert.match(status.message, /anonymous rate limit exhausted/);
   assert.ok(status.message.includes(formatResetTime(RATE_LIMIT_RESET)), status.message);
   updater.stop(); await updater.persist;

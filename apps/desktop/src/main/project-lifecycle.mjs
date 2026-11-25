@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID, createHash} from 'node:crypto';
 import {boundedProjectWait} from '../domain/project-lifecycle-wait.mjs';
+import {platformPersistence} from '../platform/shared/persistence.mjs';
 import {ProjectForceRecovery} from './project-force-recovery.mjs';
 
 const fail = (code, message) => Object.assign(new Error(message), {code});
@@ -95,6 +96,9 @@ export class ProjectLifecycle {
   async preview({projectId,action}) {
     if(action==='force-recover')return this.previewForceRecovery({projectId,action});
     if(!['clean-local','delete-project','reset-project'].includes(action))throw fail('INVALID_LIFECYCLE_ACTION','未知项目清理操作。');
+    // No shared adapter exists for Windows yet: refuse before any observation
+    // or side effect instead of relying on storage construction failing later.
+    if(action==='reset-project')platformPersistence.requireSupported();
     if(this.operations.has(projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
     if(action!=='reset-project')this.host.storage.assertActive(projectId);
     const project=await this.host.requireRegisteredProject(projectId);
@@ -124,6 +128,7 @@ export class ProjectLifecycle {
     if(!confirmation || confirmation.expiresAt<Date.now())throw fail('LIFECYCLE_CONFIRMATION_EXPIRED','确认已失效，请重新查看范围。');
     if(confirmation.action==='force-recover')return this.executeForceRecovery(arguments[0]);
     if(confirmation.action==='reset-project'&&confirmPermanentDelete!==true)throw fail('PERMANENT_DELETE_CONFIRMATION_REQUIRED','永久清除需要明确勾选不可恢复确认。');
+    if(confirmation.action==='reset-project')platformPersistence.requireSupported();
     this.tokens.delete(token);
     if(this.operations.has(confirmation.projectId))throw fail('PROJECT_LIFECYCLE_ACTIVE','该项目已有生命周期操作。');
     return this.run({...confirmation,allowDemoChanges:allowDemoChanges===true&&confirmation.preserveByDefault===true});
@@ -163,6 +168,7 @@ export class ProjectLifecycle {
     this.availability.set(key,attempt);return attempt;
   }
   async resumeReset(receipt) {
+    platformPersistence.requireSupported();
     if(!receipt.scope||!receipt.expected)throw fail('PROJECT_RESET_OWNERSHIP_UNKNOWN','旧清除回执缺少原确认实体证据，不能继续删除。');
     const held=[];
     for(const project of receipt.scope.projects){
@@ -186,6 +192,7 @@ export class ProjectLifecycle {
       const stopped=await this.managed.stopProject(projectId,{lifecycleHold:hold,discardState});
       await this.host.storage.drainProjectOperations(projectId);
       if(stopped?.confirmationComplete!==true)throw fail('PI_EXIT_UNCONFIRMED','项目写入者停稳未确认。');
+      await this.beforeStop(projectId);
       await this.workspace.closeProject(projectId,{operationId:hold.operationId,strictStop:true,discardState});
       if(discardState){await this.host.storage.closeProjectHandles(projectId);this.host.storage.sealLocal(projectId,hold);}
       hold.needsStopCheck=false;
@@ -195,6 +202,7 @@ export class ProjectLifecycle {
   }
   async run(confirmation) {
     const {projectId,operationId,instanceId,action}=confirmation;
+    if(action==='reset-project')platformPersistence.requireSupported();
     const previous=new Map();
     if(action==='reset-project')for(const id of confirmation.resetScope.relatedProjectIds){
       const old=this.host.storage.lifecycleHolds.get(id);if(!old)continue;
@@ -266,7 +274,16 @@ export class ProjectLifecycle {
     const {projectId,operationId,action}=confirmation;
     let record={schema:1,...confirmation,relatedHolds:undefined,token:undefined,phase:'prepared',updatedAt:new Date().toISOString()};
     const checkpoint=async patch=>{record={...record,...patch,updatedAt:new Date().toISOString()};await this.journal(projectId,record);};
-    const stage=async promise=>{hold.pendingCount++;const pending=Promise.resolve(promise);pending.then(()=>{hold.pendingCount--;},()=>{hold.pendingCount--;});return boundedProjectWait(pending,{timeoutMs:this.timeoutMs});};
+    // Keep the primary interlock for the whole operation, and fence any
+    // related project that owns work which can outlive the observation deadline.
+    const stage=async (promise,owner=hold)=>{
+      hold.pendingCount++;
+      if(owner!==hold)owner.pendingCount++;
+      const settled=()=>{hold.pendingCount--;if(owner!==hold)owner.pendingCount--;};
+      const pending=Promise.resolve(promise);
+      pending.then(settled,settled);
+      return boundedProjectWait(pending,{timeoutMs:this.timeoutMs});
+    };
     // The first journal commit also proves the catalog/recovery binding is readable.
     await this.host.storage.list();await checkpoint({});
     try {
@@ -283,9 +300,12 @@ export class ProjectLifecycle {
       if(action==='reset-project')this.matchSource(confirmation.source,await this.checkReset(project));
       for(const [id,h] of confirmation.relatedHolds??[[projectId,hold]])await this.host.storage.withLifecycleOwner(id,h,async()=>{
         h.needsStopCheck=true;
-        const [,stopped]=await Promise.all([stage(Promise.resolve().then(()=>this.beforeStop(id))),stage(Promise.resolve().then(()=>this.managed.stopProject(id,{lifecycleHold:h,discardState:action==='reset-project'}))),stage(this.host.storage.drainProjectOperations(id))]);
+        const [,stopped]=await Promise.all([stage(Promise.resolve().then(()=>this.beforeStop(id)),h),stage(Promise.resolve().then(()=>this.managed.stopProject(id,{lifecycleHold:h,discardState:action==='reset-project'})),h),stage(this.host.storage.drainProjectOperations(id),h)]);
         if(stopped?.confirmationComplete!==true)throw fail('PI_EXIT_UNCONFIRMED','项目写入者停稳未确认，保留所有目录。');
-        await stage(this.workspace.closeProject(id,{operationId,strictStop:action==='reset-project',discardState:action==='reset-project'}));h.needsStopCheck=false;
+        // The first sweep cancels work that may hold the drain open; the
+        // second stops writers opened by those already admitted operations.
+        await stage(this.beforeStop(id),h);
+        await stage(this.workspace.closeProject(id,{operationId,strictStop:action==='reset-project',discardState:action==='reset-project'}),h);h.needsStopCheck=false;
       });
       const settled=await this.host.storage.getRecovery(projectId,'lifecycle:settle-managed:'+operationId);
       if(action==='settle-managed'&&settled?.complete){await checkpoint({phase:'complete',result:settled.result});return settled.result;}
@@ -346,6 +366,7 @@ export class ProjectLifecycle {
     if(permanent||resetJournal){
       const record=permanent??resetJournal;if(record.projectId!==projectId&&!permanent?.relatedProjectIds?.includes(projectId)&&permanent?.result?.newProjectId!==projectId)throw fail('PROJECT_IDENTITY_CONFLICT','操作身份不匹配');
       if(permanent?.phase==='complete'){
+        platformPersistence.requireSupported();
         const fresh=await this.host.storage.requireRegistered(permanent.result.newProjectId);
         const root=await directorySnapshot(fresh.root),metadata=await directorySnapshot(fresh.metadataRoot);
         if(!same(root,fresh.identity)||!same(metadata,fresh.metadataIdentity)||JSON.parse(await fs.readFile(path.join(fresh.metadataRoot,'project.json'),'utf8')).projectId!==fresh.id)throw fail('PROJECT_IDENTITY_CONFLICT','新身份与完成回执不符');
@@ -365,7 +386,8 @@ export class ProjectLifecycle {
     await this.host.storage.reconcileLifecycleStorage(projectId);
     let record=await this.host.storage.getRecovery(projectId,'lifecycle:'+operationId);
     if(!record){const hold=this.host.storage.lifecycleHolds.get(projectId);if(hold?.operationId!==operationId)throw fail('LIFECYCLE_OPERATION_NOT_FOUND','操作记录不存在。');const project=await this.host.requireRegisteredProject(projectId);record={schema:1,projectId,operationId,action:hold.action,root:project.root,local:await this.localScope(project),source:{root:project.root,identity:project.identity},phase:'needs-attention'};}
-    // Observation only: never resume trash, rm, process termination or removal.
+    // Never resume trash, deletion or removal. A held operation may still
+    // need to confirm writer shutdown before admission can reopen.
     const project=await this.host.requireRegisteredProject(projectId);
     const hold=this.host.storage.lifecycleHolds.get(projectId);
     if(hold&&(hold.instanceId!==project.instanceId||hold.operationId!==operationId||record.projectId!==projectId||record.operationId!==operationId||record.action!==hold.action||record.instanceId!==undefined&&record.instanceId!==project.instanceId))throw fail('PROJECT_IDENTITY_CONFLICT','生命周期围栏、日志与当前实例不一致。');
@@ -377,7 +399,9 @@ export class ProjectLifecycle {
         hold.pendingCount=(hold.pendingCount??0)+1;
         const stopping=this.host.storage.withLifecycleOwner(projectId,hold,async()=>{
           const stopped=await this.managed.stopProject(projectId,{lifecycleHold:hold});
-          await this.host.storage.drainProjectOperations(projectId);return stopped;
+          await this.host.storage.drainProjectOperations(projectId);
+          if(stopped?.confirmationComplete===true)await this.beforeStop(projectId);
+          return stopped;
         });
         stopping.then(()=>{hold.pendingCount--;},()=>{hold.pendingCount--;});
         const receipt=await boundedProjectWait(stopping,{timeoutMs:this.timeoutMs});

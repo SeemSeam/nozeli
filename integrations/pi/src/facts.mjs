@@ -11,6 +11,14 @@
  * parentId / timestamp); nothing is synthesized, previewed, or deduplicated.
  * Streaming message snapshots are marked projected:true so the host can treat
  * them as projection frames and key durable rows on entry events only.
+ * message_update snapshots are coalesced at a bounded rate (one per window,
+ * latest cumulative snapshot wins; a paused stream self-flushes within one
+ * window via an unref'd timer that every flush path cancels) and flushed
+ * explicitly before every terminal boundary — message_end, tool facts,
+ * durable entries, agent_end, a new stream (message_start), and endTurn —
+ * never buffered across identity/turn. The native assistantMessageEvent is
+ * not forwarded: its `partial` duplicates the entire message and no
+ * consumer reads it.
  */
 
 function toJson(value) {
@@ -81,12 +89,34 @@ const MESSAGE_EVENT_NAMES = {
   message_update: "message_update",
   message_end: "message_end",
 };
-
-export function createFactChannel({ send }) {
+// message_update transport budget: at most one snapshot per window leaves
+// the channel; everything else coalesces into the latest cumulative
+// snapshot (see the message_* case in onNativeSessionEvent).
+const UPDATE_COALESCE_MS = 50;
+export function createFactChannel({
+  send,
+  now = () => performance.now(),
+  // Window timer for the coalesced snapshot. Injectable so tests are
+  // deterministic; the default is an UNREF'd timeout — a forgotten flush
+  // must never keep the worker process alive.
+  schedule = (run, ms) => {
+    const timer = setTimeout(run, ms);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  },
+}) {
   let turn = null;
   let seq = 0;
   let sessionSingletonId = null;
   const usageEntries = new Set();
+  // Coalesced message_update state. pendingUpdate holds the NEWEST cumulative
+  // snapshot as a raw reference (cloned exactly once, at send time — the
+  // clone is what freezes it against later in-memory mutation); identity
+  // fields (streamId/sessionId/turnId) are captured at enqueue time so a
+  // flush can never attribute a snapshot to another turn or stream.
+  let pendingUpdate = null;
+  let lastUpdateSentAt = -Infinity;
+  let cancelScheduledFlush = null;
   const state = {
     lastAssistantText: "",
     turnUsage: null,
@@ -118,6 +148,7 @@ export function createFactChannel({ send }) {
       return;
     }
     if (message?.role === "assistant") {
+      if (turn && ['stop','length','toolUse','error','aborted'].includes(message.stopReason)) turn.stopReason = message.stopReason;
       state.lastAssistantText = messageText(message);
       if (turn && message.usage && !usageEntries.has(entry.id)) {
         usageEntries.add(entry.id);
@@ -160,6 +191,30 @@ export function createFactChannel({ send }) {
     send({ event: "native", eventData });
   }
 
+  // Cancels the window timer (idempotent; no-op when none is scheduled).
+  function clearScheduledFlush() {
+    if (cancelScheduledFlush) {
+      cancelScheduledFlush();
+      cancelScheduledFlush = null;
+    }
+  }
+
+  // Sends the coalesced latest message_update snapshot, cloning its message
+  // exactly once at send time (the clone freezes the snapshot against later
+  // in-memory mutation). No-op when nothing is pending. The pending snapshot
+  // leaves at its bounded unref'd window timer (staleness can never exceed
+  // one window even when the stream pauses), at the next window edge, or at
+  // an explicit terminal boundary (message_end / tool / entry / agent_end /
+  // endTurn) — every flush path also cancels the timer.
+  function flushPendingUpdate() {
+    if (!pendingUpdate) return;
+    const eventData = pendingUpdate;
+    pendingUpdate = null;
+    clearScheduledFlush();
+    lastUpdateSentAt = now();
+    native({ ...eventData, message: toJson(eventData.message) });
+  }
+
   // Host-authored delivery/compaction facts: metadata only (identities,
   // digests, byte counts, phases). Never user text, material bodies, or
   // projection envelopes — those stay inspectable at the host, not in logs.
@@ -178,12 +233,52 @@ export function createFactChannel({ send }) {
     const turnId = turn?.turnId;
     switch (event?.type) {
       case "entry_appended":
+        // Durable entries close the streaming projection of the message they
+        // journal: the coalesced latest snapshot must precede the entry.
+        flushPendingUpdate();
         entryFrame(event);
         return;
       case "message_start":
       case "message_update":
       case "message_end": {
+        // message_end closes the stream and message_start opens a new one:
+        // neither may overtake the coalesced latest snapshot of the stream
+        // being closed, so flush first (no-op when nothing is pending).
+        if (event.type !== "message_update") flushPendingUpdate();
         if (turn && event.type === 'message_start') turn.streamId = turn.requestId + ':' + (turn.streamSequence = (turn.streamSequence ?? 0) + 1);
+        if (event.type === "message_update" && now() - lastUpdateSentAt < UPDATE_COALESCE_MS) {
+          // Bounded-rate latest-snapshot coalescing. message_update carries a
+          // full CUMULATIVE snapshot, so retaining only the newest one is
+          // lossless; the raw reference is stored and cloned only if it is
+          // really sent. Identity is captured at enqueue time. A single
+          // unref'd window timer guarantees the newest snapshot leaves
+          // within one window even if the stream pauses right here;
+          // replacing the pending snapshot does not reschedule it. Never
+          // buffered across turns (see beginTurn/endTurn).
+          const pending = {
+            type: "message_update",
+            projected: true,
+            message: event.message,
+          };
+          if (turn?.streamId) pending.streamId = turn.streamId;
+          if (sessionId) pending.sessionId = sessionId;
+          if (turnId) pending.turnId = turnId;
+          pendingUpdate = pending;
+          if (!cancelScheduledFlush) {
+            cancelScheduledFlush = schedule(flushPendingUpdate, UPDATE_COALESCE_MS);
+          }
+          return;
+        }
+        if (event.type === "message_update") {
+          // Window elapsed: this newer cumulative snapshot supersedes any
+          // pending one and is forwarded immediately. The superseded
+          // snapshot's window timer must go with it, or the invariant
+          // "timer live iff a snapshot is pending" breaks and the NEXT
+          // coalesce would never schedule its self-flush.
+          pendingUpdate = null;
+          clearScheduledFlush();
+          lastUpdateSentAt = now();
+        }
         const eventData = {
           type: MESSAGE_EVENT_NAMES[event.type],
           projected: true,
@@ -192,13 +287,18 @@ export function createFactChannel({ send }) {
         if (turn?.streamId) eventData.streamId = turn.streamId;
         if (sessionId) eventData.sessionId = sessionId;
         if (turnId) eventData.turnId = turnId;
-        if (event.type === "message_update" && event.assistantMessageEvent) {
-          eventData.assistantEvent = toJson(event.assistantMessageEvent);
-        }
+        // The native event also carries assistantMessageEvent, whose `partial`
+        // duplicates the entire message (the quadratic amplification source).
+        // It is intentionally NOT forwarded: repo-wide, no consumer reads
+        // assistantEvent — the host (session-index) keys projection frames on
+        // the cumulative `message` snapshot alone.
         native(eventData);
         return;
       }
       case "tool_execution_start": {
+        // Tool boundaries close the assistant stream that requested them:
+        // the coalesced latest snapshot must precede the tool fact.
+        flushPendingUpdate();
         const eventData = {
           type: "toolExecutionStarted",
           callId: event.toolCallId,
@@ -211,6 +311,7 @@ export function createFactChannel({ send }) {
         return;
       }
       case "tool_execution_update": {
+        flushPendingUpdate();
         const eventData = {
           type: "toolExecutionUpdated",
           callId: event.toolCallId,
@@ -224,6 +325,8 @@ export function createFactChannel({ send }) {
         return;
       }
       case "tool_execution_end": {
+        flushPendingUpdate();
+        if (turn) turn.lastToolResult = event.isError === true ? 'error' : 'ok';
         const eventData = {
           type: "toolExecutionEnded",
           callId: event.toolCallId,
@@ -266,6 +369,9 @@ export function createFactChannel({ send }) {
         return;
       }
       case "agent_end": {
+        // agent_end closes the run (and carries the full message array):
+        // the coalesced latest snapshot must precede it.
+        flushPendingUpdate();
         const eventData = { type: "agent_end", messages: toJson(event.messages ?? []) };
         if (event.willRetry !== undefined) eventData.willRetry = event.willRetry;
         if (event.willRetry !== undefined) state.willRetry = event.willRetry === true;
@@ -359,6 +465,12 @@ export function createFactChannel({ send }) {
   }
 
   function beginTurn(nextTurn) {
+    // A new turn never inherits buffered state: endTurn has already flushed
+    // the closing turn's snapshot, and anything still held (a turn switch
+    // without endTurn) belongs to a finished turn and is dropped here.
+    pendingUpdate = null;
+    clearScheduledFlush();
+    lastUpdateSentAt = -Infinity;
     turn = nextTurn;
     usageEntries.clear();
     state.lastAssistantText = "";
@@ -374,6 +486,10 @@ export function createFactChannel({ send }) {
   }
 
   function endTurn() {
+    // Cancellation/turn-boundary flush: the host still receives the final
+    // coalesced snapshot of the closing turn (with that turn's identity)
+    // before any next-turn frame can be observed.
+    flushPendingUpdate();
     turn = null;
   }
 

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { createNativeQuestionBridge } from '../../../integrations/pi/src/questions.mjs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {createNativeQuestionBridge}=await import(pathToFileURL(path.join(integration,'src/questions.mjs')));
 
 const single = {
   id: 'scope', question: '选择范围？', header: '范围', recommended: 0,

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {packageNodeRuntime} from './package-node-runtime.mjs';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {canonicalSections,canonicalDefinedSymbols,canonicalDynamicSymbols,qualifyStrippedNode} from './elf-strip-qualification.mjs';
@@ -120,10 +121,11 @@ export async function exportNodeSymbols({source,application,archive}){
 export async function packagePiRuntime({source,application,includeDependency}){
  const integration=path.resolve(source,'../../integrations/pi'),target=path.join(application,'integrations/pi');
  await fs.mkdir(target,{recursive:true});
- for(const name of ['src','dist','vendor','patches','licenses','package.json','package-lock.json','runtime-manifest.json','upstream-manifest.json'])await fs.cp(path.join(integration,name),path.join(target,name),{recursive:true});
+ for(const name of ['src','dist','vendor','patches','tools','licenses','package.json','package-lock.json','runtime-manifest.json','upstream-manifest.json'])await fs.cp(path.join(integration,name),path.join(target,name),{recursive:true});
  const lock=JSON.parse(await fs.readFile(path.join(integration,'package-lock.json'),'utf8'));
  const modules=path.join(integration,'node_modules');
  await fs.cp(modules,path.join(target,'node_modules'),{recursive:true,filter:file=>{const relative=path.relative(modules,file);return relative.split(path.sep)[0]!=='.bin'&&includeDependency(lock,relative);}});
+ if(process.platform==='win32'){await packageNodeRuntime({source,application});return;}
  const runtimeLock=JSON.parse(await fs.readFile(path.join(source,'tools/node-runtime.lock.json'),'utf8'));
  const node=Object.values(runtimeLock.platforms??{}).find(entry=>entry.platform===process.platform&&entry.arch===process.arch);
  if(!node)throw Error('No pinned standalone Node for this packaging platform');

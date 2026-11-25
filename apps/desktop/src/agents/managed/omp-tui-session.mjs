@@ -17,7 +17,7 @@ import { pinSessionFileById, ompGroupRecord, reapOwnedOmpGroup } from './omp-pro
 import { deployOmpTerminalBridge, connectOmpTerminalBridge, readOmpTerminalToolHistory } from './omp-terminal-bridge.mjs';
 import { createTerminalScreen } from './terminal-screen.mjs';
 import { createTerminalInputObserver } from '../../domain/terminal-input.mjs';
-import { optionalIsolatedLaunch } from './process-isolation.mjs';
+import { isolatedLaunch, requireIsolationSupport } from './process-isolation.mjs';
 import { resolveBundledOmpRuntime } from './omp-runtime.mjs';
 import { createRequire } from 'node:module';
 import { imageSize } from 'image-size';
@@ -126,6 +126,7 @@ export class OmpTuiSession extends EventEmitter {
       instructions: [spec.baseInstructions,spec.instructions].filter(Boolean).join('\n'), tools: spec.tools ?? [], onTool: spec.onTool ?? null,
       onSpawn: spec.onSpawn ?? null, finishOnHostControl: spec.finishOnHostControl === true,
       isolation: spec.isolation ?? null, command: spec.command ?? null,
+      isolationDeps: spec.isolationDeps ?? {},
       ompSystemSource: spec.ompSystemSource ?? null,
       ompAuthBroker: spec.ompAuthBroker ?? null,   // {acquire()->{url,token}} 官方 broker 认证继承；null=不注入
       settleTimeoutMs: spec.settleTimeoutMs ?? 600000, ackTimeoutMs: spec.ackTimeoutMs ?? 30000,
@@ -175,6 +176,7 @@ export class OmpTuiSession extends EventEmitter {
     if (resumeId != null && typeof resumeId !== 'string') throw ompError('OMP_RESUME_INVALID', 'resumeId must be the pinned omp session id');
     this.phase = 'connecting';
     try {
+      if (this.isolation) requireIsolationSupport(this.isolationDeps);
       if (!this.command) this.command = (await resolveBundledOmpRuntime()).command;
       this.configurationStatus = await prepareOmpPrivateHome(this.home, { system: this.ompSystemSource, ...(resumeId == null ? { legacyNativeSeed: this.legacyNativeSeed } : {}) });
       let resumeFile = null;
@@ -223,7 +225,7 @@ export class OmpTuiSession extends EventEmitter {
         authEnv = { OMP_AUTH_BROKER_URL: grant.url, OMP_AUTH_BROKER_TOKEN: grant.token, OMP_AUTH_BROKER_SNAPSHOT_TTL_MS: '0' };
       }
       let launch = { command: this.command, args: argv, env: {} };
-      if (this.isolation) ({ launch } = await optionalIsolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, readable: [...(this.isolation.readable ?? []), this.collab.root], readOnly: this.isolation.readOnly ?? [], writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] }));
+      if (this.isolation) launch = await isolatedLaunch({ command: this.command, args: argv, home: this.home, cwd: this.cwd, readable: [...(this.isolation.readable ?? []), this.collab.root], readOnly: this.isolation.readOnly ?? [], writable: [...(this.isolation.writable ?? []), path.dirname(deployed.socketPath)] }, this.isolationDeps);
       const spawnEnv = { ...scrubbedEnv, ...env, ...launch.env, ...authEnv };
       delete spawnEnv.OMP_PROFILE;
       const pty = this.tuiSpawn ?? defaultTuiSpawn();

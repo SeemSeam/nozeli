@@ -1,3 +1,4 @@
+import {createImportedSkillPicker} from './imported-skill-picker.mjs';
 import {mountConfiguration} from './configuration-setup.mjs';
 import {mountManagedAgent} from './managed-agent-panel.mjs';
 import { renderTagMarkdown } from './tag-markdown.mjs';
@@ -22,6 +23,11 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   let generation = 0;
   let restoredInput;
   const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,subscribe});
+  const skillPickers=new Map();
+  if(ownsConversation)for(const role of ['frontdesk','orchestrator']){
+    const picker=createImportedSkillPicker({invoke,role,target:role});
+    picker.root.hidden=true;$('composer').after(picker.root);skillPickers.set(role,picker);
+  }
   let filePaths = new Set();
   const legacyArchive = document.createElement('details');
   legacyArchive.id = 'legacy-conversation-history';
@@ -99,6 +105,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       }
       const initialized = await configuration.ready;
       if (id !== projectId || gen !== generation) return;
+      for(const picker of skillPickers.values()){picker.bind(id);picker.root.hidden=false;}
       void loadLegacyHistory(id, gen).catch(error => {
         if (id === projectId && gen === generation) toast('旧版只读历史加载失败：' + error.message);
       });
@@ -165,6 +172,7 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     }
     filePaths = new Set();
     projectId = id;
+    for(const picker of skillPickers.values()){picker.bind(null);picker.root.hidden=true;}
     settingsPanel.projectChanged();
     restoredInput = input;
     $('send-message').disabled = true;
@@ -205,8 +213,9 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     return { ...result.value, requestId: result.value.requestId ?? result.value.jobId };
   };
   let lastSubmissionNotice='';
-  window.__agentSend = async ({background=false}={}) => {
-    if(!ownsConversation)return false;
+  let composerSending=false;
+  window.__agentSend = async ({background=false,lane='next'}={}) => {
+    if(!ownsConversation||composerSending)return false;
     delete $('compose-status').dataset.draftSaving;
     const id = projectId;
     const materialsApi = window.__composerMaterials;
@@ -242,8 +251,12 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     if (!text.trim()) materialsApi?.statusNote('本次附材料发送提示：'+input);
     if(lastSubmissionNotice&&$('toast').textContent===lastSubmissionNotice)$('toast').hidden=true;
     lastSubmissionNotice='';
-    const result = await send(input,{relPath,materialText,background,composerText:rawText,...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId})),fileAttachments:files.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId}))}).then(value=>({ok:true,value}),error=>({ok:false,error}));
+    const picker=skillPickers.get(background?'orchestrator':'frontdesk');
+    const importedSkill=!demo.active&&picker?.selection(id);
+    composerSending=true;
+    const result = await send(input,{relPath,materialText,background,composerText:rawText,...(importedSkill?{importedSkill}:{}),...(!background&&!demo.active?{lane}:{}),...(textMaterials.length?{textMaterials}:{}),imageAttachments:images.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId,deliveryId:a.deliveryId})),fileAttachments:files.map(a=>({digest:a.digest,mime:a.mime,source:a.source,storage:a.storage,projectId:a.projectId,instanceId:a.instanceId}))}).then(value=>({ok:true,value}),error=>({ok:false,error})).finally(()=>{composerSending=false;});
     if (!result.ok) return reject(result.error.message);
+    picker?.accepted(id,importedSkill);
     if(demo.active&&projectId===id&&$('composer').value===rawText){$('composer').value='';$('composer').dispatchEvent(new Event('input',{bubbles:true}));}
     return result.value;
   };

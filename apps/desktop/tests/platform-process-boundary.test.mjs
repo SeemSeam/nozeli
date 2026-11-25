@@ -13,11 +13,16 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
+import {createInterface} from 'node:readline';
+import {randomUUID} from 'node:crypto';
 import {processStamp,ownerAlive,recoverProvider,reapOwnedGroup,hostProcessTree,processIdentityCapability} from '../src/agents/managed/process-ownership.mjs';
 import {reapOwnedPiGroup,recoverPiProvider} from '../src/agents/managed/pi-process-ownership.mjs';
-import {isolatedLaunch,isolationAvailable,isolationCapability,optionalIsolatedLaunch} from '../src/agents/managed/process-isolation.mjs';
+import {isolatedLaunch,requireIsolationSupport,isolationAvailable,isolationCapability,optionalIsolatedLaunch} from '../src/agents/managed/process-isolation.mjs';
 import {assertRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
 import {PiSession} from '../src/agents/managed/pi-session.mjs';
+import {OmpTuiSession} from '../src/agents/managed/omp-tui-session.mjs';
+import {NativeCollabRuntime} from '../src/agents/managed/collab/runtime.mjs';
+import {legacyWorkspaceIO} from '../src/agents/managed/workspace-io.mjs';
 
 // Structured "no verified adapter" selections, exactly what selectCapability
 // returns on a platform whose capability status is 'unsupported'.
@@ -26,9 +31,19 @@ const unsupportedIsolation={state:'unavailable',capability:'execution-isolation'
 const ownerId='0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b';
 const stampShape='1b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b:1';
 
-const spawnSitter=async()=>{
-  const child=spawn(process.execPath,['-e','process.stdout.write("ready\\n");setInterval(()=>{},1000);'],{stdio:['ignore','pipe','ignore']});
-  await once(child.stdout,'data');
+const spawnSitter=async t=>{
+  const child=spawn(process.execPath,['-e','require("node:readline").createInterface({input:process.stdin}).on("line",line=>process.stdout.write(line+"\\n"));process.stdout.write("ready\\n");'],{stdio:['pipe','pipe','ignore']});
+  const lines=createInterface({input:child.stdout});
+  t.after(async()=>{
+    if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}
+    lines.close();
+  });
+  assert.equal((await once(lines,'line'))[0],'ready');
+  child.assertAlive=async()=>{
+    const nonce=randomUUID(),reply=once(lines,'line');
+    child.stdin.write(nonce+'\n');
+    assert.equal((await reply)[0],nonce,'the unrelated control process still answers its private pipe');
+  };
   return child;
 };
 const gone=async pid=>{for(let i=0;i<40;i++){if(await processStamp(pid)===null)return true;await new Promise(resolve=>setTimeout(resolve,50));}return false;};
@@ -59,10 +74,10 @@ test('Linux process service spawns a verified group leader and terminates the wh
 });
 
 test('platforms without a verified adapter never stamp, reap, recover or signal',{timeout:20000},async t=>{
-  const sitter=await spawnSitter();
+  const sitter=await spawnSitter(t);
   const stamp=await processStamp(sitter.pid);
-  assert.ok(stamp,'Linux stamp exists for the control process');
-  t.after(()=>{try{sitter.kill('SIGKILL');}catch{}});
+  if(processIdentityCapability().state==='available')assert.ok(stamp,'native stamp exists for the control process');
+  await sitter.assertAlive();
   assert.equal(await processStamp(sitter.pid,{selection:unsupportedProcess}),null,'no fabricated identity stamp');
   const identity=processIdentityCapability({selection:unsupportedProcess});
   assert.equal(identity.state,'unavailable');
@@ -85,11 +100,11 @@ test('platforms without a verified adapter never stamp, reap, recover or signal'
   await assert.rejects(async()=>service.spawn({command:process.execPath,args:[],cwd:os.tmpdir(),env:process.env}),refusesProcessOwnership);
   await assert.rejects(async()=>service.terminateGroup(sitter.pid,'SIGTERM'),refusesProcessOwnership);
   assert.equal(await processStamp(sitter.pid),stamp,'unsupported platform never signals; registration retained');
+  await sitter.assertAlive();
 });
 
 test('unverified ownerAlive refuses a verdict instead of guessing liveness',{timeout:20000},async t=>{
-  const alive=await spawnSitter();
-  t.after(()=>{try{alive.kill('SIGKILL');}catch{}});
+  const alive=await spawnSitter(t);
   // A kill(pid,0) answer is not identity proof and not descendant proof, so
   // the boolean contract refuses: live, stamped and exited owners alike can
   // never be declared dead on an unverified platform.
@@ -101,17 +116,14 @@ test('unverified ownerAlive refuses a verdict instead of guessing liveness',{tim
   await assert.rejects(ownerAlive({pid:0},{selection:unsupportedProcess}),/invalid owner PID/);
   if(process.platform==='linux'){
     assert.equal(await ownerAlive({pid:alive.pid}),false,'Linux verified identity: an exited owner is dead');
-    const live=await spawnSitter();
-    t.after(()=>{try{live.kill('SIGKILL');}catch{}});
+    const live=await spawnSitter(t);
     assert.equal(await ownerAlive({pid:live.pid,stamp:'1b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b:99999999'}),false,'Linux verified identity: a reused PID incarnation is not the recorded owner');
     assert.equal(await ownerAlive({pid:live.pid}),true);
   }
 });
 
 test('a stale workspace lock is only releasable through a verified identity answer',{timeout:20000},async t=>{
-  // Real lock file + real contract, mirroring managed/workspace.mjs's stale
-  // takeover: the lock is unlinked only AFTER ownerAlive(old) returns, so a
-  // structured refusal keeps the lock and surfaces the error.
+  // Exercise the actual extracted acquisition path against a real stale lock.
   const runtime=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-lock-takeover-'));
   t.after(()=>fs.rm(runtime,{recursive:true,force:true}));
   const lock=path.join(runtime,'host.lock');
@@ -123,6 +135,12 @@ test('a stale workspace lock is only releasable through a verified identity answ
   }
   await assert.rejects(ownerAlive(JSON.parse(await fs.readFile(lock,'utf8')),{selection:unsupportedProcess}),refusesProcessOwnership);
   await assert.doesNotReject(fs.access(lock),'the refused takeover never unlinked the stale lock');
+  const before=await fs.readFile(lock),options={project:{root:path.join(runtime,'separate-content')},runtimeRoot:runtime,recoverStale:true};
+  if(process.platform==='linux'){
+    const custody=await legacyWorkspaceIO.acquire(options);assert.notDeepEqual(await fs.readFile(lock),before);await custody.release();await assert.rejects(fs.stat(lock),{code:'ENOENT'});
+  }else if(process.platform==='win32'){
+    await assert.rejects(legacyWorkspaceIO.acquire(options),{code:'PROCESS_OWNERSHIP_UNSUPPORTED'});assert.deepEqual(await fs.readFile(lock),before);
+  }
 });
 
 test('recovery-source ownership has one Linux proof path and refuses elsewhere',{timeout:60000},async()=>{
@@ -159,11 +177,34 @@ test('execution isolation fails structured instead of spawning unsandboxed',{tim
   assert.equal(capability.state,'unavailable');
   assert.equal(capability.platform,'windows');
   assert.equal(capability.status,'unsupported');
+  assert.throws(()=>requireIsolationSupport({selection:unsupportedIsolation}),{code:'ISOLATION_UNSUPPORTED'});
   await assert.rejects(isolatedLaunch({command:process.execPath,args:[],home:'/tmp/nozeli-iso-unsupported',cwd:os.tmpdir()},{selection:unsupportedIsolation}),error=>error.code==='ISOLATION_UNSUPPORTED'&&/尚未在此平台实现/.test(error.message)&&error.capability.state==='unavailable');
   assert.equal(await isolationAvailable({selection:unsupportedIsolation}),false);
   const ordinary=await optionalIsolatedLaunch({command:'git',args:['--version']},{selection:unsupportedIsolation});
   assert.deepEqual(ordinary,{launch:{command:'git',args:['--version'],env:{}},isolated:false},'explicit non-isolated opt-in stays honestly labelled');
   await assert.rejects(optionalIsolatedLaunch({command:'git',args:[]},{probe:async()=>true,selection:unsupportedIsolation}),error=>error.code==='ISOLATION_UNSUPPORTED','an isolation request is never degraded into a normal spawn');
+});
+
+test('explicit OMP isolation refuses before private home, runtime, bridge, collaboration or auth preparation',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-omp-isolation-refusal-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const home=path.join(root,'home');let effects=0;
+  const forbidden=()=>{effects++;throw Error('preparation forbidden');};
+  const session=new OmpTuiSession({role:'worker',home,cwd:root,isolation:{},isolationDeps:{selection:unsupportedIsolation},ompSystemSource:{get private(){return forbidden();},modelFor:forbidden},ompAuthBroker:{acquire:forbidden},tuiSpawn:{spawn:forbidden}});
+  await assert.rejects(session.start(),error=>error.code==='ISOLATION_UNSUPPORTED'&&error.capability.platform==='windows');
+  assert.equal(effects,0);assert.equal(session.command,null);assert.equal(session.deployed,undefined);assert.equal(session.collab,undefined);assert.equal(session.pty,undefined);
+  assert.deepEqual(await fs.readdir(root),[],'no home, bridge, collaboration or execution marker');
+});
+
+for(const isolated of [false,true])test(`OMP ${isolated?'adapter initialization failure never falls back':'ordinary no-isolation route still reaches ordinary PTY execution'}`,async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-omp-isolation-launch-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  t.mock.method(NativeCollabRuntime.prototype,'prepare',async function(){this.root=path.join(root,'synthetic-collab');await fs.mkdir(this.root);return {};});
+  let launches=0,spawns=0;const failure=Object.assign(Error('synthetic isolation initialization failure'),{code:'ISOLATION_INIT_FAILED'}),ordinary=Object.assign(Error('synthetic PTY admission observed'),{code:'ORDINARY_SPAWN_OBSERVED'});
+  const selection={state:'available',capability:'execution-isolation',platform:'synthetic',implementation:{mechanism:'synthetic-refusing-adapter',launch(){launches++;throw failure;}}};
+  const session=new OmpTuiSession({role:'worker',home:path.join(root,'home'),cwd:root,command:process.execPath,...(isolated?{isolation:{}}:{}),isolationDeps:{selection},tuiSpawn:{spawn(args,options){spawns++;assert.equal(options.command,process.execPath);assert.ok(args.includes('--cwd'));throw ordinary;}}});
+  await assert.rejects(session.start(),error=>error===(isolated?failure:ordinary));
+  assert.equal(launches,isolated?1:0);assert.equal(spawns,isolated?0:1);assert.equal(session.pty,undefined);
 });
 
 test('Linux isolation can write its private home but cannot read an unmounted sibling',{timeout:30000},async t=>{

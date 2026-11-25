@@ -20,6 +20,7 @@ export async function startReviewDOM(directory){
  import './src/renderer/interface-appearance.css';
  window.setActionButton=setActionButton;
  import './src/renderer/styles.css';
+ import './src/renderer/workspace.css';
  import './src/renderer/managed-review.css';
  import './src/renderer/review-discussion.css';
  window.nozeli={subscribe:()=>()=>{}};

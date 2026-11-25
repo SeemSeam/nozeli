@@ -54,6 +54,208 @@ const testsDir = path.join(appRoot, 'tests');
 //                responses; explicit opt-in; no credentials, no network model.
 // ---------------------------------------------------------------------------
 const SUITES = {
+  'windows-managed-cold-archive': {
+    description: 'Original cold inspection archives complete observed owner homes, exact native stdio and ledger snapshots with create-only intents, verified copies and UNKNOWN fences; original helpers retained',
+    files: ['windows-cold-evidence-archive.test.mjs','windows-cold-settings.test.mjs','windows-cold-model-auth.test.mjs','windows-cold-journal.test.mjs','windows-managed-cold-checkpoint.test.mjs','windows-host-launch-set.test.mjs','managed-explicit-recovery.test.mjs','storage-recovery-batch.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-managed-repeat-cold': {
+    description: 'Two actual host deaths, complete native generation history and retired carryover, third Controller restart and conflict/UNKNOWN boundaries',
+    files: ['windows-repeat-cold.test.mjs','windows-managed-cold-checkpoint.test.mjs','windows-host-launch-set.test.mjs','managed-explicit-recovery.test.mjs','storage-recovery-batch.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-managed-cold-handoff': {
+    description: 'One-shot original cold custody transfer, exact retired provider recovery and real Controller resident restart; repeated cold recovery remains unsupported',
+    files: ['windows-cold-business-receipts.test.mjs','windows-managed-cold-checkpoint.test.mjs','windows-host-launch-set.test.mjs','windows-host-lease.test.mjs','managed-explicit-recovery.test.mjs','storage-recovery-batch.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-managed-cold-retirement': {
+    description: 'Atomic original host/owner retirement after native cold anchor and business hold, retained generation history and UNKNOWN postchecks; no next-host activation',
+    files: ['windows-cold-business-receipts.test.mjs','windows-managed-cold-checkpoint.test.mjs','storage-recovery-batch.test.mjs','managed-explicit-recovery.test.mjs','task-restart-summary.test.mjs'],
+    runner: 'node-test',
+  },
+  'windows-managed-cold-anchor': {
+    description: 'Original host native anchor arbitration, reply loss and business hold postchecks; no owner retirement or next-host activation',
+    files: ['windows-managed-cold-checkpoint.test.mjs','windows-host-launch-set.test.mjs','windows-cold-business-receipts.test.mjs','windows-host-lease.test.mjs'],
+    runner: 'node-test',
+  },
+  'windows-managed-business-hold': {
+    description: 'Original native host/tool/business receipts and atomic interrupted Worker hold with explicit recovery admission gates; no owner adoption',
+    files: ['windows-cold-business-receipts.test.mjs','managed-explicit-recovery.test.mjs','task-restart-summary.test.mjs','storage-recovery-batch.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-managed-cold-checkpoint': {
+    description: 'Native registered-owner cold Job/stdio quiescence and local checkpoint CAS/UNKNOWN; no whole-host launch-set or business adoption',
+    files: ['windows-managed-cold-checkpoint.test.mjs','windows-cold-request-reconciliation.test.mjs','windows-host-launch-set.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-desktop-managed-roots': {
+    description: 'Registered desktop profile/project native managed custody, real storage/history and cross-root execution evidence with explicit cold refusal',
+    files: ['windows-desktop-managed-roots.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-desktop-multi-surface': {
+    description: 'Windows multi-view partial relocation acknowledgement, original reader custody and complete same-surface regression in both hosts',
+    files: ['windows-desktop-multi-surface-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-same-surface': {
+    description: 'Windows same-project original editor, buffer, lease, annotations and cold recovery with cross-project regressions in both hosts',
+    files: ['windows-desktop-same-surface-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-same-tree-recovery': {
+    description: 'Windows same-project metadata/draft/creation recovery with exact native identity, concurrent winners and partial results in both hosts',
+    files: ['windows-desktop-same-tree-recovery-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-cold-office': {
+    description: 'Windows cold Office/PDF/image retained source readers and Office package/snapshot integrity in both hosts',
+    files: ['windows-desktop-cold-office-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-cold-source': {
+    description: 'Windows original source reader protection across whole-process restart, exact identity, retained input and paired receipt recovery in both hosts',
+    files: ['windows-desktop-cold-source-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-live-recovery': {
+    description: 'Windows same-host live document recovery, independent operation holds, exact source restoration, explicit target opening and browser/update regressions in both hosts',
+    files: ['windows-desktop-live-recovery-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-cross-recovery': {
+    description: 'Windows explicit paired cross-project copy/cut recovery, native file/tree custody, joint receipt/catalog CAS, partial acknowledgement and actual cold child exit checks in both hosts',
+    files: ['windows-desktop-cross-recovery-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-tree-recovery': {
+    description: 'Windows explicit copy recovery with pinned observation, revision CAS, one-use confirmation, retained partial stages and real child exit/cold checks in both hosts',
+    files: ['windows-desktop-tree-recovery-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-recovery-export': {
+    description: 'Windows native bounded recovery streaming, exact project/offline retained-object exports and immutable explicit closure retry after maintenance meets a contender',
+    files: ['windows-recovery-export.test.mjs','windows-closure-retry.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck],
+  },
+  'windows-desktop-file-clipboard': {
+    description: 'Windows standard native file clipboard, pinned read-only external sources, exclusive native publication, drop tickets and real child exit/cold checks in Node and Electron',
+    files: ['windows-desktop-file-clipboard-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-cross-project': {
+    description: 'Windows shared cross-project native file/directory copy and same-volume cut with paired recovery receipts, catalog admission, fresh logical identities and real crash/cold checks in Node and Electron',
+    files: ['windows-desktop-cross-project-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-file-tree': {
+    description: 'Windows public creation and regular-file rename/cut/copy with pinned native identities, metadata/draft CAS, durable uncertainty and real child exit/cold checks',
+    files: ['windows-desktop-file-tree-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-office': {
+    description: 'Windows Word/XLSX source CAS, immutable recovery, publication uncertainty, cold host reopen and legacy DOC native import in actual Node/Electron hosts',
+    files: ['windows-desktop-office-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-singleton': {
+    description: 'Windows private pinned synthetic account singleton, actual second-instance file routing and process takeover; Node/Electron unit hosts plus real main-entry GUI processes',
+    files: ['windows-desktop-singleton-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-update': {
+    description: 'Windows source check-only and forged-update refusal plus independent configuration native CAS in Node/Electron; full packaged update journeys have a separate driver',
+    files: ['windows-desktop-update-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-provisioning': {
+    description: 'explicit native public-source/private-target provisioning through shared Work preparation; cold UNKNOWN reconciliation remains unsupported',
+    files: ['windows-native-provisioning.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck],
+  },
+  'windows-project-terminal': {
+    description: 'Real Job-bound ConPTY, native shell policy, Ctrl-C, Unicode, cold explicit start, stop/restart and exact descendant cleanup; no global ownership capability promotion',
+    files: ['project-terminal-host.test.mjs','windows-project-terminal-native.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsTerminalBuildCheck],
+  },
+  'windows-tool-lifecycle': {
+    description: 'Original descendant HANDLE snapshots, Chromium exclusions, contained tool Jobs and bundled-or-current JS/TS language runtime; force quit does not claim whole-tree exit',
+    files: ['windows-tool-lifecycle.test.mjs','host-language-service.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-manual-install': {
+    description: 'Native immutable candidate and explicit isolated install/upgrade/rollback state, exact CAS winners and retained profiles; automatic updater remains unsupported',
+    files: ['windows-package-install.test.mjs','windows-launcher-verification.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck],
+  },
+  'windows-process-supervisor': {
+    description: 'explicit Windows original Job and host/source catalog/database/manifest custody, fresh source records and cold observation; no cold business release',
+    files: ['windows-process-supervisor.test.mjs', 'windows-supervisor-custody.test.mjs', 'windows-supervisor-output.test.mjs', 'windows-supervisor-input.test.mjs', 'windows-host-sources.test.mjs', 'windows-workspace-open.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, liveOptInCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-host-lease': {
+    description: 'explicit Windows native shared-project host custody and SQLite generation/launch claims; cold recovery stays refused',
+    files: ['windows-host-lease.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, liveOptInCheck, windowsNativeBuildCheck, windowsProcessBuildCheck],
+  },
+  'windows-pi-owner': {
+    description: 'explicit Windows x64 normal PiSession and scoped Controller with actual Pi SDK, private native journal and loopback scripted provider; no full host/cold ownership claim',
+    files: ['windows-pi-owner.test.mjs','windows-pi-recovery-intent.test.mjs','pi-runtime-resources.test.mjs','windows-pi-settings.test.mjs','windows-pi-model-auth.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, liveOptInCheck, windowsNativeBuildCheck, windowsProcessBuildCheck, piRuntimeCheck],
+  },
+  'windows-worker-flow': {
+    description: 'explicit Windows public Controller scheduler with actual isolated Pi tools, frozen candidate, exact human review/Git acceptance, native home archive recovery and original-receipt warm reopen; no cold recovery or whole-app readiness',
+    files: ['windows-worker-flow.test.mjs'],
+    runner: 'node-test',
+    preflight: [nodeVersionCheck, liveOptInCheck, windowsNativeBuildCheck, windowsProcessBuildCheck, piRuntimeCheck],
+  },
+  'windows-native': {
+    description: 'experimental Windows x64 HANDLE files/shared Git/snapshot/review/install, private SQLite/catalog/trees, scoped project initialization/recovery shared immutable material objects and scoped Work/index/ref recovery, WorkChanges and direct business report-decision ledger; same suite in pinned Node and Electron Node mode',
+    files: ['windows-native-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-profile': {
+    description: 'Windows desktop private profile CAS, corruption/conflict/ACL preservation and pre-Chromium private directories in actual Node and Electron hosts',
+    files: ['windows-desktop-profile-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
+  'windows-desktop-project': {
+    description: 'Windows scoped profile/project SQLite, retained directory lifetime, shared native Git initialization, HANDLE source reads, text digest CAS, conflicts and draft cold recovery in actual Node and Electron hosts',
+    files: ['windows-desktop-project-hosts.mjs'],
+    runner: 'script',
+    preflight: [nodeVersionCheck, windowsNativeBuildCheck, electronInstallCheck],
+  },
   unit: {
     description: 'pure logic, plain Node, no fs writes / subprocesses / GUI / credentials',
     files: [
@@ -83,6 +285,7 @@ const SUITES = {
       'frontdesk-skills.test.mjs',
       'html-report.test.mjs',
       'isolated-preview.test.mjs',
+      'jsonl-reader.test.mjs',
       'lifecycle-flush-capability.test.mjs',
       'local-window.test.mjs',
       'source-page-window-environment.test.mjs',
@@ -95,7 +298,9 @@ const SUITES = {
       'managed-context-delivery.test.mjs',
       'managed-context-reader.test.mjs',
       'managed-document-reader.test.mjs',
+      'managed-explicit-recovery.test.mjs',
       'pi-activity.test.mjs',
+      'pi-journal-snapshot.test.mjs',
       'target-model-intent.test.mjs',
       'managed-deviation-surface.test.mjs',
       'managed-frontdesk-surface.test.mjs',
@@ -132,6 +337,7 @@ const SUITES = {
       'runtime-failure-message.test.mjs',
       'session-store.test.mjs',
       'session-execution-presentation.test.mjs',
+      'sheet-readiness.test.mjs',
       'session-controls.test.mjs',
       'settings-agents-ui.test.mjs',
       'sidebar-visit.test.mjs',
@@ -143,6 +349,7 @@ const SUITES = {
       'terminal-screen.test.mjs',
       'tex-inference.test.mjs',
       'tex-workspace-persist.test.mjs',
+      'tex-workspace-manual.test.mjs',
       'search-surface.test.mjs',
       'project-search-sessions.test.mjs',
       'update-lifecycle.test.mjs',
@@ -170,6 +377,8 @@ const SUITES = {
       'annotation-package.test.mjs',
       'attention-projection.test.mjs',
       'auto-update-installation.test.mjs',
+      'auto-update-channel.test.mjs',
+      'auto-update-windows-package.test.mjs',
       'auto-update-network.test.mjs',
       'auto-update.test.mjs',
       'local-release-permissions.test.mjs',
@@ -189,6 +398,9 @@ const SUITES = {
       'execution-copy-gitignore.test.mjs',
       'execution-workspace-dependencies.test.mjs',
       'external-open-queue.test.mjs',
+      'windows-desktop-open-queue.test.mjs',
+      'windows-external-open-routing.test.mjs',
+      'helper-entries.test.mjs',
       'external-open-renderer-contract.test.mjs',
       'failed-surface-lifecycle.test.mjs',
       'file-attachments-host.test.mjs',
@@ -279,6 +491,7 @@ const SUITES = {
       'omp-tui-tools-compat.test.mjs',
       'online-browser-clip.test.mjs',
       'online-browser.test.mjs',
+      'package-node-runtime.test.mjs',
       'pi-process-ownership.test.mjs',
       'pi-provider-runtime.test.mjs',
       'pi-questions.test.mjs',
@@ -302,12 +515,14 @@ const SUITES = {
       'project-storage-initialization.test.mjs',
       'project-retired-isolation.test.mjs',
       'project-semantic-initialization.test.mjs',
+      'windows-alpha6-boundaries.test.mjs',
       'project-watcher.test.mjs',
       'provider-settings.test.mjs',
       'provider-http-observer.test.mjs',
       'pi-zai-coding-plan.test.mjs',
       'platform-persistence.test.mjs',
       'platform-process-boundary.test.mjs',
+      'platform-probe.test.mjs',
       'platform-runtime-assets.test.mjs',
       'platform-filesystem.test.mjs',
       'region-drawing.test.mjs',
@@ -329,6 +544,8 @@ const SUITES = {
       'collaboration-status.test.mjs',
       'storage-stress-regression.test.mjs',
       'storage-worker-safety.test.mjs',
+      'storage-database-lifetime.test.mjs',
+      'windows-desktop-host-lifetime.test.mjs',
       'system-terminal-bridge.test.mjs',
       'tag-input-presentation.test.mjs',
       'tag-material-delivery.test.mjs',
@@ -444,6 +661,19 @@ function nodeVersionCheck() {
     return `Node >= 22 is required (tests use node:test and node:sqlite); current: ${process.versions.node}`;
   }
   return null;
+}
+
+function windowsNativeBuildCheck() {
+  if (process.platform !== 'win32' || process.arch !== 'x64') return 'windows-native requires a real Windows x64 host';
+  const binary = path.join(appRoot, 'native/windows/build/Release/nozeli_windows_read.node');
+  return fs.existsSync(binary) ? null : 'Windows read bridge missing: run npm run build:windows-native with pinned Node 22.23.4 first';
+}
+function windowsProcessBuildCheck(){
+  return fs.existsSync(path.join(appRoot,'native/windows-process/build/Release/nozeli_windows_process.node'))?null:'Windows process bridge missing: run node tools/build-windows-process.mjs first';
+}
+function windowsTerminalBuildCheck(){
+  const missing=windowsProcessBuildCheck();if(missing)return missing;
+  return fs.existsSync(path.join(appRoot,'native/windows-process/build/Release/nozeli_windows_terminal.exe'))?null:'Windows terminal companion missing: rebuild native/windows-process with pinned Node and Spectre libraries';
 }
 
 function commandAvailable(command, args) {

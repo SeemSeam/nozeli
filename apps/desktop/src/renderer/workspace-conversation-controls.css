@@ -4,6 +4,7 @@
 .chat-tool:focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 .conversation-head{flex-wrap:nowrap!important;min-width:0;min-height:34px;box-sizing:border-box;flex:none;gap:6px;padding:3px 8px;border-bottom:1px solid var(--workspace-seam);background:var(--workspace-header-paper);color:var(--workspace-header-ink);font:500 13px/20px var(--chrome-font-family,system-ui,sans-serif)}
 .conversation-head>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:inherit}
+html[data-workspace-kind=conversation] .conversation-head>span{-webkit-app-region:no-drag;touch-action:none;cursor:grab;user-select:none}
 .conversation-head .conversation-controls{flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;margin-left:auto}
 /* Presentation only: hidden/disabled remain owned by the real action's availability gates. */
 .conversation-head .conversation-controls>.chat-menu-action{display:none}

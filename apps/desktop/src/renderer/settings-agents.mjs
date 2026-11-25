@@ -33,7 +33,7 @@ export function mountAgentSettings({invoke,container,getProjectId=()=>null}) {
   const skillStatus=node('p',null,{role:'status','data-frontdesk-skills-status':''});
   const enableSkills=node('button','启用项目分析与历史接续',{type:'button','data-frontdesk-skills-enable':''});
   const refreshSkillsButton=node('button','刷新技能状态',{type:'button'});
-  skillCard.append(node('h4','前台项目技能'),node('p','新增项目分析、进展梳理与历史接续方法。仅启用技能，不发送问题、不执行历史任务；已有会话在空闲时保留原线程更新。'),skillStatus,enableSkills,refreshSkillsButton);container.append(skillCard);
+  skillCard.append(node('h4','前台内置技能'),node('p','批量启用当前项目的分析、进展和只读历史技能；逐项管理见「当前项目设置 → 技能与角色」。'),skillStatus,enableSkills,refreshSkillsButton);container.append(skillCard);
   const projectSkillNames=['nozeli-frontdesk-project-analysis','nozeli-frontdesk-project-progress','nozeli-frontdesk-history-handoff'];
   let skillSerial=0,skillState=null,skillProject=null,skillSaving=false;
   const managedCall=async(op,payload)=>{const result=await invoke('managed.'+op,payload);if(!result?.ok)throw Error(result?.error?.message||'技能配置请求失败');return result.value;};

@@ -53,7 +53,7 @@ async function compose(text,background=false){
   const before=new Set((await state()).jobs.map(j=>j.id));
   await click('#composer');await page.keyboard.down('Control');await page.keyboard.press('KeyA');await page.keyboard.up('Control');
   await page.keyboard.sendCharacter(text);
-  if(background){operations.push({kind:'programmatic-background',driver:'__agentSend',at:Date.now()});await page.evaluate(()=>window.__agentSend({background:true}));}else{await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');}
+  if(background){operations.push({kind:'programmatic-background',driver:'__agentSend',at:Date.now()});await page.evaluate(()=>window.__agentSend({background:true}));}else{await page.keyboard.press('Enter');}
   return wait(async()=>{const s=await state();return s.jobs.find(j=>!before.has(j.id)&&(j.text===text||j.text.startsWith(text+'\n\n')));},'exact input admitted',30000);
 }
 async function selectWork(work){

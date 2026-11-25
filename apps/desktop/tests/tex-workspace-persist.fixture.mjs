@@ -15,6 +15,8 @@ export async function createTexPersistFixture({context={project:{id:'project-a'}
   replaceChildren(...values){this.children=[];this.append(...values);}
   setAttribute(k,v){this.attrs[k]=String(v);}
   removeAttribute(k){delete this.attrs[k];}
+  getAttribute(k){return this.attrs[k]??null;}
+  remove(){if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(value=>value!==this);this.parentElement=null;}
   addEventListener(type,fn){const list=this.handlers.get(type)||[];list.push(fn);this.handlers.set(type,list);}
   removeEventListener(type,fn){this.handlers.set(type,(this.handlers.get(type)||[]).filter(x=>x!==fn));}
   querySelector(selector){if(selector==='.compare-switch')return this.compareSwitch??=new Element();return null;}
@@ -22,6 +24,8 @@ export async function createTexPersistFixture({context={project:{id:'project-a'}
   emit(type){return Promise.all((this.handlers.get(type)||[]).map(fn=>fn({target:this})));}
  }
  const document={createElement:tag=>new Element(tag),getElementById:id=>{if(!nodes.has(id)){const el=new Element();el.id=id;}return nodes.get(id);}};
+ document.createElementNS=(namespaceURI,tag)=>Object.assign(new Element(tag),{namespaceURI});
+ document.addEventListener=()=>{};
  const calls=[],handlers=new Map(),events=new Map();let current=context,contextError=null;
  const config={root,engine:'xelatex',automatic:false};
  const invoke=async(op,args)=>{
@@ -33,7 +37,7 @@ export async function createTexPersistFixture({context={project:{id:'project-a'}
  };
  globalThis.document=document;globalThis.window={nozeli:{invoke,subscribe:(name,fn)=>{events.set(name,fn);return ()=>events.delete(name);}}};globalThis.Option=class extends Element{constructor(text,value){super('option');this.textContent=text;this.value=value;}};
  const beside={tex:false,pdf:null};let closed=0;
- const workspace=mountTexWorkspace({getContext:()=>{if(contextError)throw contextError;return current;},beside,closeBeside:()=>{closed++;beside.tex=false;beside.pdf=null;},openFile:async()=>{throw Error('persist must not navigate source');}});
+ const workspace=mountTexWorkspace({getContext:()=>{if(contextError)throw contextError;return current;},beside,closeBeside:()=>{closed++;beside.tex=false;beside.pdf=null;}});
  return {workspace,beside,calls,handlers,config,node:id=>document.getElementById(id),get context(){return current;},set context(value){current=value;},set contextError(value){contextError=value;},get closed(){return closed;},message:()=>document.getElementById('tex-status').textContent,
   async enter(){await workspace.enter();},
   async changeRoot(next){document.getElementById('tex-root').value=next;await document.getElementById('tex-root').emit('change');},

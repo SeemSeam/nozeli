@@ -187,10 +187,8 @@ export function renderWorkOverview({
 // An accepted request without a Work has no business execution to control.
 export function renderRequestOverview({document,record,serviceState}){
  const make=(tag,text)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;return node;};
- const root=make('section');root.className='managed-work-overview';root.dataset.requestOverview=record.id;root.setAttribute('aria-label','请求概览');
- root.append(make('h3',record.name),make('p',serviceState||record.phase),make('p','原请求已保留，尚未创建后台工作；这不是已完成的任务。'));
- if(record.maintenance)root.append(make('p','内部运行问题由系统处理，无需回答技术问题或手动重试。'));
- root.append(make('h4','原始请求'),make('p',record.request||record.description||''));
+ const root=make('section');root.dataset.requestOverview=record.id;root.setAttribute('aria-label','请求详情');
+ root.append(make('p',serviceState||record.phase),make('p',record.request||record.description||record.name));
  const details=make('details');details.dataset.requestDiagnostics='';details.append(make('summary','诊断信息（可选）'));
  if(record.maintenance?.bugId)details.append(make('p','内部问题记录：'+record.maintenance.bugId));
  details.append(make('pre',(record.events||[]).map(event=>[event.at,event.text,event.detail].filter(Boolean).join(' · ')).join('\n')));

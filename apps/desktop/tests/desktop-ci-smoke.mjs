@@ -1,4 +1,5 @@
 // Actual application smoke: synthetic files, isolated profile, no model/provider.
+import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
@@ -10,11 +11,10 @@ import {DesktopHost} from '../src/main/host.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import {MainObserver} from './post-install-startup-recovery-fixture.mjs';
 
-const appRoot=path.resolve(import.meta.dirname,'..'),require=createRequire(import.meta.url);
-const outputRoot=path.join(appRoot,'.test-output','ci');await fs.mkdir(outputRoot,{recursive:true});
+const sourceApp=path.resolve(import.meta.dirname,'..'),appRoot=path.resolve(process.env.NOZELI_TEST_APP_ROOT||sourceApp),require=createRequire(import.meta.url),binary=process.env.NOZELI_TEST_BINARY||require('electron');
+const outputRoot=path.resolve(process.env.NOZELI_TEST_OUTPUT_ROOT||path.join(os.tmpdir(),'nozeli-ci-smoke'));await fs.mkdir(outputRoot,{recursive:true});
 const out=await fs.mkdtemp(path.join(outputRoot,'smoke-'));
-const config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop'),project=path.join(out,'project');
-await fs.mkdir(project);await fs.writeFile(path.join(project,'reading.txt'),'Synthetic local document.\n');
+const config=path.join(out,'.Nozeli'),profile=path.join(config,'desktop'),project=path.join(out,'project');await fs.mkdir(config,{recursive:true});await fs.mkdir(project);await fs.writeFile(path.join(project,'reading.txt'),'Synthetic local document.\n');
 const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
 const otherProject=path.join(out,'other-project');await fs.mkdir(otherProject);await fs.writeFile(path.join(otherProject,'other.txt'),'Other synthetic project.\n');
 const otherId=(await host.pick(otherProject)).project.id;await host.storage.putLocal(otherId,'smoke:seed',true);
@@ -30,9 +30,9 @@ async function launch(){
  const ozone=process.platform==='linux'?(process.env.NOZELI_OZONE||(process.env.WAYLAND_DISPLAY?'wayland':process.env.DISPLAY?'x11':'headless')):'';
  Object.assign(env,{NOZELI_CONFIG_ROOT:config,NOZELI_USER_DATA:profile,NOZELI_TEST_INSTANCE:'1',NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:ozone==='headless'?'1':'0',NOZELI_OZONE:ozone});
  const launchedAt=performance.now();
- child=spawn(process.env.NOZELI_TEST_BINARY||require('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(appRoot,'src/main/main.cjs')]),...(process.platform==='darwin'?['--inspect=0']:[]),...(process.platform==='linux'?['--ozone-platform='+ozone]:[])],{cwd:project,env,stdio:['ignore','pipe','pipe']});
+ child=spawn(binary,[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(appRoot,'src/main/main.cjs')]),...(process.platform==='darwin'?['--inspect=0']:[]),...(process.platform==='linux'?['--ozone-platform='+ozone]:[])],{cwd:project,env,stdio:['ignore','pipe','pipe']});
  exited=new Promise(r=>child.once('exit',(code,signal)=>r({code,signal})));for(const stream of[child.stdout,child.stderr])stream.on('data',b=>log+=b);
- browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null}).catch(()=>null),'CDP');
+ browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null,protocolTimeout:120000}).catch(()=>null),'CDP');
  shell=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.role==='shell').catch(()=>false))return p;},'ready shell');
  for(const p of await browser.pages())p.on('pageerror',e=>result.errors.push(e.message));
  if(process.platform==='darwin')observer=await MainObserver.connect(await until(()=>log.slice(launchLogOffset).match(/Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/\S+)/)?.[1],'main inspector'));

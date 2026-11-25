@@ -6,7 +6,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {CONTEXT_BUDGET_DEFAULTS,normalizeMaterials,normalizeProjection} from '../../../integrations/pi/src/context-delivery.mjs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {CONTEXT_BUDGET_DEFAULTS,normalizeMaterials,normalizeProjection}=await import(pathToFileURL(path.join(integration,'src/context-delivery.mjs')));
 
 test('the projection ceiling blocks oversized control projections instead of truncating them',()=>{
   const exact='x'.repeat(CONTEXT_BUDGET_DEFAULTS.projectionMaxBytes);

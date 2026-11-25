@@ -106,6 +106,7 @@ interface RuntimeContext {
   readonly settingsManager: SettingsManager;
   readonly packageManager: DefaultPackageManager;
   readonly resourceLoader: DefaultResourceLoader;
+  readonly resourcePolicy?: RuntimeResourcePolicy;
   /** `registerProvider()` calls this workspace's extensions made, in call order. */
   extensionProviders: readonly ExtensionProviderRegistration[];
   nativeProviders: readonly ExtensionNativeProviderRegistration[];
@@ -114,10 +115,23 @@ interface RuntimeContext {
 }
 
 export interface RuntimeSupervisorOptions {
+  readonly createModelRuntime?: typeof ModelRuntime.create;
+  readonly modelConfigStorage?: import("./custom-provider-store.js").ModelsJsonStorage;
   readonly agentDir?: string;
   readonly builtinExtensions?: readonly BuiltinExtension[];
   readonly isBuiltinExtensionEnabled?: BuiltinExtensionEnabled;
   readonly customProviderStore?: CustomProviderStore;
+  /** Host policy applied before any package or instruction-resource discovery. */
+  readonly createRuntimeResources?: (cwd: string, agentDir: string) => RuntimeResourcePolicy;
+}
+
+export interface RuntimeResourcePolicy {
+  readonly settingsManager: SettingsManager;
+  /** Optional host I/O for direct selection reads and persistent login identity. */
+  readonly readSettings?: (scope: "global" | "project") => Promise<Record<string, unknown>>;
+  readonly createPersistentSettingsManager?: () => SettingsManager;
+  readonly loaderOptions: Partial<ConstructorParameters<typeof DefaultResourceLoader>[0]>;
+  readonly resolvePaths: () => Promise<ResolvedPaths>;
 }
 
 type ResourceScope = "user" | "project";
@@ -135,6 +149,8 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   private readonly builtinExtensions: readonly BuiltinExtension[];
   private readonly isBuiltinExtensionEnabled: BuiltinExtensionEnabled;
   private readonly customProviderStore: CustomProviderStore;
+  private readonly createRuntimeResources?: RuntimeSupervisorOptions["createRuntimeResources"];
+  private readonly createModelRuntime: typeof ModelRuntime.create;
   private readonly contexts = new Map<string, RuntimeContext>();
 
   constructor(options: RuntimeSupervisorOptions = {}) {
@@ -145,6 +161,8 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
     this.builtinExtensions = options.builtinExtensions ?? [];
     this.isBuiltinExtensionEnabled = options.isBuiltinExtensionEnabled ?? (() => true);
     this.customProviderStore = deps.customProviderStore;
+    this.createRuntimeResources = options.createRuntimeResources;
+    this.createModelRuntime = options.createModelRuntime ?? ModelRuntime.create.bind(ModelRuntime);
   }
 
   async getRuntimeSnapshot(workspace: WorkspaceRef): Promise<RuntimeSnapshot> {
@@ -172,7 +190,8 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
     // manager, because the npm-lookup fallback manager never writes settings to disk.
     await context.modelRuntime.login(providerId, authType, toAuthInteraction(callbacks), {
       getDeviceId: () =>
-        SettingsManager.create(workspace.path, this.agentDir).getOrCreateDeviceId(),
+        (context.resourcePolicy?.createPersistentSettingsManager?.() ??
+          SettingsManager.create(workspace.path, this.agentDir)).getOrCreateDeviceId(),
     });
     await this.reloadResources(context);
     await this.autoEnableModelsForAuthenticatedProviders(context, [providerId]);
@@ -433,8 +452,15 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   }
 
   async getCurrentModelSettings(workspace: WorkspaceRef): Promise<ModelSettingsSnapshot> {
-    const globalSettings = await readJsonRecord(join(this.agentDir, "settings.json"));
-    const projectSettings = await readJsonRecord(join(workspace.path, ".pi", "settings.json"));
+    const policy = this.createRuntimeResources
+      ? (await this.ensureContext(workspace)).resourcePolicy
+      : undefined;
+    const globalSettings = policy?.readSettings
+      ? await policy.readSettings("global")
+      : await readJsonRecord(join(this.agentDir, "settings.json"));
+    const projectSettings = policy?.readSettings
+      ? await policy.readSettings("project")
+      : await readJsonRecord(join(workspace.path, ".pi", "settings.json"));
     const globalModelSettings = toModelSettingsSnapshot(globalSettings);
     const projectModelSettings = toModelSettingsSnapshot(projectSettings);
     const snapshot: {
@@ -550,13 +576,15 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
       return existing;
     }
 
-    let settingsManager = SettingsManager.create(workspace.path, this.agentDir);
+    const resourcePolicy = this.createRuntimeResources?.(workspace.path, this.agentDir);
+    let settingsManager = resourcePolicy?.settingsManager ?? SettingsManager.create(workspace.path, this.agentDir);
     let packageManager = this.createPackageManager(workspace.path, settingsManager);
     let resourceLoader = new DefaultResourceLoader({
+      extensionFactories: this.inventoryExtensionFactories(),
+      ...resourcePolicy?.loaderOptions,
       cwd: workspace.path,
       agentDir: this.agentDir,
       settingsManager,
-      extensionFactories: this.inventoryExtensionFactories(),
     });
     try {
       await resourceLoader.reload();
@@ -579,10 +607,11 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
       settingsManager = fallbackSettingsManager;
       packageManager = this.createPackageManager(workspace.path, settingsManager);
       resourceLoader = new DefaultResourceLoader({
+        extensionFactories: this.inventoryExtensionFactories(),
+        ...resourcePolicy?.loaderOptions,
         cwd: workspace.path,
         agentDir: this.agentDir,
         settingsManager,
-        extensionFactories: this.inventoryExtensionFactories(),
       });
       await resourceLoader.reload();
     }
@@ -593,6 +622,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
       settingsManager,
       packageManager,
       resourceLoader,
+      resourcePolicy,
       extensionProviders: applied.accepted,
       nativeProviders: applied.acceptedNative,
       modelRuntime: applied.runtime,
@@ -675,7 +705,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
     readonly accepted: ExtensionProviderRegistration[];
     readonly acceptedNative: ExtensionNativeProviderRegistration[];
   }> {
-    const runtime = await ModelRuntime.create({
+    const runtime = await this.createModelRuntime({
       authPath: this.authPath,
       modelsPath: this.modelsJsonPath,
       refreshOnCreate: false,
@@ -746,6 +776,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   }
 
   private async resolveRuntimePaths(context: RuntimeContext): Promise<ResolvedPaths> {
+    if (context.resourcePolicy) return context.resourcePolicy.resolvePaths();
     try {
       return await context.packageManager.resolve();
     } catch (error) {

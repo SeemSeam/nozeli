@@ -17,7 +17,7 @@ export function createRuntimeDependencies(
   const modelsJsonPath = join(agentDir, "models.json");
   const authPath = join(agentDir, "auth.json");
   const customProviderStore =
-    options.customProviderStore ?? new CustomProviderStore(modelsJsonPath);
+    options.customProviderStore ?? new CustomProviderStore(modelsJsonPath, options.modelConfigStorage);
   return {
     agentDir,
     modelsJsonPath,

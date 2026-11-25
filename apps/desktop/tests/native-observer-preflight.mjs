@@ -9,7 +9,7 @@ const send=await shell.evaluate(({id,worker,text})=>nozeli.invoke('managed.send'
 await wait(async()=>{const current=await call(),job=current.jobs.find(j=>j.id===send.value.jobId||!before.has(j.id));if(job&&['failed','unknown','interrupted'].includes(job.status))throw Error(JSON.stringify({status:job.status,error:job.error}));return job?.status==='completed';},'necessary continuation',300000);}
 else{
 await chat.locator('#composer').click();await chat.keyboard.down('Control');await chat.keyboard.press('A');await chat.keyboard.up('Control');await chat.keyboard.sendCharacter(text);
-assert.equal(await chat.$eval('#composer',n=>n.value),text);await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
+assert.equal(await chat.$eval('#composer',n=>n.value),text);await chat.keyboard.press('Enter');
 await wait(async()=>{const current=await call(),job=current.jobs.find(j=>!before.has(j.id));if(job&&['failed','unknown','interrupted'].includes(job.status))throw Error(JSON.stringify({status:job.status,error:job.error}));return job?.status==='completed';},'necessary continuation',300000);}
 const final=await call();await fs.writeFile(path.join(out,'continuation-state.json'),JSON.stringify(final,null,2));
 if(worker){const after=final.works.find(w=>w.id===worker.id);assert.equal(after.threadId,worker.threadId);assert(after.revision>worker.revision);assert.equal(after.status,'review');assert((await fs.readFile(path.join(after.execution.directory,'build/aggregate.js'))).equals(await fs.readFile(path.join(prior,'sensor-audit/build/aggregate.js'))));}

@@ -4,6 +4,18 @@ import {createTerminalScreen} from '../src/agents/managed/terminal-screen.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 const text=s=>s.lines.map(r=>r.map(c=>c.text).join(''));
 
+// Control only the screen's notification clock; xterm keeps its real parser
+// scheduler. Parser latency must not determine how many throttle windows pass.
+function notificationClock(){
+ let now=0,id=0;const pending=new Map();
+ return {
+  setTimeout(fn,ms){const token=id++;pending.set(token,{fn,at:now+ms});return token;},
+  clearTimeout(token){pending.delete(token);},
+  advance(ms){now+=ms;for(const [token,task] of [...pending])if(task.at<=now){pending.delete(token);task.fn();}},
+  get size(){return pending.size;},
+ };
+}
+
 test('screen parses split ANSI, cursor erasure, RGB, wide and combining characters',async t=>{
  const s=createTerminalScreen({cols:16,rows:3});t.after(()=>s.dispose());
  await s.write('\x1b[3',1);await s.write('1mOld\r\x1b[2K\x1b[38;2;12;34;56m红e\u0301\x1b[0m',2);
@@ -20,9 +32,21 @@ test('ordered resize and alternate screen transitions produce authoritative snap
  await s.write('\x1b[?1049l',3);view=await s.snapshot();assert.equal(text(view)[0].trim(),'normal');
 });
 test('terminal queries have no reply transport and change notifications are bounded',async t=>{
- const changes=[],s=createTerminalScreen({onChange:c=>changes.push(c)});t.after(()=>s.dispose());
+ const changes=[],clock=notificationClock(),s=createTerminalScreen({onChange:c=>changes.push(c),changeTimers:clock});t.after(()=>s.dispose());
  for(let i=1;i<=30;i++)await s.write('x\x1b[6n\x1b[c',i);
- await new Promise(r=>setTimeout(r,100));assert.equal(changes.length,1);assert.equal(changes[0].seq,30);assert.equal((await s.snapshot()).seq,30);
+ assert.equal(clock.size,1);clock.advance(79);assert.equal(changes.length,0);
+ clock.advance(1);assert.equal(changes.length,1);assert.equal(changes[0].seq,30);assert.equal(changes[0].version,30);assert.equal((await s.snapshot()).seq,30);
+ await s.write('next',31);clock.advance(40);await s.resize(100,30);clock.advance(39);assert.equal(changes.length,1);
+ clock.advance(1);assert.equal(changes.length,2);assert.equal(changes[1].seq,31);assert.equal(changes[1].version,32);
+ await s.write('last',32);await s.dispose();assert.equal(clock.size,0);clock.advance(80);assert.equal(changes.length,2);
+});
+
+test('disposing during queued parsing cancels notifications created by pending writes',async()=>{
+ const changes=[],clock=notificationClock(),s=createTerminalScreen({onChange:c=>changes.push(c),changeTimers:clock});
+ const writing=s.write('pending',1),resizing=s.resize(90,20),disposing=s.dispose();
+ await Promise.all([writing,resizing,disposing]);assert.equal(clock.size,0);
+ clock.advance(80);assert.equal(changes.length,0);
+ await s.write('after disposal',2);assert.equal(clock.size,0);
 });
 test('read-only work screen does not wait for attach, create, control or take system ownership',async()=>{
  let snapshots=0;const c={started:true,store:{state:{works:[{id:'w',status:'review'},{id:'q',status:'queued'},{id:'e',status:'ended'},{id:'missing',status:'paused'}]}},terminals:new Map([['w',{terminalId:'pty',threadId:'thread',snapshot:async()=>{snapshots++;return {version:1,seq:1,cols:2,rows:2,lines:[]};},input(){throw Error('input called');},resize(){throw Error('resize called');},close(){throw Error('close called');}}]])};

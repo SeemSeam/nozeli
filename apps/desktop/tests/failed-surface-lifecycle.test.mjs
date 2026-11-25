@@ -21,8 +21,12 @@ class Window extends EventEmitter {
 }
 async function fixture(t){
   const directory = await mkdtemp(path.join(os.tmpdir(),'failed-surface-'));
-  t.after(() => rm(directory,{recursive:true,force:true}));
   const {storage,projectId} = await testStorageOptions({contentRoot:path.join(directory,'project')});
+  t.after(async () => {
+    const outcomes=await storage.db.close();
+    assert(!outcomes.some(value=>value?.closed===false),`storage close unconfirmed; retained ${directory}`);
+    await rm(directory,{recursive:true,force:true});
+  });
   const project = await storage.requireRegistered(projectId);
   const host = {storage, requireProject: async id => { assert.equal(id,'p'); return project; }, requireRegisteredProject: async id => { assert.equal(id,'p'); return project; }, settled: async () => {}};
   host.storage = new Proxy(storage,{ get(target,key){ const value = Reflect.get(target,key); return typeof value === 'function' ? ((id,...args) => value.call(target, id === 'p' ? projectId : id, ...args)) : value; } });

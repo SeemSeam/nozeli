@@ -7,6 +7,8 @@
 // environment with Agent-runtime/secret-bearing selectors scrubbed before the
 // PTY ever sees them. The renderer gets no cwd/command authority: payloads
 // carry only identity, size and text.
+// Windows uses native System32 cmd.exe /d, ConPTY and a creation-bound Job;
+// ambient COMSPEC never chooses its executable or descendant shell selector.
 //
 // Ownership proof: every spawned tree carries a private, secret-free
 // `NOZELI_PROJECT_TERMINAL_OWNER=<uuid>` env tag, and termination is the
@@ -31,6 +33,7 @@ import { terminalEnvironment } from '../agents/terminal-environment.mjs';
 import { selectCapability, capabilityStatus, currentPlatform } from '../platform/platform-capabilities.mjs';
 import * as linuxOwnership from '../platform/linux/process-ownership.mjs';
 import * as macosOwnership from '../platform/darwin/process-ownership.mjs';
+import * as windowsTerminal from '../platform/windows/project-terminal.mjs';
 
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -64,7 +67,7 @@ const terminalOwnership = {
 // Agent-runtime selectors, Electron/Chromium internals and obvious secret
 // bearers never reach the user's interactive shell. HOME/PATH/DBUS/display
 // variables stay: this is the user's own login environment, sanitized.
-const SCRUBBED_ENV = /^(NOZELI|OMP|ELECTRON|CHROMIUM|CHROME|CRONET|VSCODE|CODEX|AWS|AZURE)_/;
+const SCRUBBED_ENV = /^(NOZELI|OMP|ELECTRON|CHROMIUM|CHROME|CRONET|VSCODE|CODEX|AWS|AZURE)_/i;
 const SCRUBBED_ENV_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY)/i;
 const NON_INTERACTIVE_SHELLS = new Set(['/sbin/nologin', '/usr/sbin/nologin', '/bin/false', '/usr/bin/false', '/sbin/halt', '/usr/sbin/halt', '/sbin/shutdown', '/usr/sbin/shutdown']);
 
@@ -196,11 +199,12 @@ export class ProjectTerminalHost {
       const explicit = p.restart === true || this.pendingStart.has(r.projectId);
       if (!explicit) return { instanceId: null, status: 'not-started', reason: 'EXPLICIT_START_REQUIRED' };
       instance = await this.#spawn(r.projectId, r.viewId, size ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
-      return this.#live(instance);
+      return instance.status === 'running' ? this.#live(instance) : this.#exitedView(instance);
     });
   }
 
   async #spawn(projectId, viewId, { cols, rows }) {
+    if (this.platform === 'win32') return this.#spawnWindows(projectId, viewId, { cols, rows });
     const selection = this.ownership();
     // The gate is the capability matrix, not a platform literal: a platform
     // declares verified native terminal ownership (and ships its adapter) or
@@ -240,6 +244,7 @@ export class ProjectTerminalHost {
       }
       instance.pty = term;
       instance.pid = term.pid;
+      term.onData(data => this.#emit(instance, data));
       instance.exitPromise = new Promise(resolve => term.onExit(value => resolve(value)));
       const stamp = await ownership.processStamp(term.pid).catch(() => null);
       if (typeof stamp !== 'string' || !stamp) {
@@ -259,7 +264,6 @@ export class ProjectTerminalHost {
         throw fail('TERMINAL_STOPPED_DURING_START', '启动期间终端已被关闭，本次进程已终止。');
       }
       instance.status = 'running';
-      term.onData(data => this.#emit(instance, data));
       term.onExit(value => { void this.#exited(instance, value?.exitCode); });
       this.pendingStart.delete(projectId);
       return instance;
@@ -270,6 +274,49 @@ export class ProjectTerminalHost {
       this.instances.delete(projectId);
       throw error;
     }
+    return instance;
+  }
+
+  async #spawnWindows(projectId, viewId, { cols, rows }) {
+    // Terminal-local native Job ownership is deliberately independent of the
+    // global ownership capability: no post-start PID adoption is permitted.
+    const project = await this.host.requireProject(projectId);
+    const root = project?.root;
+    if (typeof root !== 'string' || !root) throw fail('PROJECT_ROOT_MISSING', '项目根目录不可用，无法启动终端。');
+    const shell = windowsTerminal.projectTerminalShell();
+    const tag = randomUUID();
+    const env = userEnv(this.env);
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'COMSPEC') delete env[key];
+    env.COMSPEC = shell.path;
+    const term = windowsTerminal.createProjectTerminal({ shell, cwd: root, env: { ...env, [OWNER_TAG]: tag }, cols, rows });
+    const instance = {
+      instanceId: randomUUID(), projectId, viewId, pid: term.pid, stamp: term.stamp, tag,
+      cols, rows, cwd: root, shell, seq: 0, ring: [], ringBytes: 0,
+      status: 'running', exitCode: null, cleanup: null, cleanupPromise: null, startedAt: this.now(),
+      pty: term, exitPromise: null, spawning: null, stopping: null, nativeWindows: true,
+    };
+    this.instances.set(projectId, instance);
+    // Native shell is still suspended here. Wire all consumers first so even
+    // its first prompt and an immediate exit are retained in the host ring.
+    term.onData(data => this.#emit(instance, data));
+    instance.exitPromise = new Promise(resolve => term.onExit(resolve));
+    term.onExit(value => { void this.#exited(instance, value?.exitCode); });
+    try { term.start(); }
+    catch (error) {
+      instance.status = 'exited';
+      instance.cleanupPromise = this.#reapTree(instance)
+        .then(receipt => { instance.cleanup = receipt; return receipt; })
+        .catch(cleanupError => {
+          instance.cleanup = { exited: false, descendantsConfirmed: false, cleanupComplete: false, error: cleanupError.code || 'CONPTY_CLEANUP_UNKNOWN' };
+          return instance.cleanup;
+        });
+      await instance.cleanupPromise;
+      // Retain the record on UNKNOWN: an explicit restart/stop must prove
+      // emptiness before another shell can exist for this project.
+      if (instance.cleanup.cleanupComplete) this.instances.delete(projectId);
+      throw error;
+    }
+    this.pendingStart.delete(projectId);
     return instance;
   }
 
@@ -306,6 +353,7 @@ export class ProjectTerminalHost {
   // same-group members, TERM→KILL until the table is empty. Only the
   // adapter's verified verdict certifies cleanup; anything else fails closed.
   async #reapTree(instance) {
+    if (instance.nativeWindows) return instance.pty.cleanup();
     const selection = this.ownership();
     if (capabilityStatus('verified-process-ownership', { platform: this.platform }).status !== 'implemented' || selection.state !== 'available') return { exited: true, descendantsConfirmed: false, cleanupComplete: false, reason: `verified reaping unavailable on ${this.platform}` };
     if (typeof instance.stamp !== 'string' || !instance.stamp) return { exited: true, descendantsConfirmed: false, cleanupComplete: false, reason: 'terminal process identity was never established' };
@@ -369,10 +417,11 @@ export class ProjectTerminalHost {
   }
 
   async #applyResize(instance, cols, rows) {
-    instance.cols = cols; instance.rows = rows;
     if (instance.status === 'running' && instance.pty) {
-      try { instance.pty.resize(cols, rows); } catch { /* leader may be exiting */ }
+      if (instance.nativeWindows) instance.pty.resize(cols, rows);
+      else { try { instance.pty.resize(cols, rows); } catch { /* leader may be exiting */ } }
     }
+    instance.cols = cols; instance.rows = rows;
     void this.#persistSize(instance).catch(error => this.onError(error));
   }
 

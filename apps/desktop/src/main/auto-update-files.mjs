@@ -7,6 +7,7 @@ import {pipeline} from 'node:stream/promises';
 import {Transform} from 'node:stream';
 import {Worker} from 'node:worker_threads';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
+import {requireUpdatePlatform} from './auto-update-platform.mjs';
 import {detectMacInstallation, validateMacPackage, extractMacPackage, macProcessIdentity} from './auto-update-macos.mjs';
 const fs = process.versions.electron ? createRequire(import.meta.url)('original-fs').promises : nodeFs;
 
@@ -14,13 +15,17 @@ export const MAX_ARCHIVE = 3 * 1024 ** 3;
 const MAX_UNPACKED = 10 * 1024 ** 3;
 export const inside = (root, file) => { const rel = path.relative(root, file); return rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel); };
 export async function atomicJson(file, value) {
+  if(process.platform==='win32')return (await import('./auto-update-windows.mjs')).writeWindowsUpdateJson(file,value);
   await platformPersistence.writeAtomic(file,JSON.stringify(value)+'\n');
 }
 export async function ownedDirectory(directory) {
+  if(process.platform==='win32')return (await import('./auto-update-windows.mjs')).ensureWindowsUpdateDirectory(directory);
+  requireUpdatePlatform();
   const stat = await fs.lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || stat.mode & 0o022 || await fs.realpath(directory) !== path.resolve(directory)) throw Error('Unsafe updater directory');
 }
 export async function readJson(file, max = 65536) {
+  if(process.platform==='win32')return (await import('./auto-update-windows.mjs')).readWindowsUpdateJson(file,{maxBytes:max});
   const stat = await fs.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > max) throw Error('Invalid updater metadata');
   return JSON.parse(await fs.readFile(file, 'utf8'));
@@ -45,6 +50,10 @@ export function compareVersions(a, b) {
   return 0;
 }
 export async function processIdentity(pid) {
+  if(process.platform==='win32'){
+    const {openExperimentalProcessIdentity}=await import('../platform/windows/experimental-process-identity.mjs');
+    const pin=openExperimentalProcessIdentity(pid);try{const value=pin.snapshot();return {...value,start:value.creationTime100ns};}finally{pin.close();}
+  }
   if (process.platform === 'darwin') return macProcessIdentity(pid);
   try {
     const directory = '/proc/' + pid, stat = await fs.stat(directory);
@@ -53,6 +62,7 @@ export async function processIdentity(pid) {
   } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return null; throw error; }
 }
 export async function detectInstallation(appRoot) {
+  if(process.platform==='win32'&&process.arch==='x64')return (await import('./auto-update-windows.mjs')).detectWindowsInstallation(appRoot);
   if (process.platform === 'darwin' && process.arch === 'arm64') return detectMacInstallation(appRoot);
   if (process.platform !== 'linux' || process.arch !== 'x64') return null;
   const release = path.resolve(appRoot, '../..');
@@ -76,6 +86,7 @@ export async function detectInstallation(appRoot) {
   return {kind: 'portable', root: path.dirname(release), release};
 }
 export async function validatePackage(release, version, expectedCommit) {
+  if(process.platform==='win32')return (await import('./auto-update-windows-package.mjs')).validateWindowsUpdatePackage(release,version,expectedCommit);
   if (process.platform === 'darwin') return validateMacPackage(release, version, expectedCommit);
   await ownedDirectory(release);
   const metadata = await readJson(path.join(release, 'RELEASE.json'));
@@ -97,7 +108,9 @@ export async function validatePackage(release, version, expectedCommit) {
   } finally { await handle.close(); }
   return metadata;
 }
-export async function extractPackage(archive, destination, version, signal, expectedCommit) {
+export async function extractPackage(archive, destination, version, signal, expectedCommit, expectedArchiveSha256) {
+  requireUpdatePlatform();
+  if(process.platform==='win32')return (await import('./auto-update-windows-package.mjs')).extractWindowsUpdatePackage(archive,destination,version,signal,expectedCommit,expectedArchiveSha256);
   if (process.platform === 'darwin') return extractMacPackage(archive, destination, version, signal, expectedCommit);
   const label = 'Nozeli-' + version + '-linux-x64';
   await fs.mkdir(destination, {mode: 0o700});
@@ -152,6 +165,13 @@ export async function downloadFile({response, file, expected, signal, onProgress
   if (!response.ok || !response.body) throw Error('Update download failed: HTTP ' + response.status);
   const total = Number(response.headers.get('content-length')) || 0;
   if (total > max) throw Error('Update archive exceeds download limit');
+  if(process.platform==='win32'){
+    if(!/^[a-f0-9]{64}$/.test(expected))throw Error('Exact update archive SHA256 required');
+    const {createExperimentalWindowsPersistence}=await import('../platform/windows/experimental-persistence.mjs');
+    let received=0;
+    const source=(async function*(){for await(const chunk of response.body){signal?.throwIfAborted();received+=chunk.byteLength;if(received>max)throw Error('Update download exceeds limit');onProgress?.({received,total});yield chunk;}if(total&&received!==total)throw Error('Update download length changed');})();
+    return createExperimentalWindowsPersistence(path.dirname(file)).writeStream(path.basename(file),source,{expectedSha256:null,expectedNewSha256:expected,signal});
+  }
   const hash = crypto.createHash('sha256'); let received = 0;
   const meter = new Transform({transform(chunk, encoding, callback) {
     received += chunk.length;

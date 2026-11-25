@@ -45,6 +45,7 @@ export function dependencyIncluded(lock, relative, target) {
 
 export function applicationSourceIncluded(source, file) {
   const parts = path.relative(source, file).split(path.sep);
+  if (parts.some(part => /^(?:local-skill-imports|store-skills)\.json(?:\..*)?$|^ui\.sqlite(?:-.*)?$/i.test(part))) throw Error('Local Store data must not enter application packages: ' + parts.join('/'));
   if (parts.some(part => part === '.nozeli' || part === '.ccb')) return false;
   if (parts[0] === 'runtime' && parts[1] === 'omp') return false;
   if (parts[0] === 'assets' && parts[1] === 'start-page') return false;

@@ -1,0 +1,148 @@
+--- a/dist/core/model-config.js
++++ b/dist/core/model-config.js
+@@ -122,15 +122,16 @@
+         this.providers = providers;
+         this.error = error;
+     }
+-    static async load(modelsJsonPath) {
++    static async load(modelsJsonPath, readContent) {
+         if (!modelsJsonPath)
+             return new ModelConfig(new Map());
+         const path = normalizePath(modelsJsonPath);
+         let content;
+         try {
+-            content = await readFile(path, "utf-8");
++            content = readContent ? await readContent(path) : await readFile(path, "utf-8");
+         }
+         catch (error) {
++            if (readContent) throw error;
+             if (error.code === "ENOENT")
+                 return new ModelConfig(new Map());
+             return new ModelConfig(new Map(), `Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`);
+--- a/dist/core/model-runtime.js
++++ b/dist/core/model-runtime.js
+@@ -79,7 +79,8 @@
+     static async create(options = {}) {
+         const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
+         const modelsPath = options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
+-        const config = await ModelConfig.load(modelsPath);
++        const loadModelConfig = options.loadModelConfig ?? (path => ModelConfig.load(path));
++        const config = await loadModelConfig(modelsPath);
+         const modelsStore = options.modelsStore ??
+             (modelsPath
+                 ? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
+@@ -95,6 +96,7 @@
+             return withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+         });
+         const runtime = new ModelRuntime(credentials, config, modelsPath, modelsStore, providers, process.env.PI_OFFLINE === undefined);
++        runtime.loadModelConfig = loadModelConfig;
+         runtime.configureRadiusProviders();
+         runtime.rebuildProviders();
+         const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
+@@ -588,7 +590,7 @@
+         });
+     }
+     async refresh(options = {}) {
+-        this.config = await ModelConfig.load(this.modelsPath);
++        this.config = await (this.loadModelConfig ?? (path => ModelConfig.load(path)))(this.modelsPath);
+         this.configureRadiusProviders();
+         if (options.providers) {
+             for (const providerId of new Set(options.providers))
+--- a/dist/core/models-store.js
++++ b/dist/core/models-store.js
+@@ -27,12 +27,12 @@
+     storage;
+     path;
+     readState;
+-    constructor(path = join(getAgentDir(), "models-store.json")) {
+-        this.path = normalizePath(path);
+-        this.storage = new FileAuthStorageBackend(this.path);
++    constructor(path = join(getAgentDir(), "models-store.json"), storage) {
++        this.path = storage ? undefined : normalizePath(path);
++        this.storage = storage ?? new FileAuthStorageBackend(this.path);
+         this.readState =
+-            sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };
+-        if (!sharedModelsFileReadState) {
++            this.path && sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };
++        if (this.path && !sharedModelsFileReadState) {
+             sharedModelsFileReadState = { path: this.path, readState: this.readState };
+         }
+     }
+@@ -46,13 +46,14 @@
+     reloadFromStorage(readState, options) {
+         return this.storage.withLockAsync(async (content) => {
+             const data = this.parse(content);
+-            this.updateReadState(readState, data, getFileRevision(this.path));
++            this.updateReadState(readState, data, (this.path ? getFileRevision(this.path) : undefined));
+             return { result: data };
+         }, options);
+     }
+     async readLatest(readState, options) {
+         options?.signal?.throwIfAborted();
+-        const revision = getFileRevision(this.path);
++        if (!this.path) return this.reloadFromStorage(readState, options);
++        const revision = (this.path ? getFileRevision(this.path) : undefined);
+         if (revision !== undefined && revision === readState.revision)
+             return readState.data;
+         if (!readState.reload) {
+--- a/dist/core/model-config.d.ts
++++ b/dist/core/model-config.d.ts
+@@ -2303,7 +2303,7 @@
+     private readonly providers;
+     private readonly error;
+     private constructor();
+-    static load(modelsJsonPath: string | undefined): Promise<ModelConfig>;
++    static load(modelsJsonPath: string | undefined, readContent?: (path: string) => string | Promise<string>): Promise<ModelConfig>;
+     getProvider(providerId: string): ModelsJsonProvider | undefined;
+     getProviderIds(): readonly string[];
+     getError(): string | undefined;
+--- a/dist/core/model-runtime.d.ts
++++ b/dist/core/model-runtime.d.ts
+@@ -1,11 +1,14 @@
+ import { type AnyModel, type Api, type AssistantImages, type AssistantMessage, type AssistantMessageEventStream, type AuthCheck, type AuthInteraction, type AuthOperationOptions, type AuthResult, type AuthType, type ClassifierApi, type ClassifierContext, type ClassifierModel, type ClassifierResult, type Context, type Credential, type CredentialInfo, type CredentialStore, type DeferredHandle, type ImageApi, type ImageModel, type ImagesContext, type LoginOptions, type Message, type Model, type Models, type ModelsApiStreamOptions, type ModelsClassifierOptions, type ModelsDeferredCancelOptions, type ModelsDeferredFetchOptions, type ModelsImagesOptions, type ModelsRefreshOptions, type ModelsRefreshResult, type ModelsSimpleStreamOptions, type ModelsStore, type ModelThinkingLevel, type ModelType, type ModelTypeMap, type Provider } from "@earendil-works/pi-ai";
+ import { type AuthStatus, type CompatibilityRequestConfig, type ProviderConfigInput } from "./provider-composer.ts";
+ import { type ModelRoute, type ModelRouteReason, type VirtualModelDefinition } from "./virtual-models.ts";
++import type { ModelConfig } from "./model-config.ts";
+ export interface CreateModelRuntimeOptions {
+     /** Credential storage. Defaults to the file at authPath. */
+     credentials?: CredentialStore;
+     authPath?: string;
+     modelsPath?: string | null;
++    /** Optional models.json loader, reused by refresh. Defaults to ModelConfig.load. */
++    loadModelConfig?: (path: string | undefined) => ModelConfig | Promise<ModelConfig>;
+     modelsStore?: ModelsStore;
+     modelsStorePath?: string;
+     /** Allow create() to refresh model catalogs over the network. Defaults to false. */
+--- a/dist/core/models-store.d.ts
++++ b/dist/core/models-store.d.ts
+@@ -1,4 +1,5 @@
+ import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@earendil-works/pi-ai";
++import type { AuthStorageBackend } from "./auth-storage.ts";
+ export declare class InMemoryCodingAgentModelsStore implements ModelsStore {
+     private readonly entries;
+     read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined>;
+@@ -10,7 +11,7 @@
+     private readonly storage;
+     private readonly path;
+     private readonly readState;
+-    constructor(path?: string);
++    constructor(path?: string, storage?: Pick<AuthStorageBackend, "withLockAsync">);
+     private parse;
+     private updateReadState;
+     private reloadFromStorage;
+--- a/dist/utils/paths.js
++++ b/dist/utils/paths.js
+@@ -68,11 +68,10 @@ export function normalizePath(input, options = {}) {
+         normalized = normalizeWindowsShellPath(normalized);
+     }
+     if (options.expandTilde ?? true) {
+-        const home = options.homeDir ?? homedir();
+         if (normalized === "~")
+-            return home;
++            return options.homeDir ?? homedir();
+         if (normalized.startsWith("~/") || (process.platform === "win32" && normalized.startsWith("~\\"))) {
+-            return join(home, normalized.slice(2));
++            return join(options.homeDir ?? homedir(), normalized.slice(2));
+         }
+     }
+     if (/^file:\/\//.test(normalized)) {

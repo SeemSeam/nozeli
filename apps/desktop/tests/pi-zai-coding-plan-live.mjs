@@ -20,7 +20,9 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { OwnerRuntime } from '../../../integrations/pi/src/bridge.mjs';
+import {pathToFileURL} from 'node:url';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {OwnerRuntime}=await import(pathToFileURL(path.join(integration,'src/bridge.mjs')));
 
 const REDIRECT_URI = 'zcode://zai-auth/callback';
 const tokenEnvelope = data => ({ code: 0, msg: 'ok', data });

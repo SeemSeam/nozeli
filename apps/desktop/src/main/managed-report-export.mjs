@@ -36,7 +36,7 @@ export class ManagedReportExporter {
         return {projectId,objectId,sourcePath,relPath,byteLength:bytes.length,digest:createHash('sha256').update(bytes).digest('hex'),copied:true};
       });
     }catch(error){
-      if(error.code==='EEXIST')throw new HostError('CONFLICT','此名称被其他操作占用，请使用其他名称；原成果未覆盖。');
+      if(!error.committed&&!error.commitUnknown&&['EEXIST','FS_TARGET_EXISTS'].includes(error.code))throw new HostError('CONFLICT','此名称被其他操作占用，请使用其他名称；原成果未覆盖。');
       throw error;
     }finally{await release?.();}
   }
@@ -95,7 +95,8 @@ export class ManagedReportExporter {
             digest:createHash('sha256').update(bytes).digest('hex'), copied:true};
         });
       } catch (error) {
-        if (error.code === 'EEXIST') throw new HostError('CONFLICT', '此名称被其他操作占用，请使用其他名称；原文件未覆盖。');
+        if (!error.committed && !error.commitUnknown && ['EEXIST','FS_TARGET_EXISTS'].includes(error.code))
+          throw new HostError('CONFLICT', '此名称被其他操作占用，请使用其他名称；原文件未覆盖。');
         throw error;
       } finally { await release?.(); }
     })();

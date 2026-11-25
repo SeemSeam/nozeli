@@ -82,7 +82,7 @@ export class ExternalOpenQueue {
   const p=this.paused;
   try{
    const raw=await this.storage.read();
-   if(raw.hash===p.nextHash){const disk=validate(JSON.parse(raw.bytes),this.limits);if(disk.commitId!==p.next.commitId||disk.revision!==p.next.revision)throw Error('commit identity mismatch');await this.storage.sync();}
+   if(raw.hash===p.nextHash){const disk=validate(JSON.parse(raw.bytes),this.limits);if(disk.commitId!==p.next.commitId||disk.revision!==p.next.revision)throw Error('commit identity mismatch');await this.storage.sync(p.nextHash);}
    else if(raw.hash===p.priorHash&&!p.committed)await this.storage.write(p.next,p.priorHash,p.guard);
    else fail('OPEN_QUEUE_UNCERTAIN','On-disk commit changed during persistence retry.');
    const after=await this.storage.read();if(after.hash!==p.nextHash)fail('OPEN_QUEUE_UNCERTAIN','Commit changed while syncing.');

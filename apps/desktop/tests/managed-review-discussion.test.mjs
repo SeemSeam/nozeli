@@ -310,3 +310,24 @@ test('instruction draft is Work-scoped: retained across publication changes, sav
   assert.equal(saved.revision,4);
   await assert.rejects(c.reviewInstructionSave({objectId,text:'过期版本',expectedRevision:3}),error=>error.code==='REVIEW_INSTRUCTION_STALE');
 });
+
+test('report queue parks without a timeline user entry and revalidates version at claim',async t=>{
+ const {c,w,objectId}=await fixture(t);
+ const p={workId:w.id,objectId,reviewVersion:await versionOf(c,objectId),requestKey:'exact-report-queue-001',text:'Wait for explicit dispatch',lane:'normal'};
+ const sent=await c.reviewDiscussionSend(p);
+ assert.equal(w.status,'review');
+ assert.equal(c.reviewDiscussionReceipt(p).jobId,sent.jobId);
+ assert.throws(()=>c.reviewDiscussionReceipt({...p,lane:'next'}),{code:'REVIEW_REQUEST_COLLISION'});
+ await c.pump();
+ assert.deepEqual((await c.reviewDiscussionRead({workId:w.id,objectId})).queueItems,[{id:sent.jobId,text:p.text,lane:'normal'}]);
+ await c.reviewSave({objectId,relPath:'reading.md',text:'# Changed version since enqueue\n',expectedDraftRevision:0});
+ await c.chatControl({workId:w.id,revision:w.revision},{work:true,dispatch:true});
+ await c.pump();
+ await Promise.all([...c.running.values()]);
+ const job=c.store.state.jobs.find(j=>j.id===sent.jobId);
+ assert.equal(job.status,'queued');assert.equal(job.chat.bindingInvalid,true);assert.equal(job.promptStartedAt,null);
+ assert.equal(c.store.state.messages.some(m=>m.jobId===job.id&&m.speaker==='user'),false);
+ assert.equal((await c.reviewDiscussionRead({workId:w.id,objectId})).canDispatch,false);
+ await c.chatControl({workId:w.id,revision:w.revision,queueId:sent.jobId},{work:true});
+ assert.equal((await c.reviewDiscussionRead({workId:w.id,objectId})).queued,0);
+});

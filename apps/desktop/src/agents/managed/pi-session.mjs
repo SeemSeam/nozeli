@@ -1,5 +1,6 @@
 import {EventEmitter} from 'node:events';
-import {createInterface} from 'node:readline';
+import {createJsonlReader} from './jsonl-reader.mjs';
+import {prepareRegisteredOwner,isRegisteredOwnerLaunch} from './prepared-owner-launch.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {hostProcessTree} from './process-ownership.mjs';
 import {reapOwnedPiGroup} from './pi-process-ownership.mjs';
 import {scrubProviderEnv} from './omp-credentials.mjs';
-import {isolatedLaunch} from './process-isolation.mjs';
+import {isolatedLaunch,requireIsolationSupport} from './process-isolation.mjs';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
 import {here as roleRuntimeRoot,roleSkillCatalog} from './runtime.mjs';
 
@@ -62,8 +63,9 @@ export class PiSession extends EventEmitter {
   // contract, so a session never guesses group semantics for a platform
   // without a verified adapter.
   this.processTree=spec.processTree??hostProcessTree();
+  this.registeredOwnerLaunch=spec.registeredOwnerLaunch;
   this.tools=spec.tools??[];this.toolsDigest=digest(this.tools);this.viewOwnerId=spec.nativeContext?.ownerId??randomUUID();
-  this.epoch=randomUUID();this.pending=new Map();this.inFlightToolCalls=new Map();this.toolAdmissions=new Map();
+  this.epoch=randomUUID();this.pending=new Map();this.inFlightToolCalls=new Map();this.toolAdmissions=new Map();this.claimedToolIds=new Set();
   this.nativeDrain=Promise.resolve();this.nativeError=null;this.closed=false;this.busy=false;
   this.phase='new';this.model=spec.model??null;this.effort=spec.effort??null;this.interactions=[];
   this.hasPrompted=false;this.agentEnds=[];this.configurationStatus='unconfigured';
@@ -84,7 +86,8 @@ export class PiSession extends EventEmitter {
  // through the native owner. A record this host cannot interpret is a
  // genuine persisted-metadata error and still refuses the resume.
  async preflightToolsDigest(expected){
-  let saved;try{saved=JSON.parse(await fs.readFile(this.metadataFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(this.spec.isolation)requireIsolationSupport(this.spec.isolationDeps);
+  let saved;try{saved=isRegisteredOwnerLaunch(this.registeredOwnerLaunch)?await this.registeredOwnerLaunch.readMetadata():JSON.parse(await fs.readFile(this.metadataFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
   if(saved){
    if(saved.schema!==1||typeof saved.threadId!=='string'||!saved.threadId||saved.sessionFile!=null&&typeof saved.sessionFile!=='string')throw fail('PI_TOOLS_METADATA_SCHEMA','Pi session tools metadata is not an interpretable pinned record; refusing to resume from it');
    this.sessionFile=saved.sessionFile;this.pinnedThreadId=saved.threadId;
@@ -107,7 +110,9 @@ export class PiSession extends EventEmitter {
  async saveMetadata(){
   // Shared durable atomic publish (temp + fsync + rename + directory barrier);
   // the home directory itself is created by start() before this runs.
-  await platformPersistence.writeAtomic(this.metadataFile,JSON.stringify({schema:1,threadId:this.threadId,sessionFile:this.sessionFile,toolsDigest:this.toolsDigest}));
+  const value={schema:1,threadId:this.threadId,sessionFile:this.sessionFile,toolsDigest:this.toolsDigest};
+  if(isRegisteredOwnerLaunch(this.registeredOwnerLaunch))await this.registeredOwnerLaunch.writeMetadata(this.metadataFile,value);
+  else await platformPersistence.writeAtomic(this.metadataFile,JSON.stringify(value));
  }
  bindOwnerInput(child){
   child.stdin.on('error',cause=>{
@@ -119,13 +124,18 @@ export class PiSession extends EventEmitter {
   });
  }
  write(value){
+  if(this.startError)throw this.startError;
+  if(this.protocolError)throw this.protocolError;
+  if(this.launchAttempt&&(!this.launchResumeAttempted||this.launchError||this.stopping))throw fail('PI_LAUNCH_UNCONFIRMED','Owner launch has not admitted input; no replay');
   if(this.transportError)throw this.transportError;
   if(!this.child?.stdin?.writable)throw fail('PI_RUNTIME_CLOSED','Pi runtime input closed');
   this.child.stdin.write(JSON.stringify(value)+'\n');
  }
- request(method,params={},timeout=30000){
+ async request(method,params={},timeout=30000){
   if(this.closed)return Promise.reject(fail('PI_RUNTIME_CLOSED','Pi session closed'));
+  if(method==='stop'&&isRegisteredOwnerLaunch(this.registeredOwnerLaunch)&&this.registeredOwnerLaunch.retireOwner)return this.requestStopOwner();
   if(this.transportError)return Promise.reject(this.transportError);
+  if((method==='model'&&params.refreshProvider===true||method==='reload')&&this.registeredOwnerLaunch?.synchronizeConfiguration)await this.registeredOwnerLaunch.synchronizeConfiguration();
   const id=randomUUID();
   return new Promise((resolve,reject)=>{
    const timer=setTimeout(()=>{this.pending.delete(id);reject(fail('PI_REQUEST_TIMEOUT','Pi '+method+' acknowledgement timed out; no automatic replay'));},timeout);
@@ -156,7 +166,10 @@ export class PiSession extends EventEmitter {
   this.nativeDrain=operation.catch(error=>{this.nativeError??=error;this.emit('projection-error',error);}).finally(()=>{this.nativePending--;this.activityChanged();});
  }
  receive(line){
-  let message;try{message=JSON.parse(line);}catch{this.protocolError=fail('PI_PROTOCOL_INVALID','Invalid Pi runtime JSONL frame');this.child?.kill();return;}
+  let message;try{message=JSON.parse(line);}catch{this.protocolError=fail('PI_PROTOCOL_INVALID','Invalid Pi runtime JSONL frame');this.terminateOwnerProcess();return;}
+  return this.receiveFrame(message);
+ }
+ receiveFrame(message){
   if(message.ownerId&&message.ownerId!==this.viewOwnerId)return;
   if(message.ownerGeneration&&this.nativeActivity&&message.ownerGeneration!==this.nativeActivity.ownerGeneration)return;
   if(message.sessionId&&this.threadId&&message.sessionId!==this.threadId)return;
@@ -235,22 +248,51 @@ export class PiSession extends EventEmitter {
   // failure evidence) on the rejected error; code/message alone would strip
   // the only non-guess classification evidence.
   if(typeof message.error.deliveryPhase==='string'&&message.error.deliveryPhase.length<=64)error.deliveryPhase=message.error.deliveryPhase;
+  if(waiting.method==='prompt'&&['PI_TOOL_CATALOG_MISMATCH','PI_TOOL_CATALOG_UNSAFE'].includes(error.code)&&error.deliveryPhase==='not-submitted'&&message.error.definitiveNonDispatch===true)error.catalogRejectedBeforeSubmission=true;
   if(['host','provider','runtime'].includes(message.error.failureOrigin))error.failureOrigin=message.error.failureOrigin;
   if(typeof message.error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(message.error.hostToolCode))error.hostToolCode=message.error.hostToolCode;
   const evidence=sanitizeFailureEvidence(message.error.providerFailure);
   if(evidence){error.providerFailureEvidence=evidence;this.lastProviderFailure=evidence;}
   waiting.reject(error);
- }else waiting.resolve(message.result);
+ }else{if(waiting.method==='stop')this.ownerStopAck=message.result;waiting.resolve(message.result);}
+ }
+ // Explicit shared component entry; does not bypass start()'s capability gate
+ // or certify the supplied transport as a verified owner/recovery service.
+ prepareRegisteredOwner(options){return prepareRegisteredOwner(this,options);}
+ terminateOwnerProcess(){
+  try{if(typeof this.child?.terminate==='function')this.child.terminate();else this.child?.kill();}
+  catch(error){this.terminationError??=error;this.emit('termination-error',error);}
+ }
+ observeOwnerChild(child){
+  this.bindOwnerInput(child);
+  const rejectPending=()=>{for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(this.protocolError??fail('PI_RUNTIME_EXITED','Pi owner exited before acknowledgement; input will not be replayed'));}this.pending.clear();};
+  this.exitPromise=new Promise(resolve=>{child.once('exit',(code,signal)=>{this.exit={code,signal};this.phase='exited';
+   // A retained native leader may exit before the final pipe frame arrives.
+   // Drain first; a leader exit must not reject a queued stop acknowledgement.
+   if(typeof child.waitForExitAndDrain==='function')void child.waitForExitAndDrain().then(rejectPending,rejectPending);else rejectPending();
+   resolve(this.exit);this.emit('exit',this.exit);});child.once('error',error=>{this.spawnError=error;for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(error);}this.pending.clear();resolve({error:error.message});});});
+  this.protocolReader=createJsonlReader(child.stdout,{onFrame:message=>this.receiveFrame(message),onError:error=>{
+   this.protocolError=Object.assign(fail('PI_PROTOCOL_INVALID','Invalid Pi runtime JSONL: '+error.reason),{cause:error});
+   rejectPending();
+   this.terminateOwnerProcess();
+  }});
+  this.diagnostics='';child.stderr.on('data',chunk=>{this.diagnostics=(this.diagnostics+chunk.toString()).slice(-16384);});
  }
  async start(resumeId){
-  if(this.child)throw fail('PI_OWNER_EXISTS','Pi session already owns a process');
+  if(this.starting||this.child||this.launchAttempt)throw fail('PI_OWNER_EXISTS','Pi session already owns a startup or process');
+  this.starting=true;try{return await this.startOwner(resumeId);}catch(error){this.startError=error;throw error;}finally{this.starting=false;}
+ }
+ async startOwner(resumeId){
+  if(this.spec.isolation)requireIsolationSupport(this.spec.isolationDeps);
   // The durable pinned record must name exactly the thread being resumed;
   // the native owner then independently re-verifies the pinned file's own
   // header identity during the same open. Refuse before any side effect.
   if(resumeId&&this.pinnedThreadId&&this.pinnedThreadId!==resumeId)throw fail('PI_SESSION_IDENTITY',`Pi pinned session metadata names thread ${this.pinnedThreadId}, not the requested ${resumeId}`);
-  if(!this.processTree.verified)throw fail('PI_PLATFORM_UNSUPPORTED',`Pi owner process ownership is not verified on ${this.processTree.platform}; refusing to start an unverified owner process`);
+  const registered=isRegisteredOwnerLaunch(this.registeredOwnerLaunch)?this.registeredOwnerLaunch:null;
+  if(!this.processTree.verified&&!registered)throw fail('PI_PLATFORM_UNSUPPORTED',`Pi owner process ownership is not verified on ${this.processTree.platform}; refusing to start an unverified owner process`);
   const skillCatalog=this.spec.roleSkillCatalog??await roleSkillCatalog(this.role,{skills:this.spec.skills});
-  await fs.mkdir(this.home,{recursive:true,mode:0o700});
+  if(registered){if(registered.home!==this.home)throw fail('PI_LAUNCH_CONTRACT_INVALID','Registered launch home differs from this session');await registered.initialize();}
+  else await fs.mkdir(this.home,{recursive:true,mode:0o700});
   const runtime=this.spec.piRuntime??{};
   if(!resumeId){
    // New sessions seed the role's configured defaults; resumed sessions keep
@@ -261,30 +303,44 @@ export class PiSession extends EventEmitter {
   }else this.model??=await runtime.modelFor?.(this.role)??null;
   this.phase='starting';
   const {env:baseEnv}=scrubProviderEnv(process.env);
-  const env={...baseEnv,...runtime.env,ELECTRON_RUN_AS_NODE:'1',NOZELI_PI_OWNER_HOME:this.home,NOZELI_PI_OWNER_ID:this.viewOwnerId,PI_CODING_AGENT_DIR:runtime.agentDir??this.spec.piSystemSource?.agentDir??path.join(this.home,'config')};
+  const env=registered?registered.environment(this.viewOwnerId):{...baseEnv,...runtime.env,ELECTRON_RUN_AS_NODE:'1',NOZELI_PI_OWNER_HOME:this.home,NOZELI_PI_OWNER_ID:this.viewOwnerId,PI_CODING_AGENT_DIR:runtime.agentDir??this.spec.piSystemSource?.agentDir??path.join(this.home,'config')};
   // Explicit private roots prevent ambient user Pi/OMP extensions and auth.
   const entry=runtime.entry??defaultEntry;
   let launch={command:runtime.command??process.execPath,args:[...(runtime.args??[]),entry],env:{}};
   if(this.spec.isolation){
    await fs.mkdir(env.PI_CODING_AGENT_DIR,{recursive:true,mode:0o700});
    const isolation=this.spec.isolation;
-   launch=await isolatedLaunch({...launch,home:this.home,cwd:this.cwd,writable:[...(isolation.writable??[]),env.PI_CODING_AGENT_DIR],readOnly:isolation.readOnly??[],readable:[...(isolation.readable??[]),path.resolve(path.dirname(entry),'..')]});
+   launch=await isolatedLaunch({...launch,home:this.home,cwd:this.cwd,writable:[...(isolation.writable??[]),env.PI_CODING_AGENT_DIR],readOnly:isolation.readOnly??[],readable:[...(isolation.readable??[]),path.resolve(path.dirname(entry),'..')]},this.spec.isolationDeps);
   }
+  if(registered){
+   await this.prepareRegisteredOwner({launch:{command:launch.command,args:launch.args,cwd:this.cwd,env:{...env,...launch.env}},
+    prepare:spec=>registered.prepare(spec),registry:registered.registry,target:registered.target,
+    isCurrent:token=>{registered.verify();return registered.isCurrent(token);},
+    onRegistered:receipt=>this.spec.onSpawn?.(this.pid,this.groupRecord,receipt)});
+  }else{
   this.child=this.processTree.spawn({command:launch.command,args:launch.args,cwd:this.cwd,env:{...env,...launch.env},stdio:['pipe','pipe','pipe'],windowsHide:true});
   const child=this.child;
-  this.bindOwnerInput(child);
-  this.exitPromise=new Promise(resolve=>{child.once('exit',(code,signal)=>{this.exit={code,signal};this.phase='exited';for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(this.protocolError??fail('PI_RUNTIME_EXITED','Pi owner exited before acknowledgement; input will not be replayed'));}this.pending.clear();resolve(this.exit);this.emit('exit',this.exit);});child.once('error',error=>{this.spawnError=error;for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(error);}this.pending.clear();resolve({error:error.message});});});
-  createInterface({input:child.stdout,crlfDelay:Infinity}).on('line',line=>this.receive(line));
-  this.diagnostics='';child.stderr.on('data',chunk=>{this.diagnostics=(this.diagnostics+chunk.toString()).slice(-16384);});
+  this.observeOwnerChild(child);
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});
   this.pid=child.pid;this.groupRecord={pid:this.pid,home:this.home,ownerId:this.viewOwnerId,stamp:await this.processTree.stamp(this.pid),kind:'pi-node'};
   await this.spec.onSpawn?.(this.pid);
+  }
+  const metadataEvidence=registered?.metadataEvidence?.();
   const sessionDirectory=this.spec.sessionDir!==undefined?{sessionDir:this.spec.sessionDir}:{};
-  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,...sessionDirectory,...(this.spec.nativeTools!==undefined?{nativeTools:this.spec.nativeTools}:{}),rolePackageRoot:this.spec.rolePackageRoot??path.join(roleRuntimeRoot,'roles'),roleSkillCatalog:skillCatalog,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,...(this.spec.budget?{budget:this.spec.budget}:{})},60000);
+  // Registered native Windows owners pay anchored-IO costs Linux does not
+  // (private model/auth and journal evidence per read); a cold start with
+  // concurrent resident owners has exceeded four minutes under load, so only
+  // that acknowledgement budget rises. Semantics, replay refusal and every
+  // other timeout stay.
+  const result=await this.request('start',{cwd:this.cwd,home:this.home,agentDir:env.PI_CODING_AGENT_DIR,instructions:[this.spec.baseInstructions,this.spec.instructions].filter(Boolean).join('\n'),tools:this.tools,...sessionDirectory,...(metadataEvidence?{metadataEvidence}:{}),...(runtime.nativeTools!==undefined?{nativeTools:runtime.nativeTools}:{}),...(this.spec.nativeTools!==undefined?{nativeTools:this.spec.nativeTools}:{}),rolePackageRoot:this.spec.rolePackageRoot??path.join(roleRuntimeRoot,'roles'),roleSkillCatalog:skillCatalog,sessionId:resumeId,sessionFile:this.sessionFile,model:this.model,effort:this.effort,role:this.role,projectInstanceId:this.spec.projectInstanceId,...(this.spec.budget?{budget:this.spec.budget}:{})},registered?600000:60000);
+  if(metadataEvidence&&JSON.stringify(result.metadataEvidence)!==JSON.stringify(metadataEvidence))throw fail('PI_METADATA_UNCONFIRMED','Original start did not acknowledge metadata consumption');
   this.threadId=result.sessionId;this.sessionFile=result.sessionFile;
+  if(registered)registered.assertSessionFile(this.sessionFile);
   if(!this.threadId||resumeId&&this.threadId!==resumeId)throw fail('PI_SESSION_IDENTITY','Pi owner did not confirm exact original session identity');
   this.model=modelSelector(result.model)??this.model;this.effort=result.effort??this.effort;this.effective=result.effective;this.thinkingLevels=result.thinkingLevels??this.thinkingLevels;this.hasPrompted=result.hasPrompted===true;
-  this.contextDelivery=result.contextDelivery??null;this.contextEpoch=result.contextDelivery?.contextEpoch??null;await this.saveMetadata();this.phase='idle';this.configurationStatus=this.model?'configured':'unconfigured';await this.refreshActivity();
+  this.contextDelivery=result.contextDelivery??null;this.contextEpoch=result.contextDelivery?.contextEpoch??null;await this.saveMetadata();
+  if(metadataEvidence){const head=registered.metadataEvidence();const ack=await this.request('flush',{metadataEvidence:head});if(JSON.stringify(ack.metadataEvidence)!==JSON.stringify(head))throw fail('PI_METADATA_UNCONFIRMED','Metadata replacement acknowledgement is unknown');registered.verifyMetadata();}
+  this.phase='idle';this.configurationStatus=this.model?'configured':'unconfigured';await this.refreshActivity();
   if(this.pendingModel!=null){await this.nativeDrain;await this.applyPendingModel();}
   return {threadId:this.threadId,sessionFile:this.sessionFile};
  }
@@ -297,6 +353,14 @@ export class PiSession extends EventEmitter {
   return this.spec.onTransportFact?.(fact);
  }
  async handleTool(message){
+  const custody=isRegisteredOwnerLaunch(this.registeredOwnerLaunch)&&this.registeredOwnerLaunch.beginTool?this.registeredOwnerLaunch:null;
+  if(custody){
+   if(this.claimedToolIds.has(message.id)){
+    this.fenceToolCustody(fail('PI_TOOL_DUPLICATE','Duplicate reverse tool call; execution and reply refused'));return;
+   }
+   if(this.claimedToolIds.size>=16384){this.fenceToolCustody(fail('PI_TOOL_LIMIT','Owner tool identity budget exhausted; explicit coordination required'));return;}
+   this.claimedToolIds.add(message.id);
+  }
   const current=this.current;
   const admission={cancelled:current?.cancelled===true,cancelReason:null,preEffect:async()=>{
    await this.nativeDrain;
@@ -309,17 +373,42 @@ export class PiSession extends EventEmitter {
   this.toolAdmissions.set(message.id,admission);
   const operation=(async()=>{
    await admission.preEffect();
-   const result=await this.spec.onTool?.({tool:message.tool,arguments:message.arguments??{},callId:message.callId??message.id,promptId:current.requestId,...(current.recoveryAttemptId?{recoveryAttemptId:current.recoveryAttemptId,jobId:current.job.id}:{}),admission});
+   const receipt=custody?await custody.beginTool(this,message):null;
+   let result,reply,handlerError;
+   try{if(custody)await admission.preEffect();result=await this.spec.onTool?.({tool:message.tool,arguments:message.arguments??{},callId:message.callId??message.id,promptId:current.requestId,...(current.recoveryAttemptId?{recoveryAttemptId:current.recoveryAttemptId,jobId:current.job.id}:{}),admission});reply={id:message.id,result};}
+   catch(error){
+    if(!custody)throw error;
+    handlerError=error;
+    reply={id:message.id,error:{code:error.code??'HOST_TOOL_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{})}};
+   }
+   if(custody){
+    let completed;
+    try{completed=await custody.finishTool(this,receipt,reply);}
+    catch(cause){throw Object.assign(fail('STORAGE_RESULT_UNKNOWN','Tool handler may have effects; result custody failed and requires explicit reconciliation'),{cause,commitUnknown:{toolId:receipt.id},automaticReplay:false});}
+    reply=completed.record.reply;
+    if(handlerError&&(handlerError.code==='STORAGE_RESULT_UNKNOWN'||handlerError.commitUnknown))throw handlerError;
+    // A handler exception may follow a partial effect. Persist its exact
+    // response without claiming the business operation was rolled back.
+    if('error' in reply){if(current.cancelled||admission.cancelled)return;this.write(reply);return;}
+   }
    if(current.cancelled||admission.cancelled)throw fail('PI_TOOL_CANCELLED','Input cancelled after tool execution; effect may have happened');
    if(this.spec.finishOnHostControl&&result?.continueTurn!==true&&result?.readOnly!==true&&message.tool!=='nozeli_inspect_work'){
     current.hostControl=true;
     if(result?.ok===false&&result?.userDecisionRequired!==true||!['dispatch','continue','status','cancel','clarify'].includes(result?.action)&&!['accepted','saved','blocked','maintenance','transferred','userDecisionRequired','responded'].some(key=>result?.[key]===true))current.hostControlError={code:result?.error?.code??'HOST_CONTROL_UNCLASSIFIED',message:String(result?.error?.message??'宿主控制已停止当前回合，但未确认成功结果；原任务保留，不自动重放。').slice(0,400)};
    }
-   this.write({id:message.id,result});
+   this.write(custody?reply:{id:message.id,result});
   })();
   this.inFlightToolCalls.set(message.id,operation);
   this.activityChanged();
-  try{await operation;}catch(error){try{this.write({id:message.id,error:{code:error.code??'HOST_TOOL_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{})}});}catch{};}finally{this.inFlightToolCalls.delete(message.id);this.toolAdmissions.delete(message.id);this.activityChanged();}
+  try{await operation;}catch(error){
+   if(custody&&(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown))this.fenceToolCustody(error);
+   else try{this.write({id:message.id,error:{code:error.code??'HOST_TOOL_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{})}});}catch{};
+  }finally{this.inFlightToolCalls.delete(message.id);this.toolAdmissions.delete(message.id);this.activityChanged();}
+ }
+ fenceToolCustody(error){
+  this.transportError??=error;this.activityUnknown=true;
+  for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(this.transportError);}
+  this.pending.clear();this.activityChanged();
  }
  // Shared admission queue: the NEXT slot is reserved synchronously at call
  // time, so two callers can never both pass the idle check and run
@@ -332,14 +421,14 @@ export class PiSession extends EventEmitter {
  }
  // timeout bounds native admission, not the admitted provider/tool turn.
  // Its RPC remains pending until the owner returns a result/error or exits.
- async prompt(text,{timeout=600000,images=[],materials,projection,job,admissionCheck,restrictedMode,tools,maxTurns,maxToolCalls}={}){
+ async prompt(text,{timeout=600000,images=[],materials,projection,importedSkill,job,admissionCheck,restrictedMode,tools,maxTurns,maxToolCalls}={}){
   if(this.busy||!job?.id)throw fail('PI_INPUT_ADMISSION','Pi prompt requires an idle owner and durable host job');
   if(this.nativeError)throw this.nativeError;
   const gate=this.beginAdmission();
   try{
    await gate.previous;
    if(this.busy||this.stopping)throw fail('PI_INPUT_ADMISSION','Pi prompt requires an idle owner and durable host job');
-   const current={requestId:randomUUID(),job,contentDigest:digest({text,images,materials}),cancelled:false,hostControl:false,ownerId:this.viewOwnerId,sessionId:this.threadId,ownerGeneration:this.nativeActivity?.ownerGeneration};
+   const current={requestId:randomUUID(),job,contentDigest:digest({text,images,materials,...(importedSkill?{importedSkill:{id:importedSkill.id,version:importedSkill.version,digest:importedSkill.digest}}:{})}),cancelled:false,hostControl:false,ownerId:this.viewOwnerId,sessionId:this.threadId,ownerGeneration:this.nativeActivity?.ownerGeneration};
    this.current=current;this.busy=true;this.phase='prompt-inflight';
    this.activityChanged();
    try{
@@ -351,7 +440,7 @@ export class PiSession extends EventEmitter {
      await this.transport('rejected',current,{reason:hold});
      const error=fail(hold,'Input held before native dispatch');error.definitiveNonDispatch=true;throw error;
     }
-    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,restrictedMode:restrictedMode??job.context?.restrictedMode,tools,maxTurns,maxToolCalls,...(materials?{materials}:{}),...(projection?{projection}:{})},timeout);
+    const result=await this.request('prompt',{text,images,requestId:current.requestId,job,restrictedMode:restrictedMode??job.context?.restrictedMode,tools,maxTurns,maxToolCalls,...(materials?{materials}:{}),...(projection?{projection}:{}),...(importedSkill?{importedSkill}:{})},timeout);
     this.hasPrompted=true;this.phase='settling';this.activityChanged();await this.request('flush',{},30000);await this.nativeDrain;
     if(this.nativeError)throw this.nativeError;
     await Promise.all(this.inFlightToolCalls.values());
@@ -372,6 +461,10 @@ export class PiSession extends EventEmitter {
     // error carries the last truthful delivery fact for the host.
     await this.nativeDrain.catch(()=>{});
     if(this.lastDelivery&&this.lastDelivery.requestId===current.requestId&&!(error&&error.delivery))error.delivery=this.lastDelivery;
+    if(error.catalogRejectedBeforeSubmission&&!current.recordConfirmedTransported&&!error.delivery){
+     await this.transport('rejected',current,{reason:error.code});
+     error.definitiveNonDispatch=true;
+    }
     if(!error.definitiveNonDispatch)await this.transport('unknown',current,{reason:error.code??error.message}).catch(()=>{});throw error;
    }
    finally{if(this.current===current){this.current=null;this.busy=false;this.phase=this.stopping?'stopping':'idle';this.activityChanged();}}
@@ -509,6 +602,65 @@ export class PiSession extends EventEmitter {
  async stopOwner({discardState=false}={}){
   this.stopping=true;
   this.activityChanged();
+  if(this.launchAttempt){
+   const registered=isRegisteredOwnerLaunch(this.registeredOwnerLaunch)?this.registeredOwnerLaunch:null;
+   if(registered?.retireOwner&&this.child&&this.launchResumeAttempted&&!this.launchError&&!this.startError){
+    if(this.current)this.current.cancelled=true;
+    if(!this.ownerStopAck&&!this.exit){
+     try{this.ownerStopAck=await this.requestStopOwner();}catch(error){this.ownerStopError=error;}
+    }
+    try{
+     if(this.ownerStopError)throw this.ownerStopError;
+     const receipt=await registered.retireOwner(this);registered.close?.();this.closed=true;return this.lastExitReceipt=receipt;
+    }catch(cause){
+    // Sanitized metadata-only cause evidence, captured BEFORE local cleanup
+    // mutates exit/EOF/process facts: stage + cause codes, ack equalities and
+    // boolean/counts only. Never messages, paths, journal/output content or
+    // native call frames. Cached once; cleanupEvidence() replays this frozen
+    // snapshot so post-failure settlement cannot rewrite the cause record.
+    const stage=this.ownerStopError?'stop-ack':(typeof cause?.stage==='string'&&/^[a-z0-9-]{1,64}$/.test(cause.stage)?cause.stage:'retire-owner');
+    const evidence=this.captureStopRetirementEvidence(stage,cause);
+    if(!this.exit)try{this.child.terminate();await this.child.waitForExitAndDrain({timeoutMs:30000});}catch(error){this.terminationError??=error;}
+    this.lastExitReceipt={confirmationComplete:false,reason:'registered-owner-exit-unconfirmed',causeStage:evidence.stage,causeCode:evidence.causeCode};
+    throw Object.assign(fail('PI_EXIT_UNCONFIRMED','Registered owner exit requires reconciliation; registration and budget retained'),{cause,exitReceipt:this.lastExitReceipt,cleanupEvidence:structuredClone(evidence)});
+    }
+   }
+   // The explicit prepared-launch component has no qualified cold/owner
+   // release service yet. Retain its durable intent and budget even if local
+   // kernel termination succeeds; never fall through to never-spawned.
+   let localProcessFacts=null,projectionUnknown=false;
+   if(this.child){
+    // One total 30 s deadline bounds the whole failed-start stop.
+    const deadline=Date.now()+30000;
+    const remaining=()=>Math.max(0,deadline-Date.now());
+    try{this.child.terminate();}catch(error){this.terminationError??=error;}
+    // Original bounded Job+EOF waiter; an unconfirmed drain retains the
+    // lease/registration and the release failure below stays the outcome.
+    try{localProcessFacts=await this.child.waitForExitAndDrain({timeoutMs:remaining()});}
+    catch(error){this.terminationError??=error;localProcessFacts=error.facts??null;}
+    if(localProcessFacts?.jobEmptyObserved){
+     // The transport exit event may never fire on a failed start; the native
+     // job-empty facts are the exit evidence. Never await the event
+     // open-ended and never fabricate protocol completion.
+     let timer;
+     try{await Promise.race([this.exitPromise,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),remaining());})]);}
+     finally{clearTimeout(timer);}
+    }
+    // Bound the native projection drain with a cancelable timeout: a stuck
+    // or rejected projection stays UNKNOWN with its cause retained, and no
+    // lingering timer keeps a resolved failure alive.
+    let projectionTimer;
+    try{
+     await Promise.race([
+      Promise.resolve(this.nativeDrain).then(()=>{},error=>{projectionUnknown=true;throw error;}),
+      new Promise(resolve=>{projectionTimer=setTimeout(()=>{projectionUnknown=true;resolve();},remaining());}),
+     ]);
+    }catch(error){this.terminationError??=error;}
+    finally{clearTimeout(projectionTimer);}
+   }
+   this.lastExitReceipt={confirmationComplete:false,reason:'prepared-launch-owner-release-unqualified',...(projectionUnknown?{projection:'unknown'}:{})};
+   throw Object.assign(fail('PI_EXIT_UNCONFIRMED','Prepared launch owner release is not qualified; registration retained'),{localProcessFacts,exitReceipt:this.lastExitReceipt});
+  }
   if(!this.child){this.closed=true;return this.lastExitReceipt={confirmationComplete:true,reason:'never-spawned'};}
   if(this.current)this.current.cancelled=true;
   let persistenceError;
@@ -527,5 +679,60 @@ export class PiSession extends EventEmitter {
    this.lastExitReceipt.persistenceDiscarded=true;
   }
   return this.lastExitReceipt;
+ }
+ // Strict allowlist stop-retirement failure evidence. One snapshot at the
+ // registered-owner stop failure itself; every field is a stage/cause code, a
+ // boolean equality against the acknowledged stop result, or a count. The
+ // snapshot is frozen before local cleanup runs and is the ONLY state behind
+ // cleanupEvidence(), so controller closure persistence cannot observe a
+ // later-mutated cause record.
+ captureStopRetirementEvidence(stage,cause){
+  const codeOf=value=>typeof value?.code==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(value.code)?value.code:null;
+  const ack=this.ownerStopAck;
+ // The lease snapshot is best-effort metadata: a custody failure here must
+ // never replace the original stop cause. Keep the code, project process:null.
+  let lease=null,processSnapshotErrorCode=null;
+  try{lease=this.child?.lease?.snapshot?.()??null;}catch(error){processSnapshotErrorCode=codeOf(error)??'PROCESS_SNAPSHOT_FAILED';}
+  return this.stopRetirementEvidence=Object.freeze({
+   schema:1,phase:'stop-retirement',
+   stage:typeof stage==='string'&&/^[a-z0-9-]{1,64}$/.test(stage)?stage:null,causeCode:codeOf(cause),
+   stopping:this.stopping===true,closed:this.closed===true,busy:this.busy===true,currentTurn:this.current!=null,
+   exit:this.exit?{observed:true,code:this.exit.code??null,signal:this.exit.signal??null}:{observed:false,code:null,signal:null},
+   ack:{
+    requested:this.ownerStopAck!=null||this.ownerStopError!=null||this.ownerStopFlight!=null,
+    received:ack!=null,confirmationComplete:ack?.confirmationComplete===true,
+    sessionIdMatchesThread:ack?ack.sessionId===this.threadId:null,
+    sessionFileMatches:ack?ack.finalJournal?.sessionFile===this.sessionFile:null,
+    journalMechanismMatches:ack?ack.finalJournal?.persistence?.mechanism==='windows-private-file-handle':null,
+    journalFileFlushed:ack?ack.finalJournal?.persistence?.file==='flushed':null,
+    journalDirectoryFlushed:ack?ack.finalJournal?.persistence?.directory==='flushed':null,
+   },
+   protocol:{
+    readerCompleted:this.protocolReader?.completed??null,pendingCount:this.pending.size,inFlightToolCalls:this.inFlightToolCalls.size,
+    nativeErrorCode:codeOf(this.nativeError),protocolErrorCode:codeOf(this.protocolError),transportErrorCode:codeOf(this.transportError),
+   },
+   ...(processSnapshotErrorCode?{process:null,processSnapshotErrorCode}:{process:lease?{
+    jobEmptyObserved:lease.jobEmptyObserved===true,allProcessIncarnationsObserved:lease.allProcessIncarnationsObserved===true,
+    stdoutEof:this.child?.stdout?.readableEnded??null,stderrEof:this.child?.stderr?.readableEnded??null,outputErrorCount:this.child?.errors?.length??null,
+   }:null}),
+   terminationErrorCode:codeOf(this.terminationError),
+  });
+ }
+ // Controller closure projection (stop/cleanup persistence): the cached
+ // failure snapshot only; null until a registered-owner stop retirement
+ // actually failed, so nothing speculative is ever persisted.
+ cleanupEvidence(){return this.stopRetirementEvidence?structuredClone(this.stopRetirementEvidence):null;}
+ requestStopOwner(){
+  // Stop is the only admitted control write after the synchronous stopping
+  // fence. Business input remains rejected by write().
+  if(this.ownerStopFlight)return this.ownerStopFlight;
+  if(!this.launchResumeAttempted||this.launchError||this.startError)return Promise.reject(fail('PI_LAUNCH_UNCONFIRMED','Stop control requires a successfully resumed owner'));
+  const id=randomUUID();this.ownerStopFlight=new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{this.pending.delete(id);reject(fail('PI_REQUEST_TIMEOUT','Pi stop acknowledgement timed out; no replay'));},15000);
+   this.pending.set(id,{resolve,reject,timer,method:'stop'});
+   try{if(!this.child?.stdin?.writable||this.protocolError)throw this.protocolError??fail('PI_RUNTIME_CLOSED','Pi input closed');this.child.stdin.write(JSON.stringify({id,method:'stop',params:{}})+'\n');}
+   catch(error){clearTimeout(timer);this.pending.delete(id);reject(error);}
+  });
+  return this.ownerStopFlight;
  }
 }

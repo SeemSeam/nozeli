@@ -1,6 +1,6 @@
 // Dedicated Electron/Node entry: no windows, singleton lock, or main-app profile.
 let app;
-if (process.versions.electron) {
+if (process.versions.electron && process.type === 'browser') {
   ({ app } = require('electron'));
   app.commandLine.appendSwitch('ozone-platform', 'headless');
   app.disableHardwareAcceleration();

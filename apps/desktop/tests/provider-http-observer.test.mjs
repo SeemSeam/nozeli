@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {once} from 'node:events';
-import {installProviderHttpObserver,providerHttpObservations,providerHttpObserverSeq} from '../../../integrations/pi/src/http-observer.mjs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {installProviderHttpObserver,providerHttpObservations,providerHttpObserverSeq}=await import(pathToFileURL(path.join(integration,'src/http-observer.mjs')));
 
 test('real provider HTTP observations preserve Request streams and exclude credentials while retaining transport facts',async()=>{
  const original=globalThis.fetch;

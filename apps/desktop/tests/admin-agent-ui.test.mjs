@@ -12,6 +12,7 @@ const {localWindowOcclusions,subscribeLocalWindowOcclusions}=await import(window
 const source=(await readFile(new URL('../src/renderer/admin-agent.mjs',import.meta.url),'utf8'))
  .replace("import './admin-agent.css';",'').replace("import './local-window.css';",'')
  .replace("import {setActionButton} from './ui-actions.mjs';",'const setActionButton=(button,key,{label})=>{button.setAttribute("aria-label",label);button.dataset.action=key;};')
+ .replace("import {renderTagMarkdown} from './tag-markdown.mjs';",'const renderTagMarkdown=(target,text)=>{target.textContent=text;};')
  .replace("from './local-window.mjs'",'from '+JSON.stringify(windowUrl));
 const {mountAdminAgent}=await import(moduleUrl(source));
 const tick=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));};
@@ -72,7 +73,7 @@ test('global floating window restores geometry and keeps projects in a collapsed
 });
 
 test('common actions stay available with history, preserve drafts and never auto-send or configure',async t=>{
- const f=fixture(t);f.state.messages=[{id:'old',role:'assistant',text:'已有对话'}];await f.api.open();
+ const f=fixture(t);f.state.messages=[{id:'old',role:'assistant',blocks:[{type:'text',text:'已有对话'}]}];await f.api.open();
  assert.equal(f.get('admin-quick-actions').hidden,false);await f.get('admin-quick-projects').onclick();await tick();assert.equal(f.get('admin-projects').open,true);
  await f.get('admin-quick-config').onclick();await tick();assert(f.state.draft.startsWith('retained\n\n'));assert.match(f.state.draft,/只读，不修改/);assert.equal(f.get('admin-input').value,f.state.draft);
  let section;window.addEventListener('nozeli-open-settings',e=>{section=e.detail;});await f.get('admin-quick-models').onclick();await tick();assert.equal(section,'settings-models');assert.equal(f.calls.some(([op])=>op==='admin.send'||op==='admin.configure'||op==='admin.confirm'),false);
@@ -93,10 +94,10 @@ test('failed draft blocks closing and settings navigation without losing local i
 });
 test('prepared proposal waits for explicit confirm and renders real failure receipt',async t=>{
  const f=fixture(t,{'admin.confirm':async(payload,state)=>{assert.deepEqual(payload,{id:'change',expectedVersion:'v1'});state.pendingChanges[0].status='failed';state.pendingChanges[0].receipt={saved:false,status:'failed',error:'version changed'};return {ok:true,value:structuredClone(state)};}});
- f.state.messages=[{id:'tool-round',role:'assistant',text:''},{id:'spacer',role:'assistant',text:'  '},{id:'reply',role:'assistant',text:'建议只调整 worker 默认模型。'}];
+ f.state.messages=[{id:'tool-round',role:'assistant',blocks:[{type:'text',text:'我先核对。'},{type:'toolCall',name:'registry'}]},{id:'result',role:'toolResult',blocks:[{type:'toolResult',name:'registry'}]},{id:'reply',role:'assistant',blocks:[{type:'text',text:'建议只调整 worker 默认模型。'}]}];
  f.state.pendingChanges=[{id:'change',kind:'defaults',role:'worker',before:{worker:{model:{mode:'native-default'},thinking:{mode:'native-default'}}},after:{worker:{model:{mode:'explicit',selector:'provider/model'},thinking:{mode:'explicit',level:'high'}}},expectedVersion:'v1',status:'prepared'}];
  f.api.open();await tick();assert.equal(f.calls.some(c=>c[0]==='admin.confirm'),false);
- assert.equal(f.get('admin-messages').children.length,1);assert.equal(f.get('admin-messages').children[0].children[1].textContent,'建议只调整 worker 默认模型。');
+ assert.deepEqual(f.get('admin-messages').children.map(row=>row.children[1].textContent),['我先核对。调用工具：registry','工具返回：registry','建议只调整 worker 默认模型。']);
  const transcript=f.get('admin-transcript'),card=f.doc.body.querySelector('[data-admin-proposal="change"]');assert.equal(f.get('admin-proposals').parentElement,transcript);assert(transcript.children.indexOf(f.get('admin-messages'))<transcript.children.indexOf(f.get('admin-proposals')));assert(f.get('admin-messages').querySelector('.tag-message-assistant'));assert.match(card.textContent,/worker · 默认模型变更/);assert.match(card.textContent,/变更前：原生默认模型/);assert.match(card.textContent,/变更后：provider\/model · high/);assert.match(card.textContent,/项目覆盖保留/);assert.equal(Boolean(card.querySelector('details').open),false);
  await f.doc.body.querySelector('[data-admin-confirm="change"]').onclick();await tick();assert.match(f.get('admin-proposals').textContent,/全局配置未保存/);assert.match(f.get('admin-proposals').textContent,/version changed/);assert.equal(f.doc.body.querySelector('[data-admin-confirm="change"]'),null);
 });
@@ -149,7 +150,7 @@ test('saved manual position is clamped below topbar without discarding placement
 });
 
 test('many registered projects remain outside transcript and keep unavailable entries disabled',async t=>{
- const f=fixture(t);f.state.projects=Array.from({length:30},(_,i)=>({id:'p'+i,name:'登记项目 '+i,root:'/fixture/long/project/'+i,available:i!==0}));f.state.messages=[{id:'u',role:'user',text:'你好'}];await f.api.open();
+ const f=fixture(t);f.state.projects=Array.from({length:30},(_,i)=>({id:'p'+i,name:'登记项目 '+i,root:'/fixture/long/project/'+i,available:i!==0}));f.state.messages=[{id:'u',role:'user',blocks:[{type:'text',text:'你好'}]}];await f.api.open();
  const disclosure=f.get('admin-projects');assert.equal(disclosure.querySelector('summary').textContent,'已登记项目 (30)');assert.equal(Boolean(disclosure.open),false);disclosure.open=true;
  assert.equal(f.get('admin-project-list').children.length,30);assert.equal(f.doc.body.querySelector('[data-admin-open-project="p0"]').disabled,true);assert.equal(f.get('admin-project-list').children[0].querySelector('code').attributes.title,'/fixture/long/project/0');assert.equal(f.get('admin-messages').querySelector('.tag-message-user').textContent,'你你好');assert(!f.get('admin-transcript').contains(disclosure));
 });
@@ -229,4 +230,53 @@ test('force preview preserves in-flight drafts, IME barriers and consent isolati
 
 test('opening recovered project respects failed draft save and IME before safe navigation',async t=>{
  const f=fixture(t,{'admin.draft':async()=>({ok:false,error:{message:'draft disk unavailable'}})});f.state.pendingChanges=[forceProposal({status:'executed',receipt:{status:'recovered',recovered:true,newProjectId:'new-exact-id',automaticReplay:false}})];await f.api.open();const open=f.doc.body.querySelector('[data-admin-recovered-project="new-exact-id"]');f.get('admin-input').listeners.compositionstart();await open.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.openProject'),false);f.get('admin-input').listeners.compositionend();f.type('keep my draft');await tick();await open.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.openProject'),false);assert.deepEqual(f.opened,[]);assert.equal(f.get('admin-input').value,'keep my draft');assert.equal(f.get('admin-agent').hidden,false);
+});
+
+function developmentProposal(overrides={}){return {id:'development-1',kind:'development',developmentKind:'skill',project:{id:'p',name:'确切项目 <Alpha>',root:'/fixture/项目/alpha'},request:'开发完整 Skill 请求\n保留第二行 <request> 与全部细节。',scope:'已有项目上下文；YOLO 普通 Worker 非沙箱；执行时读取文件；接受含本地提交；不自动安装或 push。',status:'prepared',expectedVersion:'development-v1',...overrides};}
+function checkDevelopment(f,id='development-1'){const consent=f.doc.body.querySelector('[data-admin-development-consent="'+id+'"]');consent.checked=true;consent.listeners.change();return consent;}
+
+test('development cards require independent consent and submit exactly once with the real intake job ID',async t=>{
+ let release;const f=fixture(t,{'admin.confirm':async(payload,state)=>{assert.deepEqual(payload,{id:'development-1',expectedVersion:'development-v1',confirmDevelopment:true});await new Promise(resolve=>{release=resolve;});const receipt={status:'submitted',submitted:true,operationId:'development-1',projectId:'p',jobId:'intake-job-42',message:'已进入既有项目任务流程'};state.pendingChanges[0]={...state.pendingChanges[0],status:'executed',receipt};return {ok:true,value:{...structuredClone(state),receipt}};}});f.state.pendingChanges=[developmentProposal(),forceProposal()];await f.api.open();const card=f.doc.body.querySelector('[data-admin-proposal="development-1"]'),confirm=card.querySelector('[data-admin-confirm]');
+ assert.equal(card.dataset.adminProposalKind,'development');for(const text of ['skill','确切项目 <Alpha>','项目 ID：p','/fixture/项目/alpha','非沙箱','本地 Git','不会自动 push 或安装','实际派工时生成','确认不冻结源码'])assert(card.textContent.includes(text));assert.equal(card.querySelector('[data-admin-development-request]').textContent,developmentProposal().request);assert.equal(card.querySelector('[data-admin-development-scope]').textContent,developmentProposal().scope);assert.match(card.textContent,/状态：prepared/);assert.equal(confirm.disabled,true);await confirm.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.confirm'),false);
+ checkForce(f);assert.equal(confirm.disabled,true);checkDevelopment(f);assert.equal(confirm.disabled,false);confirm.onclick();await tick();assert.equal(confirm.disabled,true);await confirm.onclick();await tick();assert.equal(f.calls.filter(([op])=>op==='admin.confirm').length,1);release();await tick();assert.match(f.get('admin-notice').textContent,/已提交开发任务.*intake jobId：intake-job-42.*尚不代表开发完成/);assert.doesNotMatch(f.get('admin-notice').textContent,/全局配置|开发已完成/);assert.equal(f.doc.body.querySelector('[data-admin-confirm="development-1"]'),null);assert.equal(f.get('admin-input').value,'retained');assert.deepEqual(f.opened,[]);
+});
+
+test('development unknown and blocked receipts never offer resubmission or claim configuration saved',async t=>{
+ const f=fixture(t,{'admin.confirm':async(payload,state)=>{const p=state.pendingChanges.find(p=>p.id===payload.id),blocked=p.id==='blocked';p.status=blocked?'blocked':'unknown';p.receipt={status:blocked?'blocked':'unknown',submitted:blocked?false:null,operationId:p.id,projectId:'p',message:blocked?'项目未连接':'宿主未确认提交'};return {ok:true,value:{...structuredClone(state),receipt:p.receipt}};}});f.state.pendingChanges=[developmentProposal({id:'unknown'}),developmentProposal({id:'blocked',developmentKind:'role'})];await f.api.open();
+ for(const id of ['unknown','blocked']){checkDevelopment(f,id);await f.doc.body.querySelector('[data-admin-confirm="'+id+'"]').onclick();await tick();const card=f.doc.body.querySelector('[data-admin-proposal="'+id+'"]');assert.equal(card.querySelector('[data-admin-confirm]'),null);assert.equal(card.querySelector('[data-admin-development-project]'),null);assert.match(card.textContent,id==='blocked'?/开发提交受阻（blocked），未提交任务/:/结果未知（unknown），不会重复提交/);assert.doesNotMatch(f.get('admin-notice').textContent,/全局配置|已提交开发任务/);}assert.equal(f.calls.filter(([op])=>op==='admin.confirm').length,2);
+});
+
+test('development transport uncertainty cannot replay the proposal even after reopening',async t=>{
+ const f=fixture(t,{'admin.confirm':async()=>{throw Error('提交结果未知');}});f.state.pendingChanges=[developmentProposal()];await f.api.open();checkDevelopment(f);const confirm=f.doc.body.querySelector('[data-admin-confirm="development-1"]');await confirm.onclick();await tick();assert.equal(confirm.disabled,true);await confirm.onclick();await tick();await f.api.close();await f.api.open();assert.equal(f.calls.filter(([op])=>op==='admin.confirm').length,1);assert.match(f.get('admin-error').textContent,/提交结果未知/);assert.equal(f.get('admin-input').value,'retained');assert.equal(f.doc.body.querySelector('[data-admin-confirm="development-1"]').disabled,true);
+});
+
+test('development dismissal changes only its proposal and closing clears independent consent',async t=>{
+ const f=fixture(t,{'admin.dismiss':async(payload,state)=>{assert.deepEqual(payload,{id:'development-1'});state.pendingChanges.find(p=>p.id===payload.id).status='dismissed';return {ok:true,value:structuredClone(state)};}});f.state.pendingChanges=[developmentProposal(),developmentProposal({id:'application-2',developmentKind:'application'}),forceProposal()];await f.api.open();checkDevelopment(f);checkDevelopment(f,'application-2');checkForce(f);await f.api.close();await f.api.open();for(const id of ['development-1','application-2']){assert.equal(f.doc.body.querySelector('[data-admin-development-consent="'+id+'"]').checked,false);assert.equal(f.doc.body.querySelector('[data-admin-confirm="'+id+'"]').disabled,true);}assert.equal(f.doc.body.querySelector('[data-admin-force-consent="force-1"]').checked,false);
+ await f.doc.body.querySelector('[data-admin-dismiss="development-1"]').onclick();await tick();assert.match(f.doc.body.querySelector('[data-admin-proposal="development-1"]').textContent,/状态：dismissed/);assert.equal(f.doc.body.querySelector('[data-admin-confirm="development-1"]'),null);assert(f.doc.body.querySelector('[data-admin-confirm="application-2"]'));assert(f.doc.body.querySelector('[data-admin-confirm="force-1"]'));assert.equal(f.get('admin-input').value,'retained');assert.equal(f.calls.some(([op])=>op==='admin.confirm'||op==='admin.send'||op==='admin.configure'),false);
+});
+
+test('submitted development opens the exact project through existing navigation without dropping an in-flight draft',async t=>{
+ let release;const f=fixture(t,{'admin.draft':async(payload,state)=>{await new Promise(resolve=>{release=resolve;});state.draft=payload.text;state.draftRevision++;return {ok:true,value:structuredClone(state)};}});f.state.pendingChanges=[developmentProposal({status:'executed',receipt:{status:'submitted',submitted:true,operationId:'development-1',projectId:'p',jobId:'intake-1'}})];await f.api.open();const open=f.doc.body.querySelector('[data-admin-development-project="p"]');assert.equal(open.textContent,'打开目标项目查看任务');f.type('保留正在保存的草稿');await tick();open.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.openProject'),false);release();await tick();assert.deepEqual(f.calls.find(([op])=>op==='admin.openProject')[1],{projectId:'p'});assert.deepEqual(f.opened,['p']);assert.equal(f.get('admin-agent').hidden,true);await f.api.open();assert.equal(f.get('admin-input').value,'保留正在保存的草稿');assert.equal(f.calls.some(([op])=>op==='admin.send'),false);
+});
+
+test('development navigation respects IME and failed draft barriers',async t=>{
+ const f=fixture(t,{'admin.draft':async()=>({ok:false,error:{message:'draft unavailable'}})});f.state.pendingChanges=[developmentProposal({status:'executed',receipt:{status:'submitted',submitted:true,operationId:'development-1',projectId:'p',jobId:'intake-1'}})];await f.api.open();const open=f.doc.body.querySelector('[data-admin-development-project="p"]');f.get('admin-input').listeners.compositionstart();await open.onclick();await tick();assert.deepEqual(f.opened,[]);f.get('admin-input').listeners.compositionend();f.type('不能丢失的草稿');await tick();await open.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.openProject'),false);assert.equal(f.get('admin-input').value,'不能丢失的草稿');assert.equal(f.get('admin-agent').hidden,false);
+});
+
+test('incomplete development previews and receipts cannot authorize submission or claim a job exists',async t=>{
+ const f=fixture(t);f.state.pendingChanges=[developmentProposal({project:{id:'p',name:'Exact'},scope:undefined}),developmentProposal({id:'missing-job',status:'executed',receipt:{status:'submitted',submitted:true,operationId:'missing-job',projectId:'p'}})];await f.api.open();checkDevelopment(f);const confirm=f.doc.body.querySelector('[data-admin-confirm="development-1"]');assert.equal(confirm.disabled,true);await confirm.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.confirm'),false);assert.match(f.doc.body.querySelector('[data-admin-proposal="development-1"]').textContent,/预览信息不完整/);const card=f.doc.body.querySelector('[data-admin-proposal="missing-job"]');assert.equal(card.querySelector('[data-admin-development-project]'),null);assert.match(card.textContent,/开发提交结果未知/);assert.doesNotMatch(card.querySelector('[data-admin-development-receipt]').textContent,/已提交开发任务/);
+});
+
+test('development confirmation stays inert during management inference and becomes available after idle',async t=>{
+ const f=fixture(t);f.state.pendingChanges=[developmentProposal()];f.state.busy=true;await f.api.open();
+ const consent=f.doc.body.querySelector('[data-admin-development-consent]'),confirm=f.doc.body.querySelector('[data-admin-confirm]');
+ assert.equal(consent.disabled,true);checkDevelopment(f);assert.equal(confirm.disabled,true);await confirm.onclick();await tick();assert.equal(f.calls.some(([op])=>op==='admin.confirm'),false);
+ f.state.busy=false;await f.api.close();await f.api.open();checkDevelopment(f);assert.equal(confirm.disabled,false);
+});
+
+test('explicit pre-effect ADMIN_BUSY rejection permits renewed consent without treating transport uncertainty as retryable',async t=>{
+ let attempts=0;const f=fixture(t,{'admin.confirm':async(payload,state)=>{attempts++;if(attempts===1)return {ok:false,error:{code:'ADMIN_BUSY',message:'wait for management turn'}};const receipt={status:'submitted',submitted:true,operationId:payload.id,projectId:'p',jobId:'actual-intake-after-idle'};state.pendingChanges[0]={...state.pendingChanges[0],status:'executed',receipt};return {ok:true,value:{...structuredClone(state),receipt}};}});
+ f.state.pendingChanges=[developmentProposal()];await f.api.open();checkDevelopment(f);await f.doc.body.querySelector('[data-admin-confirm]').onclick();await tick();
+ assert.equal(attempts,1);assert.equal(f.doc.body.querySelector('[data-admin-development-consent]').checked,false);assert.equal(f.doc.body.querySelector('[data-admin-confirm]').disabled,true);
+ await f.api.close();await f.api.open();assert.equal(f.doc.body.querySelector('[data-admin-development-consent]').checked,false);checkDevelopment(f);await f.doc.body.querySelector('[data-admin-confirm]').onclick();await tick();assert.equal(attempts,2);assert.match(f.get('admin-notice').textContent,/actual-intake-after-idle/);assert.equal(f.doc.body.querySelector('[data-admin-confirm]'),null);
 });

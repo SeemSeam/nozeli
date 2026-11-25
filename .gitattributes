@@ -9,6 +9,7 @@
 *.yaml text eol=lf
 *.md text eol=lf
 *.sh text eol=lf
+*.patch text eol=lf
 *.png binary
 *.jpg binary
 *.jpeg binary
@@ -21,3 +22,5 @@
 *.ttf binary
 *.woff binary
 *.woff2 binary
+# These bytes are pinned in archify-vendor/SOURCES.json, including LICENSE.
+apps/desktop/src/agents/managed/archify-vendor/** -text

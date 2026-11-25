@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process';
+import {spawnTool, stopTool} from './tool-process.mjs';
 import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import {pathToFileURL, fileURLToPath} from 'node:url';
+import {readBundledNode} from '../agents/managed/pi-runtime.mjs';
 import { StreamMessageReader, StreamMessageWriter, createMessageConnection } from 'vscode-jsonrpc/node';
 
 const require = createRequire(import.meta.url);
@@ -20,7 +21,7 @@ function lspPosition(text, line, column) {
 function uriPath(uri, root) {
   if (typeof uri !== 'string' || !uri.startsWith('file:')) return null;
   try {
-    const file = decodeURIComponent(new URL(uri).pathname);
+    const file = fileURLToPath(uri);
     const relative = path.relative(root, file);
     return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative.split(path.sep).join('/') : null;
   } catch { return null; }
@@ -65,11 +66,13 @@ function protectChildStdin(stream) {
 }
 
 export class LanguageServiceManager {
-  constructor({ host, userDataDir, onEvent = () => {}, spawnImpl = spawn } = {}) {
+  constructor({ host, userDataDir, onEvent = () => {}, spawnImpl = spawnTool, appRoot = fileURLToPath(new URL('../../', import.meta.url)), packaged = !!process.versions.electron && !process.defaultApp } = {}) {
     this.host = host;
     this.userDataDir = path.resolve(userDataDir);
     this.onEvent = onEvent;
     this.spawnImpl = spawnImpl;
+    this.appRoot = appRoot;
+    this.packaged = packaged;
     this.session = null;
     this.projectId = null;
     this.sequence = 0;
@@ -85,16 +88,26 @@ export class LanguageServiceManager {
     if (this.session?.projectId === projectId && this.session.ready) return this.session;
     await this.stop();
     const project = await this.host.requireProject(projectId);
+    let command;
+    try { command = this.packaged ? (await readBundledNode(this.appRoot)).executable : process.execPath; }
+    catch { throw Object.assign(new Error('Bundled Node runtime unavailable; local reading and editing remain available.'), {code:'LSP_UNAVAILABLE'}); }
     const logFile = await this.logPath(projectId);
     const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
     const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    const child = this.spawnImpl(process.env.NOZELI_LSP_NODE || process.env.NODE || 'node', [SERVER_ENTRY, '--stdio'], {
-      cwd: project.root,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    if (process.versions.electron && !this.packaged) env.ELECTRON_RUN_AS_NODE = '1';
+    else delete env.ELECTRON_RUN_AS_NODE;
+    let child;
+    try {
+      child = this.spawnImpl(command, [SERVER_ENTRY, '--stdio'], {
+        cwd: project.root,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (error) {
+      log.end();
+      throw Object.assign(new Error('TypeScript language server could not start its contained runtime; local reading and editing remain available.'), {code:'LSP_UNAVAILABLE', nativeCode:error.code, logFile});
+    }
     protectChildStdin(child.stdin);
     child.stderr?.pipe(log);
     const connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
@@ -110,11 +123,12 @@ export class LanguageServiceManager {
       if (this.session === session) {
         session.ready = false;
         this.event({ projectId, type: 'exit', code, signal, message: 'TypeScript language server exited.', logFile });
-        this.session = null;
+        if (!child.jobExit) this.session = null;
       }
       try { session.connection.dispose(); } catch {}
       log.end();
     });
+    child.once('close', () => { if (this.session === session && !session.stopping) this.session = null; });
     connection.onNotification('textDocument/publishDiagnostics', params => {
       if (params?.uri) this.event({ projectId, type: 'diagnostics', uri: params.uri, relPath: uriPath(params.uri, session.root), diagnostics: params.diagnostics || [] });
     });
@@ -216,13 +230,21 @@ export class LanguageServiceManager {
   async stop(expected = null) {
     const session = expected || this.session;
     if (!session) return;
-    if (this.session === session) this.session = null;
-    try { if (session.ready) await session.connection.sendRequest('shutdown'); } catch {}
-    try { session.connection.sendNotification('exit'); } catch {}
-    try { session.connection.dispose(); } catch {}
-    try { session.child.kill(); } catch {}
+    if (session.stopPromise) return session.stopPromise;
+    const wasReady = session.ready;
     session.ready = false;
-    this.event({ projectId: session.projectId, type: 'stopped', logFile: session.logFile });
+    session.stopping = true;
+    session.stopPromise = (async () => {
+      let timer;
+      try { if (wasReady) await Promise.race([session.connection.sendRequest('shutdown'), new Promise(resolve => {timer = setTimeout(resolve, 1000);})]); } catch {}
+      finally { clearTimeout(timer); }
+      try { session.connection.sendNotification('exit'); } catch {}
+      try { session.connection.dispose(); } catch {}
+      await stopTool(session.child);
+      if (this.session === session) this.session = null;
+      this.event({ projectId: session.projectId, type: 'stopped', logFile: session.logFile });
+    })().catch(error => { session.stopPromise = null; throw error; });
+    return session.stopPromise;
   }
 
   async stopProject(projectId){if(this.session?.projectId===projectId)await this.stop(this.session);}

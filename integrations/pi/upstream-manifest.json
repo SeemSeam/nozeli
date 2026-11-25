@@ -107,7 +107,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/custom-provider-store.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/custom-provider-store.ts",
       "upstreamSha256": "021dc9bec44c65fa4425b66b049be39f6ba8906c48147db339888d4f9e6a815a",
-      "sha256": "b7ce48d0422c5ec024b4116b17b371ebbd03cbab77e3bcb685e291c0c863ce0b",
+      "sha256": "9eb5d3280568be5d802ed1afc1af65e166ccae0fe252a9c143b7ff843152d08d",
       "modified": true
     },
     {
@@ -142,7 +142,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/index.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/index.ts",
       "upstreamSha256": "34334d33dcead2a33cc184db5adfd731e61a65d87bdc391b7217cb8658290cff",
-      "sha256": "d9033f84cc6f0cbbb210a2785735d51d7c007d9c76d0232c4bef1e92dfae33bb",
+      "sha256": "4b722fcf0cda4d4e708e5d57de06272b4ae026a6e333a3d9d6c68406f16cb7c8",
       "modified": true
     },
     {
@@ -163,7 +163,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/npm-package-fallback.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/npm-package-fallback.ts",
       "upstreamSha256": "70bfcb1a0731f7ad045916be20b9d1d23973eff3ab63435b7fdb158a4515e8e4",
-      "sha256": "70bfcb1a0731f7ad045916be20b9d1d23973eff3ab63435b7fdb158a4515e8e4",
+      "sha256": "0be10e0843180ecf274e50b4244d33bd91d5614dfcfd55aef5dac121d72bbd10",
       "modified": false
     },
     {
@@ -177,7 +177,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/pi-sdk-driver.ts",
       "upstreamSha256": "5db94a648e87456567d96d10739fe30e9a7343b9120d5dadfc7527941a3e967f",
-      "sha256": "89f99d98a9bf0f548e5a047a8a4ff99402bb7511567547093411a64cf905199d",
+      "sha256": "27917673ca839b25ee58eacf0b807a4e37b81be4da63667f507ae00e6b9d33fb",
       "modified": true
     },
     {
@@ -191,14 +191,14 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/runtime-deps.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/runtime-deps.ts",
       "upstreamSha256": "d8e66d551a555b935ba76ae4b8b1c8ca2a77c265e4a543d32e4366139446c804",
-      "sha256": "d8e66d551a555b935ba76ae4b8b1c8ca2a77c265e4a543d32e4366139446c804",
-      "modified": false
+      "sha256": "8a2ace8c66a51114258bfcb2745886f7f318c30265a3bd7ee0ea57bc7814ecaf",
+      "modified": true
     },
     {
       "path": "vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/runtime-supervisor.ts",
       "upstreamSha256": "88a1e0af5d0346f0a2aec53487528b21a6a7680a0f53d8c68b13e40f1f96f231",
-      "sha256": "f8d79ce0df3ab1de6aa5e425cf090f7d6c200adcda4c0ee6d3998edd953d6985",
+      "sha256": "218ae7765032f006964d199fb788f50a2ad24ed5aea687aff5a62a05da1648b8",
       "modified": true
     },
     {
@@ -226,7 +226,7 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/session-supervisor.ts",
       "upstreamSha256": "d76f3d6f6458ac8526564744521fe4995c446e7e695cd75f6761e35e64bfe6bb",
-      "sha256": "e24cd3a0dfb1ae5d7dbd642a298718affc8ede893186afa0936c9a6476d122a9",
+      "sha256": "9fc42481beec1f2cecacb168999e3a97fa15693eae9b134494dcdac8a748048a",
       "modified": true
     },
     {
@@ -240,8 +240,8 @@
       "path": "vendor/pi-gui/packages/pi-sdk-driver/thread-title-generator.ts",
       "upstreamPath": "packages/pi-sdk-driver/src/thread-title-generator.ts",
       "upstreamSha256": "977816c3e42a885397c361435aad9cdd93a9466fc8b97a92088b567d139deef4",
-      "sha256": "977816c3e42a885397c361435aad9cdd93a9466fc8b97a92088b567d139deef4",
-      "modified": false
+      "sha256": "ec2d78fcfab4c91cd136baa72c703d813baacf9fd81d747a4132157461df9262",
+      "modified": true
     },
     {
       "path": "vendor/pi-gui/packages/pi-sdk-driver/transcript-identity.ts",
@@ -333,6 +333,10 @@
     "0002-nozeli-custom-provider-api.patch": "Preserve existing Nozeli API protocols and provider ID syntax in the upstream custom source store.",
     "0003-private-atomic-files.patch": "Exclusive 0600 files and 0700 directories for models.json credentials and leases.",
     "0005-native-journal-continuation.patch": "Host-only exact journal continuation through the pinned SDK post-run/settlement lifecycle; no new user message.",
-    "0006-custom-model-image-input.patch": "Preserve explicit image capability in custom models.json input metadata; no inferred vision support."
+    "0006-custom-model-image-input.patch": "Preserve explicit image capability in custom models.json input metadata; no inferred vision support.",
+    "0007-owner-runtime-resource-policy.patch": "Optional host resource policy before runtime inventory and package discovery; preserve default upstream behavior and SDK settings/model authority.",
+    "0008-owner-settings-read-boundary.patch": "Route direct model settings reads and persistent login identity through optional host settings I/O; retain the default driver behavior.",
+    "0009-owner-model-auth-storage.patch": "Inject host-owned model runtime and models.json storage into supervisor, thread titles and custom providers; keep upstream defaults and sanitize malformed provider-file errors without exposing content or paths.",
+    "0010-session-manager-storage-factory.patch": "Optional host factory for every supervised SessionManager create/open/fork plus the runtime fallback initial create; pinned SDK session-manager/runtime storage injection keeps appends, rewrites, branches and forks on host persistence with upstream filesystem defaults unchanged."
   }
 }

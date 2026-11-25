@@ -59,6 +59,7 @@ try{
  assert(browser,log);const target=await browser.waitForTarget(t=>t.type()==='page'&&t.url().endsWith('/index.html')),page=await target.page();
  const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));await page.waitForFunction(()=>window.fixture);
  await page.evaluate(()=>window.fixture.enable());
+
  await page.evaluate(()=>{for(let i=0;i<20;i++)fixture.change('old.txt');fixture.flush();});
  assert.equal(await page.evaluate(()=>fixture.calls.length),1,'one availability read for an event burst');
  await page.evaluate(()=>{fixture.resetPaints();for(let i=0;i<20;i++)fixture.change('new.txt');fixture.flush();});

@@ -84,7 +84,7 @@ test('native complete exports preserve multi-chunk UTF8 bytes and never overwrit
  const f=fixture();try{
   const bytes=Buffer.from('界🙂\u0000\\\"\n'.repeat(40000)),target=path.join(path.dirname(f.file),'complete.json'),scope={generation:1,dead:false};
   const options={dialog:{showSaveDialog:async()=>({filePath:target})},scope,defaultName:'complete.json',expectedTotal:bytes.length,readChunk:async offset=>{const chunk=bytes.subarray(offset,offset+65536);return {bytes:chunk,offset,nextOffset:offset+chunk.length,total:bytes.length};}};
-  assert.deepEqual(await exportNativeChunks(options),{exported:true,byteLength:bytes.length});assert.deepEqual(fs.readFileSync(target),bytes);
+  const exported=await exportNativeChunks(options);assert.equal(exported.exported,true);assert.equal(exported.byteLength,bytes.length);if(process.platform==='win32')assert.equal(exported.durability,'namespace-not-qualified');assert.deepEqual(fs.readFileSync(target),bytes);
   await assert.rejects(exportNativeChunks(options),{code:'EEXIST'});assert.deepEqual(fs.readFileSync(target),bytes);
   assert.deepEqual(fs.readdirSync(path.dirname(f.file)).sort(),['complete.json','copy.sqlite']);
  }finally{f.close();}

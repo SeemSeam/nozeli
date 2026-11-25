@@ -110,7 +110,7 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     return line.join('').replace(/\s+/g, ' ').trim().slice(0, 240);
   }
 
-  async function render() {
+  async function render(edge) {
     if (state.disposed) return;
     onSelection(null);
     const generation = ++state.generation;
@@ -131,15 +131,21 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     wrap.className = 'pdf-page';
     wrap.classList.toggle('region-selecting', regionMode);
     wrap.style.width = viewport.width + 'px';
+    wrap.style.setProperty('--total-scale-factor', String(viewport.scale * viewport.userUnit));
+    wrap.style.setProperty('--scale-round-x', '1px');
+    wrap.style.setProperty('--scale-round-y', '1px');
     wrap.dataset.rotation = String(viewport.rotation);
+    wrap.dataset.page = String(renderedPage);
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.display = 'block';
     canvas.style.height = 'auto';
     wrap.appendChild(canvas);
     rememberExpanded();
     surface.replaceChildren(wrap);
+    if (edge) sizing.scrollTop = edge === 'bottom' ? sizing.scrollHeight - sizing.clientHeight : 0;
     const context = canvas.getContext('2d');
     await pdfPage.render({ canvasContext: context, canvas, viewport, transform: dpr === 1 ? null : [dpr, 0, 0, dpr, 0, 0] }).promise;
     if (state.disposed || generation !== state.generation) return;
@@ -219,6 +225,33 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
     resizeTimer = setTimeout(() => { render().catch(error => { if (!state.disposed) console.warn('PDF resize:', error.message); }); }, 120);
   });
   observer.observe(sizing);
+  async function go(next, edge = 'top') {
+    if (!Number.isFinite(next) || state.disposed) return state.page;
+    const number = Math.min(Math.max(1, Math.trunc(next)), document_.numPages);
+    if (number === state.page) return number;
+    state.page = number;
+    await render(edge);
+    return state.page;
+  }
+  let wheelAt = -Infinity, wheelDelta = 0, wheelTurnAt = -Infinity, turning = false;
+  function onWheel(event) {
+    if (!event.cancelable || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.buttons || !event.deltaY || Math.abs(event.deltaX) >= Math.abs(event.deltaY) || drawingActive || regionMode || !surface.isConnected || !parent.getClientRects().length || event.target.closest('.note-anchor, .local-window, .tag-window, input, textarea, select, [contenteditable]')) return;
+    const direction = Math.sign(event.deltaY), now = performance.now();
+    const atEdge = direction > 0 ? sizing.scrollHeight - sizing.clientHeight - sizing.scrollTop <= 1 : sizing.scrollTop <= 1;
+    if (!atEdge) { wheelDelta = 0; return; } // Let the browser scroll within the current page first.
+    if (state.page + direction < 1 || state.page + direction > document_.numPages) return;
+    event.preventDefault();
+    if (turning || now - wheelTurnAt < 350) return;
+    if (now - wheelAt > 180 || Math.sign(wheelDelta) !== direction) wheelDelta = 0;
+    wheelAt = now;
+    wheelDelta += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? sizing.clientHeight : 1);
+    if (Math.abs(wheelDelta) < 36) return;
+    wheelDelta = 0; wheelTurnAt = now; turning = true;
+    void go(state.page + direction, direction > 0 ? 'top' : 'bottom')
+      .catch(error => { if (!state.disposed) onSelection({error:'PDF 翻页失败：'+error.message}); })
+      .finally(() => { turning = false; });
+  }
+  sizing.addEventListener('wheel', onWheel, {passive:false});
   return {
     zoomLevel: () => state.zoom,
     pageCount: () => state.document.numPages,
@@ -295,20 +328,13 @@ export async function mountPdf({ parent, bytes, page, initialZoom = 1, fitViewpo
         }
       }
       if (cancelled() || state.disposed) return { total: 0, index: -1, cancelled: true };
-      if (state.matches.length) { state.match = (state.match + 1) % state.matches.length; state.page = state.matches[state.match]; }
+      if (state.matches.length) { state.match = (state.match + 1) % state.matches.length; const next = state.matches[state.match]; if (next !== state.page) { await go(next); return { total: state.matches.length, index: state.match }; } }
       await render(); return { total: state.matches.length, index: state.match };
     },
-    async go(next) {
-      if (!Number.isFinite(next) || state.disposed) return state.page;
-      next = Math.trunc(next);
-      const pageNumber = Math.min(Math.max(1, next), state.document.numPages);
-      if (pageNumber === state.page) return pageNumber;
-      state.page = pageNumber;
-      await render();
-      return state.page;
-    },
+    go,
     destroy() {
       state.disposed = true;selectionAbort?.abort();
+      sizing.removeEventListener('wheel', onWheel);
       clearTimeout(resizeTimer); observer.disconnect();
       // PDF.js 6 owns destruction on the loading task, not PDFDocumentProxy.
       task.destroy().catch(() => {});

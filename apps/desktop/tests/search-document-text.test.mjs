@@ -151,8 +151,9 @@ test('cancellation, unsupported legacy Office, host path validation and input li
   await fs.writeFile(path.join(f.root, 'legacy.doc'), 'legacy');
   await assert.rejects(searchDocumentText({...f, relPath:'legacy.doc'}), error => error.code === 'UNSUPPORTED');
   await assert.rejects(searchDocumentText({...f, relPath:'../outside.docx'}));
-  await fs.symlink(path.join(f.root, 'valid.docx'), path.join(f.root, 'linked.docx'));
-  await assert.rejects(searchDocumentText({...f, relPath:'linked.docx'}), error => error.code === 'SYMLINK');
+  const linked=process.platform==='win32'?'linked/valid.docx':'linked.docx';
+  await fs.symlink(process.platform==='win32'?f.root:path.join(f.root,'valid.docx'),path.join(f.root,process.platform==='win32'?'linked':'linked.docx'),process.platform==='win32'?'junction':'file');
+  await assert.rejects(searchDocumentText({...f,relPath:linked}));
   await fs.writeFile(path.join(f.root, 'large.pdf'), Buffer.alloc(32 * 1024 * 1024 + 1));
   await assert.rejects(searchDocumentText({...f, relPath:'large.pdf'}), error => error.code === 'TOO_LARGE');
 });

@@ -18,6 +18,23 @@
 .settings-card,.settings-content fieldset{min-width:0;margin:16px 0;padding:16px;border:1px solid var(--line);border-radius:8px}
 .settings-content label{display:grid;gap:8px;margin:16px 0}.settings-content input,.settings-content select,.settings-content textarea{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:32px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;line-height:1.5}
 .settings-content input[type="checkbox"]{width:auto;min-height:0}.settings-content button{min-height:32px;max-width:100%;font:inherit;line-height:1.5;white-space:normal;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:6px;padding:6px 12px}.settings-content button:not([data-ui-action]){background:var(--paper);color:var(--ink)}
+#settings-project-agents .project-role-list{margin-block:16px;border-block:1px solid var(--line)}
+.project-role-list>details+details{border-top:1px solid var(--line)}
+.project-role-list summary{display:flex;align-items:center;gap:10px;min-height:44px;padding:6px 8px;cursor:pointer;list-style:none;border-radius:6px}
+.project-role-list summary::-webkit-details-marker{display:none}
+.project-role-list summary:hover{background:var(--ui-control-hover)}
+.project-role-list summary:focus-visible{outline:2px solid var(--ui-control-focus)}
+.project-role-list summary .ui-icon{width:17px;height:17px;flex:none;color:var(--muted)}
+.project-role-list summary .ui-icon:last-child{margin-inline-start:auto}
+.project-role-list [open]>summary .ui-icon:last-child{transform:rotate(90deg)}
+.project-role-list details:not([open])>.project-role-skills{display:none}
+.project-role-skills{min-width:0;padding:8px 12px 16px}
+.project-role-skills h4:not(:first-child){margin-top:16px}
+.settings-content .project-role-skills label{display:flex;align-items:baseline;gap:8px;margin:8px 0}
+.project-role-skills input{flex:none}
+.project-role-store-skill{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px}
+.project-role-store-skill p{margin:0}
+.project-role-store-skill button{margin-inline-start:auto}
 .settings-content .auto-update-toggle{display:flex;align-items:flex-start;gap:8px}.settings-content .auto-update-toggle input[type="checkbox"]{flex:none;margin:.3em 0 0}
 .settings-content button[data-ui-action="danger"]{background:transparent;color:var(--red);border-color:var(--line)}
 .settings-content button[data-ui-action="danger"]:hover:not(:disabled){background:var(--bg);color:var(--red)}

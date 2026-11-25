@@ -295,3 +295,26 @@ test('catalog thinking levels are model-bound and read-DTO fields never leak int
   assert.equal(updated.saved,true);
   assert.throws(()=>settings.saveApi({...createPayload,operation:'update',provider:'unit-source',expectedRevision:updated.revision,models:[{id:'x',reasoning:null}]}));
 });
+
+test('Windows source revision CAS preserves an independent settings winner', {skip:process.platform!=='win32'},async t=>{
+ const {settings}=await fixture(t);
+ await settings.readRevisions();
+ const winner=Buffer.from('{"schema":1,"sources":{"external":{"revision":9}}}');
+ const {createWindowsDesktopProfileIO}=await import('../src/platform/windows/desktop-profile.mjs');
+ const io=createWindowsDesktopProfileIO(settings.source.root);
+ await io.write(settings.revisionsFile,winner,{expectedSha256:null});
+ await assert.rejects(settings.writeRevisions({schema:1,sources:{}}),error=>['FS_TARGET_EXISTS','FS_VERSION_CONFLICT'].includes(error.code));
+ assert((await io.read(settings.revisionsFile)).bytes.equals(winner));
+});
+
+test('Windows concurrent settings read cannot advance an in-flight save CAS baseline',{skip:process.platform!=='win32'},async t=>{
+ const {settings}=await fixture(t);
+ let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const saving=settings.serial(async()=>{await settings.readRevisions();entered();await gate;await settings.writeRevisions({schema:1,sources:{stale:{revision:1}}});});
+ const rejected=assert.rejects(saving,error=>['FS_TARGET_EXISTS','FS_VERSION_CONFLICT'].includes(error.code));
+ await ready;
+ const {createWindowsDesktopProfileIO}=await import('../src/platform/windows/desktop-profile.mjs');const io=createWindowsDesktopProfileIO(settings.source.root);
+ const winner=Buffer.from('{"schema":1,"sources":{"external":{"revision":12}}}');await io.write(settings.revisionsFile,winner,{expectedSha256:null});
+ await settings.readRevisions();release();await rejected;
+ assert((await io.read(settings.revisionsFile)).bytes.equals(winner));
+});

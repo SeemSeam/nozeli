@@ -5,8 +5,10 @@
 // {"event":"entry"|"native"|"tool"|"interaction"}; reverse auth interactions
 // use "w-" ids answered via the respond method. stderr is diagnostics only.
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import {createWindowsDesktopProfileIO} from '../../platform/windows/desktop-profile.mjs';
 
 const LINE_LIMIT = 16 * 1024 * 1024;
 const unavailable = message => Object.assign(new Error(message), { code: 'PI_RUNTIME_UNAVAILABLE' });
@@ -53,6 +55,15 @@ export class PiSettingsWorker {
 
   async start() {
     if (this.stopped) throw unavailable('Nozeli 私有 Pi 运行环境已停止。');
+    // The private Pi source directory is established through the native
+    // Windows profile BEFORE the settings owner spawns: a missing agentDir
+    // would otherwise be created by the SDK with ambient permissions, and an
+    // existing permissive directory is refused, never silently repaired.
+    if (process.platform === 'win32' && this.source.private === true
+        && path.isAbsolute(this.source.root) && path.isAbsolute(this.source.agentDir)) {
+      this.privateDirectory ??= createWindowsDesktopProfileIO(this.source.root);
+      await this.privateDirectory.ensureDirectory(this.source.agentDir);
+    }
     const child = this.spawnFn(this.runtime.command, this.runtime.args, { cwd: this.source.root, env: this.runtime.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     this.child = child;
     this.stderr = '';

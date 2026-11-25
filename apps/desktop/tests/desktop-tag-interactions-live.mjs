@@ -77,8 +77,30 @@ const bounds=async(page,sel)=>page.$eval(sel,n=>n.getBoundingClientRect().toJSON
 const raf=page=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
 const same=(a,b,t=1)=>Math.abs(a-b)<=t;
 async function grabPoint(page,headerSel){return page.$eval(headerSel,header=>{const h=header.getBoundingClientRect(),fold=header.querySelector('[data-local-window-collapse]')?.getBoundingClientRect(),close=header.querySelector('[data-local-window-hide]')?.getBoundingClientRect();for(const x of [h.left+3,(fold?fold.left-4:h.right-40),(close?close.right+4:h.right-8)]){const el=document.elementFromPoint(x,h.top+h.height/2);if(el&&header.contains(el)&&!el.closest('button,input,textarea,select,a,summary'))return {x,y:h.top+h.height/2};}throw Error('no draggable header blank spot');});}
-async function dragPoint(page,from,dx,dy){await page.bringToFront();await page.evaluate(()=>{window.__tagGestureTrace=[];if(!window.__tagGestureObserved){window.__tagGestureObserved=true;for(const type of ['pointerdown','pointerup','gotpointercapture','lostpointercapture','compositionstart','compositionend'])document.addEventListener(type,e=>window.__tagGestureTrace.push({type,trusted:e.isTrusted,target:e.target.className,x:e.clientX,y:e.clientY}),true);window.addEventListener('blur',()=>window.__tagGestureTrace.push({type:'window-blur'}));}});await page.mouse.move(from.x,from.y);await raf(page);await page.mouse.down();await page.mouse.move(from.x+dx,from.y+dy,{steps:12});await page.mouse.up();await raf(page);(result.gestures??=[]).push({from,dx,dy,trace:await page.evaluate(()=>window.__tagGestureTrace)});}
-async function dragTitle(page,id,dx,dy){const from=await bounds(page,'.local-window[data-annotation="'+id+'"] .tag-window-title');assert(from.width>0,'title text not measurable '+id);await dragPoint(page,{x:from.x+Math.min(from.width/2,40),y:from.y+from.height/2},dx,dy);}
+async function dragPoint(page,from,dx,dy,{hover=false}={}){
+ await page.bringToFront();
+ await page.evaluate(()=>{
+  window.__tagGestureTrace=[];
+  if(window.__tagGestureObserved)return;
+  window.__tagGestureObserved=true;
+  for(const type of ['pointerdown','pointermove','pointerup','pointercancel','gotpointercapture','lostpointercapture','compositionstart','compositionend'])document.addEventListener(type,e=>window.__tagGestureTrace.push({type,trusted:e.isTrusted,target:e.target.className,x:e.clientX,y:e.clientY,buttons:e.buttons,pointerId:e.pointerId,active:document.activeElement?.className,time:e.timeStamp}),true);
+  window.addEventListener('blur',()=>window.__tagGestureTrace.push({type:'window-blur',time:performance.now()}));
+ });
+ await page.mouse.move(from.x,from.y);await raf(page);await page.mouse.down();
+ try{
+  if(hover){
+   await page.mouse.move(from.x+dx/2,from.y+dy/2,{steps:6});
+   await page.evaluate(()=>{
+    const press=window.__tagGestureTrace.find(e=>e.type==='pointerdown');
+    document.dispatchEvent(new PointerEvent('pointermove',{pointerType:'mouse',pointerId:press.pointerId,buttons:0,bubbles:true,clientX:press.x,clientY:press.y}));
+   });
+  }
+  await page.mouse.move(from.x+dx,from.y+dy,{steps:hover?6:12});
+ }finally{await page.mouse.up();}
+ await raf(page);
+ (result.gestures??=[]).push({from,dx,dy,trace:await page.evaluate(()=>window.__tagGestureTrace)});
+}
+async function dragTitle(page,id,dx,dy,options){const from=await bounds(page,'.local-window[data-annotation="'+id+'"] .tag-window-title');assert(from.width>0,'title text not measurable '+id);await dragPoint(page,{x:from.x+Math.min(from.width/2,40),y:from.y+from.height/2},dx,dy,options);}
 async function dragBlank(page,id,dx,dy){await dragPoint(page,await grabPoint(page,'.local-window[data-annotation="'+id+'"] .local-window-header'),dx,dy);}
 async function dragResize(page,id,dx,dy){const b=await bounds(page,'.local-window[data-annotation="'+id+'"] .local-window-resize');await dragPoint(page,{x:b.x+b.width/2,y:b.y+b.height/2},dx,dy);}
 function check(name,ok,detail){result.checks.push({name,ok:!!ok,detail});if(!ok)result.measurements[name]=detail;}
@@ -124,6 +146,8 @@ await doc.screenshot({path:path.join(out,'01-md-initial.png')});
 await hideTag(doc,mdDiscussId);await hideTag(doc,fileTagId);
 let a=await bounds(doc,noteWin);await dragTitle(doc,noteId,80,55);let b=await bounds(doc,noteWin);
  check('md note: real mouse drag by title text moves exactly with the pointer',same(b.x-a.x,80,4)&&same(b.y-a.y,55,4),{before:a,after:b});
+ a=await bounds(doc,noteWin);await dragTitle(doc,noteId,14,9,{hover:true});b=await bounds(doc,noteWin);
+ check('md note: a zero-button hover sample does not roll back a held drag',same(b.x-a.x,14,2)&&same(b.y-a.y,9,2),{before:a,after:b});
  a=await bounds(doc,noteWin);await dragBlank(doc,noteId,-60,30);b=await bounds(doc,noteWin);
  check('md note: header blank-area drag moves exactly with the pointer',same(b.x-a.x+60,0,4)&&same(b.y-a.y-30,0,4),{before:a,after:b});
  a=await bounds(doc,noteWin);await doc.focus(head);await doc.keyboard.press('ArrowRight');await doc.keyboard.press('ArrowRight');await raf(doc);b=await bounds(doc,noteWin);

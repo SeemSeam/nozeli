@@ -1,8 +1,16 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {randomUUID,createHash} from 'node:crypto';
 import {openTestController,openTestWorkspace} from './project-storage.fixture.mjs';
 import {dispositionIntent} from './disposition-intent.fixture.mjs';
 import {staticReport} from './static-report.fixture.mjs';
+import {ManagedProjects} from '../src/agents/managed-projects.mjs';
+import {restoreExecutionIntents} from '../src/agents/managed/restart-recovery.mjs';
 // Deterministic lifecycle coverage of the formal runtime; no real model claims.
-import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {createHash,randomUUID} from 'node:crypto';import {Controller} from '../src/agents/managed/controller.mjs';
+import {Controller} from '../src/agents/managed/controller.mjs';
 const wait=async fn=>{const end=Date.now()+15000;while(Date.now()<end){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw new Error('condition timeout');};
 const submitBackground=(c,text,options={})=>!text||text.startsWith('light')?c.send('frontdesk',text,options):c.submitTask(text,{requestKey:randomUUID(),...options});
 async function admitHostJob(c,target,text){
@@ -17,6 +25,38 @@ async function fixture(t,{automatic=true}={}){const root=await fs.mkdtemp(path.j
  // routes on the raw tail and reports transport facts through the runtime contract.
  class FakeSession{constructor(spec,target){Object.assign(this,spec,{target,closed:false,busy:false,interactions:[],contextEpoch:'compaction:0:root',hasPrompted:false,phase:'idle',toolsDigest:'fixture-native-schema'});}async preflightToolsDigest(){}async assertToolsDigest(){}async start(id){if(id&&dropEmpty)throw Object.assign(new Error('PI_SESSION_FILE_NOT_FOUND'),{code:'PI_SESSION_FILE_NOT_FOUND'});this.threadId=id||randomUUID();calls.push({type:'start',target:this.target,threadId:this.threadId});return this;}async prompt(text,opts={}){this.hasPrompted=true;this.busy=true;this.phase='prompting';calls.push({type:'prompt',target:this.target,text});const requestId=randomUUID(),contentDigest=createHash('sha256').update(text,'utf8').digest('hex');const transport=status=>this.onTransportFact?.({status,kind:'prompt',sessionId:this.threadId,epoch:this.contextEpoch,requestId,jobId:opts.job?.id,attempt:1,contentDigest});try{await transport('prepared');await new Promise(r=>setTimeout(r,15));const tool=(name,args)=>this.onTool({tool:name,arguments:args,threadId:this.threadId,callId:randomUUID()});if(this.target==='frontdesk'&&!text.startsWith('light'))await tool('nozeli_handoff',{reason:'specialist'});else if(this.target==='orchestrator'&&opts.job?.type!=='backstage'){const input=text.split('\n\n').at(-1);if(input.startsWith('light manual answer'))await tool('nozeli_manage',{action:'clarify',text:'fixture routing clarification'});else await tool('nozeli_dispatch',{name:'worker '+randomUUID().slice(0,4),brief:text});}else if(!['frontdesk','orchestrator'].includes(this.target))await tool('nozeli_publish',{kind:'result',content:staticReport('Verified fixture report'),files:[]});await transport('native-record-confirmed');await transport('settled');return {text:'fixture response',threadId:this.threadId,turnId:randomUUID()};}finally{this.busy=false;this.phase='idle';}}async stop(){this.closed=true;return {confirmationComplete:true};}}
  const options={runtimeRoot:path.join(root,'data'),contentRoot:path.join(root,'content'),sessionFactory:(spec,target)=>new FakeSession(spec,target)};const c=await openTestController(options);all.push(c);await c.start();await wait(()=>!c.kicking);c.started=automatic;t.after(async()=>{await Promise.all(all.map(c=>c.stop()));await fs.rm(root,{recursive:true,force:true});});return {c,root,calls,loseEmptyThreads:()=>{dropEmpty=true;},reopen:async()=>{const n=await openTestController(options);all.push(n);await n.start();return n;}};}
+test('two nonterminal reads stop as a typed unrouted intake without new work or retry',async t=>{
+ const {c,calls}=await fixture(t);
+ const session=c.sessions.get('orchestrator');let reads=0;
+ session.prompt=async(text,opts)=>{
+  calls.push({type:'prompt',target:'orchestrator',text});
+  const requestId=randomUUID(),entryId='status-only-user-entry';
+  const send=status=>session.onTransportFact({status,kind:'prompt',sessionId:session.threadId,epoch:session.contextEpoch,requestId,jobId:opts.job.id,attempt:1,contentDigest:createHash('sha256').update(text).digest('hex'),...(status==='native-record-confirmed'?{entryId}:{})});
+  await send('prepared');await send('native-record-confirmed');
+  for(let i=0;i<2;i++){
+   const result=await session.onTool({tool:'nozeli_manage',arguments:{action:'status'},threadId:session.threadId,callId:randomUUID()});
+   assert.equal(result.continueTurn,true);assert.equal(result.readOnly,true);reads++;
+  }
+  await send('settled');
+  return {completion:'provider-completed',providerStatus:'completed',delivery:{phase:'native-record-confirmed',requestId,text:{entryId}}};
+ };
+ const {jobId}=await submitBackground(c,'status-only request');
+ await wait(()=>c.store.state.jobs.some(j=>j.id===jobId&&j.status==='failed')&&!c.running.has('orchestrator'));
+ const original=c.store.state.jobs.find(j=>j.id===jobId);
+ assert.equal(reads,2);assert.equal(original.errorCode,'INTAKE_ROUTE_REQUIRED');assert.equal(original.routing,undefined);
+ assert.equal(original.restartRecovery.kind,'needs-reconciliation');assert.equal(c.store.state.works.length,0);assert.equal((await c.maintenance.read()).bugs.length,0);
+ const projectInstanceId=c.store.projectInstanceId;
+ assert.equal(c.intakeReconcile(jobId,projectInstanceId).nativeEntryId,'status-only-user-entry');
+ await assert.rejects(c.retryIntake(jobId,'must-not-clone'),{code:'INTAKE_REPLAY_FORBIDDEN'});
+ const next=await submitBackground(c,'independent queued instruction');
+ await wait(()=>!c.kicking);
+ assert.equal(c.store.state.jobs.find(j=>j.id===next.jobId).status,'queued');
+ assert.equal((await c.intakeWithdraw(jobId,projectInstanceId)).effectUnknown,true);
+ await wait(()=>c.store.state.works.some(w=>w.sourceJob===next.jobId));
+ assert.equal(c.store.state.jobs.find(j=>j.id===jobId).status,'failed');
+ assert.equal(calls.filter(row=>row.type==='prompt'&&row.target==='orchestrator'&&row.text.includes('status-only request')).length,1);
+});
+
 test('automatic queue releases quota on user end while preserving prior Worker history',async t=>{const {c,calls}=await fixture(t);await submitBackground(c, 'task A');await submitBackground(c, 'task B');await wait(()=>c.store.state.works.length===2&&c.store.state.works[0].status==='review');const [a,b]=c.store.state.works;assert.equal(b.status,'queued');assert.equal(c.store.used(),1);assert.equal(calls.filter(x=>x.type==='start'&&!['frontdesk','orchestrator'].includes(x.target)).length,1);await wait(()=>!c.running.has(a.id));await c.endWork(a.id,{revision:a.revision,decision:'accept'});await wait(()=>c.store.find(b.id).status==='review');assert.equal(c.store.find(a.id).status,'ended');assert.notEqual(c.store.find(a.id).threadId,c.store.find(b.id).threadId);assert.equal(c.store.used(),1);assert((await fs.stat(c.store.find(a.id).closure.workerHome.historyPath)).isDirectory());});
 test('manual draft holds automatic intake until released without losing original request',async t=>{const {c}=await fixture(t);await c.setDraft('orchestrator','unsent manual draft');await submitBackground(c, 'task original');await wait(()=>c.store.state.jobs.some(j=>j.target==='orchestrator'));assert.equal(c.store.state.works.length,0);assert.equal(c.store.state.drafts.orchestrator,'unsent manual draft');await c.setDraft('orchestrator','');await wait(()=>c.store.state.works[0]?.status==='review');assert.equal(c.store.state.works[0].request,'task original');});
 test('reopen retains review, resident and worker thread ids, quota and unsent draft',async t=>{const {c,reopen}=await fixture(t);await submitBackground(c, 'task A');await wait(()=>c.store.state.works[0]?.status==='review'&&!c.running.size);const w=structuredClone(c.store.state.works[0]),front=c.store.state.residents.frontdesk.threadId;await c.setDraft(w.id,'my draft');await c.stop();const next=await reopen();assert.equal(next.store.state.residents.frontdesk.threadId,front);assert.equal(next.store.find(w.id).status,'review');assert.equal(next.store.find(w.id).threadId,w.threadId);assert.equal(next.store.state.drafts[w.id],'my draft');assert.equal(next.store.used(),1);assert.equal(next.snapshot().agents.find(a=>a.target===w.id).resumable,true);await next.send(w.id,'follow up');await wait(()=>next.store.find(w.id).revision===2&&next.store.find(w.id).status==='review');assert.equal(next.store.find(w.id).threadId,w.threadId);});
@@ -234,4 +274,103 @@ test('nozeli_publish uses one content body and kind binds its format without leg
  const problemAfter=structuredClone(c.store.state.receipts.find(r=>r.id==='problem-text-receipt').report);
  assert.deepEqual(problemAfter,receipt.report);
  assert.equal((await c.store.readObject(receipt.report.digest).then(bytes=>bytes.toString('utf8'))),question);
+});
+
+test('conversation queues park idle normal and preserve FIFO within each lane',async t=>{
+ const {c,calls}=await fixture(t,{automatic:false});
+ const submit=(text,lane,requestKey)=>c.send('frontdesk',text,{lane,requestKey});
+ const a=await submit('light parked one','normal','queue-normal-one');
+ const b=await submit('light parked two','normal','queue-normal-two');
+ await c.pump();
+ assert.equal(calls.filter(x=>x.type==='prompt').length,0);
+ assert.deepEqual(c.frontdeskChatRead().queueItems.map(row=>row.id),[a.jobId,b.jobId]);
+ assert.equal(c.store.state.messages.some(m=>m.jobId===a.jobId),false);
+ const first=await submit('light next one','next','queue-next-one');
+ await submit('light next two','next','queue-next-two');
+ assert.deepEqual(await submit('light next one','next','queue-next-one'),{...first,duplicate:true});
+ await assert.rejects(submit('light next one','normal','queue-next-one'),{code:'CHAT_REQUEST_COLLISION'});
+ await c.chatControl({queueId:b.jobId});
+ c.started=true;c.kick();
+ await wait(()=>!c.running.size&&c.store.state.jobs.find(j=>j.id===a.jobId)?.status==='completed');
+ assert.deepEqual(calls.filter(x=>x.type==='prompt').map(x=>x.text),['light next one','light next two','light parked one']);
+ assert.equal(c.store.state.messages.some(m=>m.jobId===b.jobId),false);
+});
+
+test('Work queue and timeline reads are exactly scoped; instruction draft CAS is independent',async t=>{
+ const {c}=await fixture(t,{automatic:false});
+ const {id:workId}=await c.store.submit('first Work','first brief');
+ const {id:otherId}=await c.store.submit('second Work','second brief');
+ await c.store.activate(workId);
+ const {revision}=await c.workChatRead({workId});
+ const plan={workId,revision,requestKey:'worker-queue-001',text:'exclusive pending input',lane:'normal'};
+ const first=await c.workChatSend(plan),view=await c.workChatRead({workId});
+ assert.deepEqual(view.queueItems,[{id:first.jobId,text:plan.text,lane:'normal'}]);
+ assert.deepEqual((await c.workChatRead({workId:otherId})).queueItems,[]);
+ assert.equal(view.taskFrame.entries.some(e=>e.jobId===first.jobId),false);
+ await assert.rejects(c.chatControl({workId:otherId,revision:c.store.find(otherId).revision,queueId:first.jobId},{work:true}),{code:'CHAT_ITEM_NOT_PENDING'});
+ await assert.rejects(c.workChatSend({...plan,requestKey:'worker-queue-002',revision:revision+1}),{code:'WORK_REVISION_STALE'});
+ await c.reviewInstructionSave({workId,expectedRevision:0,text:'independent unsent draft'});
+ await c.chatControl({workId,revision,queueId:first.jobId},{work:true});
+ assert.equal((await c.workChatSend(plan)).duplicate,true);
+ assert.equal((await c.workChatRead({workId})).queued,0);
+ assert.equal((await c.reviewInstructionRead({workId})).text,'independent unsent draft');
+});
+
+test('known failure needs fresh next input; unknown effects never release queue via send or dispatch',async t=>{
+ const {c,calls}=await fixture(t,{automatic:false});
+ const hold=async (id,chatFault,promptStartedAt)=>c.store.mutate(()=>c.store.state.jobs.push({id,target:'frontdesk',type:'front',status:'failed',chatFault,promptStartedAt}));
+ await hold('known-rejection','CHAT_FAULT_PAUSED',null);
+ await c.send('frontdesk','light parked',{lane:'normal',requestKey:'chat-known-parked'});
+ await assert.rejects(c.chatControl({},{dispatch:true}),{code:'CHAT_FAULT_PAUSED'});
+ const fresh=await c.send('frontdesk','light fresh',{lane:'next',requestKey:'chat-known-fresh'});
+ assert.equal(c.store.state.jobs.find(j=>j.id==='known-rejection').chatFaultReleasedBy,undefined);
+ c.started=true;c.kick();
+ await wait(()=>!c.running.size&&c.frontdeskChatRead().queued===0);
+ assert.equal(c.store.state.jobs.find(j=>j.id==='known-rejection').chatFaultReleasedBy,fresh.jobId);
+ assert.deepEqual(calls.filter(x=>x.type==='prompt').map(x=>x.text),['light fresh','light parked']);
+ await hold('unknown-effect','CHAT_EFFECT_UNKNOWN',1);
+ await c.send('frontdesk','light park only',{lane:'normal',requestKey:'chat-unknown-park'});
+ await assert.rejects(c.send('frontdesk','light must not claim',{lane:'next',requestKey:'chat-unknown-send'}),{code:'CHAT_EFFECT_UNKNOWN'});
+ await assert.rejects(c.chatControl({},{dispatch:true}),{code:'CHAT_EFFECT_UNKNOWN'});
+ assert.equal(c.frontdeskChatRead().canQueue,true);assert.equal(c.frontdeskChatRead().canSend,false);
+ assert.equal(calls.filter(x=>x.type==='prompt').length,2);
+});
+
+test('a higher lane submitted during source preparation wins the durable claim',async t=>{
+ const {c,calls}=await fixture(t,{automatic:false});
+ const normal=await c.send('frontdesk','light prepared normal',{lane:'normal',requestKey:'race-normal-001'});
+ await c.chatControl({},{dispatch:true});
+ let enter,release;
+ const sourceEntered=new Promise(resolve=>{enter=resolve;}),sourceGate=new Promise(resolve=>{release=resolve;});
+ c.serviceSourcePrepare=job=>job.id===normal.jobId?(enter(),sourceGate):undefined;
+ const pending=c.pump();await sourceEntered;
+ try{await c.send('frontdesk','light overtaking next',{lane:'next',requestKey:'race-next-001'});}finally{release();}
+ await pending;await Promise.all([...c.running.values()]);
+ c.started=true;c.kick();
+ await wait(()=>!c.running.size&&c.frontdeskChatRead().queued===0);
+ assert.deepEqual(calls.filter(x=>x.type==='prompt').map(x=>x.text),['light overtaking next','light prepared normal']);
+});
+
+test('host chat routes scope by project and Work and reject unbound Work sends',async t=>{
+ const {c}=await fixture(t,{automatic:false}),projectId=c.projectId;
+ const storage=c.store.storage,host={storage,requireProject:id=>storage.requireOnline(id),requireRegisteredProject:id=>storage.requireRegistered(id)};
+ const managed=Object.assign(Object.create(ManagedProjects.prototype),{host,controllers:new Map([[projectId,c]])});
+ const {id:workId}=await c.store.submit('scoped Work','brief');await c.store.activate(workId);
+ const read=await managed.invoke('managed.work.chat.read',{projectId,workId});
+ const p={projectId,workId,revision:read.revision,requestKey:'host-work-chat-001',text:'host-scoped input',lane:'normal'};
+ const sent=await managed.invoke('managed.work.chat.send',p);
+ assert.equal((await managed.invoke('managed.work.chat.read',{projectId,workId})).queueItems[0].id,sent.jobId);
+ assert.deepEqual((await managed.invoke('managed.chat.read',{projectId})).queueItems,[]);
+ await assert.rejects(managed.invoke('managed.work.chat.read',{projectId}),{code:'INVALID_PAYLOAD'});
+ await assert.rejects(managed.invoke('managed.send',{projectId,target:workId,text:p.text,requestKey:p.requestKey,lane:p.lane}),{code:'INVALID_PAYLOAD'});
+});
+
+test('restart preserves dormant report inputs and never promotes unconfirmed native effects',()=>{
+ const work={id:'work',status:'review',revision:1};
+ const dormant={id:'pending',target:work.id,status:'queued',promptStartedAt:null,chat:{kind:'review',lane:'normal',ready:false}};
+ const admitted={id:'active',target:'frontdesk',status:'interrupted',interruptionReason:'host-stopped',promptStartedAt:1,chat:{kind:'frontdesk',lane:'next',ready:true}};
+ restoreExecutionIntents({works:[work],jobs:[dormant,admitted]});
+ assert.equal(dormant.status,'queued');assert.equal(dormant.chat.ready,false);
+ assert.equal(admitted.status,'interrupted');assert.equal(admitted.chatFault,'CHAT_EFFECT_UNKNOWN');
+ assert.equal(admitted.restartRecovery.kind,'needs-reconciliation');
 });

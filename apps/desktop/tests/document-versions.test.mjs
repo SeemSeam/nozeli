@@ -1,10 +1,11 @@
+import {desktopHosts} from './fixtures/desktop-hosts.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ChangeSet } from '@codemirror/state';
-import { DesktopHost, ops } from '../src/main/host.mjs';
+import { ops } from '../src/main/host.mjs';
 import { FileChanges } from '../src/domain/file-changes.mjs';
 import { agentActor, userActor } from '../src/domain/document-changes.mjs';
 import { textChangeSet, anchorText } from '../src/domain/tag-anchors.mjs';
@@ -13,16 +14,16 @@ import { digestBytes } from '../src/domain/material-store.mjs';
 async function fixture(text = '# 初稿\n重复😀\n保留\n重复😀\n') {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-versions-')), root = path.join(dir, '项目');
   await fs.mkdir(root); const rel = 'sample.md', file = path.join(root, rel); await fs.writeFile(file, text);
-  const host = new DesktopHost(path.join(dir, 'profile')), projectId = (await host.pick(root)).project.id;
+  const hosts=desktopHosts(),host = hosts.create(path.join(dir, 'profile')), projectId = (await host.pick(root)).project.id;
   const store = new FileChanges({ storage: host.storage, projectId, root }); await host.readFile(projectId, rel);
-  return { dir, root, rel, file, host, projectId, store, cleanup: () => fs.rm(dir, { recursive: true, force: true }) };
+  return { dir, root, rel, file, host, hosts, projectId, store, cleanup: async() => {await hosts.close();await fs.rm(dir, { recursive: true, force: true });} };
 }
 async function portable(fx) {
   // The traveling copy carries the recorded ledger but not the original host's material store.
   const away = path.join(fx.dir, 'portable-copy');
   await fs.cp(fx.root, away, { recursive: true });
   await fs.rm(path.join(away, '.nozeli', 'objects'), { recursive: true, force: true });
-  const host = new DesktopHost(path.join(fx.dir, 'other-profile')), projectId = (await host.pick(away)).project.id;
+  const host = fx.hosts.create(path.join(fx.dir, 'other-profile')), projectId = (await host.pick(away)).project.id;
   return { host, projectId };
 }
 async function save(fx, text, edits) {
@@ -46,7 +47,7 @@ test('real saved versions, baseline, agents and restart; readonly queries preser
     await fx.host.applyDocument(fx.projectId, actor, { readHandle: read.readHandle, edits: [{ from, to: from + 2, insert: 'Agent补充' }], operationId: digestBytes(Buffer.from('agent-edit')) });
     const current = await fx.host.readFile(fx.projectId, fx.rel); await fx.host.draft(fx.projectId, fx.rel, current.digest, current.text + '未保存');
     const sourceBefore = await fs.readFile(fx.file), ledgerBefore = await record(fx);
-    const restarted = new DesktopHost(fx.host.userDataDir);
+    const restarted = fx.hosts.create(fx.host.userDataDir);
     const page = await ops['document.versions'](restarted, { projectId: fx.projectId, relPath: fx.rel });
     assert.deepEqual(page.versions.map(v => v.revision), [2, 1, 0]); assert.equal(page.versions[0].actor.kind, 'agent1');
     assert.equal(page.versions[1].actor.kind, 'user'); assert.equal(page.versions[2].actor, null); assert.equal(page.versions[2].time, null);

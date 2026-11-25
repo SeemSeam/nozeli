@@ -1,6 +1,6 @@
 // Dedicated helper entry, compatible with packaged Electron and system Node.
 let app;
-if (process.versions.electron) {
+if (process.versions.electron && process.type === 'browser') {
   ({app}=require('electron'));
   app.commandLine.appendSwitch('ozone-platform','headless');
   app.disableHardwareAcceleration();

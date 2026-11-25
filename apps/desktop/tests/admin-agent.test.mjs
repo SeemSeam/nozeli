@@ -10,6 +10,19 @@ import {AgentProcessBudget} from '../src/agents/managed/agent-process-budget.mjs
 import {ControlledAdminSession} from './admin-agent.fixture.mjs';
 import {trustedRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools} from '../../../integrations/pi/src/native-skills.mjs';
 
+// A realistic crashed-process state write: the durable record is replaced
+// through the same native profile CAS path a real writer would use, never a
+// raw filesystem write that bypasses record custody.
+async function crashWriteState(file,state){
+ if(process.platform==='win32'){
+  const {createWindowsDesktopProfileIO}=await import('../src/platform/windows/desktop-profile.mjs');
+  const profile=createWindowsDesktopProfileIO(path.resolve(file,'..','..'));
+  const observed=(await profile.read(file)).sha256;
+  await profile.write(file,Buffer.from(JSON.stringify(state),'utf8'),{expectedSha256:observed});
+  return;
+ }
+ await fs.writeFile(file,JSON.stringify(state));
+}
 const prepare=(agent,changes={})=>agent.tool('nozeli_admin_prepare_defaults',{role:'worker',model:'local-fixture/scripted',effort:'low',...changes});
 async function fixture(t,{offline=false,onDefaultsSaved}={}){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-admin-'));
@@ -22,7 +35,7 @@ async function fixture(t,{offline=false,onDefaultsSaved}={}){
   throw Error('unexpected worker operation '+method);
  }};
  let saves=0;
- const settings=new ProviderSettings({source:{agentDir:path.join(root,'pi')},worker:offline?null:worker,onDefaultsSaved:async value=>{saves++;return onDefaultsSaved?onDefaultsSaved(value):{applied:1,pending:2,failed:[],sessions:[]};}});
+ const settings=new ProviderSettings({source:{root,agentDir:path.join(root,'pi')},worker:offline?null:worker,onDefaultsSaved:async value=>{saves++;return onDefaultsSaved?onDefaultsSaved(value):{applied:1,pending:2,failed:[],sessions:[]};}});
  const control={},budget=new AgentProcessBudget({limit:2});
  const host={recent:async()=>({projects:projects.map(({root,...project})=>({...project,rootDisplay:root}))}),readFile:()=>{throw Error('Project content access forbidden');}};
  const options={userDataDir:root,host,providerSettings:settings,processBudget:budget,sessionFactory:spec=>new ControlledAdminSession(spec,control)};
@@ -138,7 +151,7 @@ test('crash journal marks executing effects unknown without replaying and preser
  const {agent,root,options,saves}=await fixture(t);const {proposal}=await prepare(agent);
  const file=path.join(root,'admin-agent','state.json');const state=JSON.parse(await fs.readFile(file,'utf8'));
  state.draft='crash input';state.requests.push({id:'crashed',key:'crash',fingerprint:'x',text:'crash input',status:'executing'});state.proposals[0].status='executing';
- await fs.writeFile(file,JSON.stringify(state));const recovered=new AdminAgent(options);const status=await recovered.invoke('status',{});
+ await crashWriteState(file,state);const recovered=new AdminAgent(options);const status=await recovered.invoke('status',{});
  assert.equal(status.draft,'crash input');assert.equal(status.pendingChanges[0].status,'unknown');
  const confirmed=await recovered.invoke('confirm',{id:proposal.id,expectedVersion:proposal.expectedVersion});assert.equal(confirmed.receipt.saved,null);assert.equal(saves(),0);await recovered.stop();
 });

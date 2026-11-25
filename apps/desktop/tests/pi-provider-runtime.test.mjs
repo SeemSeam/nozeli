@@ -40,11 +40,12 @@ test('private Pi source is pinned beneath the Nozeli root', async () => {
 test('bundled Pi runtime resolves the vendored entry with a scrubbed environment', async t => {
   const integration = await integrationTree(t);
   const home = path.join(os.tmpdir(), 'nozeli-pi-home');
+  const nodePath = path.join(integration, 'synthetic-node', process.platform === 'win32' ? 'node.exe' : 'node');
   const spec = await resolveBundledPiRuntime({
     piHome: home,
     env: {
       NOZELI_PI_INTEGRATION_ROOT: integration,
-      NOZELI_PI_NODE: '/opt/test-node/bin/node',
+      NOZELI_PI_NODE: nodePath,
       NOZELI_PI_OWNER_HOME: '/role/home',
       PATH: '/usr/bin',
       OPENAI_API_KEY: 'TEST_ONLY',
@@ -53,7 +54,7 @@ test('bundled Pi runtime resolves the vendored entry with a scrubbed environment
       OMP_AUTH_BROKER_TOKEN: 'TEST_ONLY'
     }
   });
-  assert.equal(spec.command, '/opt/test-node/bin/node');
+  assert.equal(spec.command, nodePath);
   assert.equal(spec.entry, path.join(integration, 'src', 'owner.mjs'));
   assert.deepEqual(spec.args, [path.join(integration, 'src', 'owner.mjs')]);
   assert.equal(spec.env.NOZELI_PI_HOME, home);

@@ -61,6 +61,14 @@ test('unrouted technical failures are read-only while genuine Work controls rema
  const state={jobs:[{id:'queued',status:'queued'}]};assert.deepEqual(workRecordControlTarget({name:'待安排',jobIds:['queued']},state),{jobId:'queued',name:'待安排'});
 });
 
+test('withdrawn unrouted requests appear in history without a live control or masked failure',()=>{
+ const job={id:'intake',type:'intake',text:'工作状态继承',error:'orchestrator turn ended without a routing decision',maintenanceBugId:'bug:old',status:'cancelled',routing:{action:'cancel',at:'2026-11-23T00:00:00Z'}};
+ const state={jobs:[job],backstageEvents:[{sourceJobId:job.id,status:'blocked'}]};
+ const [record]=managedWorkRecords(state);
+ assert.equal(record.status,'ended');assert.equal(record.phase,'已撤销 · 未派工');assert.equal(record.description,job.error);
+ assert.equal(workRecordCategory(record,state),'ended');assert.equal(workRecordControlTarget(record,state),null);
+});
+
 test('cancelling a never-started queued Work states queue facts, not discard or cleanup',()=>{
  const notice=workDispositionNotice({work:{id:'w',name:'访谈摘要',status:'queued',revision:0},binding:{workId:'w',revision:0,objectId:null,candidateCommit:null},decision:'discard'});
  assert.match(notice,/访谈摘要/);assert.match(notice,/尚未开始执行/);assert.match(notice,/取消排队/);assert.match(notice,/原请求与历史记录保留/);

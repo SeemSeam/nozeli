@@ -25,11 +25,12 @@ export class AgentProcessBudget {
  bind(slot,session){
   const stop=session.stop.bind(session);let spawned=Boolean(session.pid);
   session.on?.('exit',()=>{slot.state='unconfirmed';});
+  session.on?.('prepared',()=>{spawned=true;slot.state='starting';});
   session.stop=async(...args)=>{
-   try{const receipt=await stop(...args);if(receipt?.confirmationComplete===true||(!spawned&&!session.pid&&!session.groupRecord?.pid))this.release(slot);else slot.state='unconfirmed';return receipt;}
-   catch(error){if(error.exitReceipt?.confirmationComplete===true||session.lastExitReceipt?.confirmationComplete===true||!spawned&&!session.pid&&!session.groupRecord?.pid)this.release(slot);else slot.state='unconfirmed';throw error;}
+   try{const receipt=await stop(...args);if(receipt?.confirmationComplete===true||(!spawned&&!session.pid&&!session.groupRecord?.pid&&!session.launchAttempt))this.release(slot);else slot.state='unconfirmed';return receipt;}
+   catch(error){if(error.exitReceipt?.confirmationComplete===true||session.lastExitReceipt?.confirmationComplete===true||!spawned&&!session.pid&&!session.groupRecord?.pid&&!session.launchAttempt)this.release(slot);else slot.state='unconfirmed';throw error;}
   };
-  return {spawned:()=>{spawned=true;slot.state='live';},hasSpawned:()=>spawned||Boolean(session.pid||session.groupRecord?.pid),started:()=>{slot.state='live';}};
+  return {spawned:()=>{spawned=true;slot.state='live';},hasSpawned:()=>spawned||Boolean(session.pid||session.groupRecord?.pid||session.launchAttempt),started:()=>{slot.state='live';}};
  }
  agents(){return [...this.slots].map(slot=>({...slot}));}
  async load(){

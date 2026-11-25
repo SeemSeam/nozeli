@@ -10,6 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { scrubProviderEnv } from './omp-credentials.mjs';
+import { resolveWorkerShell } from './shell-runtime.mjs';
 import { assertBundledExecutable, manifestExecutable, sha256File, validateRuntimeManifest } from '../../platform/shared/runtime-assets.mjs';
 
 const piAssetViolation = file => new Error('Nozeli 私有 Pi 运行环境缺失或损坏：' + file);
@@ -19,7 +20,7 @@ const regularFile = file => assertBundledExecutable(file, { access: false, viola
 
 // The bundled standalone Node ships as <appRoot>/runtime/node with a manifest
 // recording the exact distribution the package was built from.
-async function readBundledNode(appRoot) {
+export async function readBundledNode(appRoot) {
   const directory = path.join(appRoot, 'runtime', 'node');
   const manifestFile = path.join(directory, 'NODE-RUNTIME.json');
   let manifest;
@@ -33,8 +34,7 @@ async function readBundledNode(appRoot) {
   if (manifest.sha256Executable && await sha256File(executable) !== manifest.sha256Executable) throw new Error('Bundled Node runtime integrity mismatch');
   return { executable, manifest };
 }
-
-export async function resolveBundledPiRuntime({ appRoot = fileURLToPath(new URL('../../../', import.meta.url)), packaged = false, piHome, env = process.env } = {}) {
+export async function resolveBundledPiRuntime({ appRoot = fileURLToPath(new URL('../../../', import.meta.url)), packaged = false, piHome, env = process.env, resolveShell = ({ env }) => resolveWorkerShell({ env }) } = {}) {
   if (!piHome || !path.isAbsolute(piHome)) throw new Error('Private Pi home required');
   const integrationRoot = env.NOZELI_PI_INTEGRATION_ROOT ? path.resolve(env.NOZELI_PI_INTEGRATION_ROOT) : packaged ? path.join(appRoot, 'integrations', 'pi') : path.join(appRoot, '..', '..', 'integrations', 'pi');
   const entry = path.join(integrationRoot, 'src', 'owner.mjs');
@@ -51,6 +51,12 @@ export async function resolveBundledPiRuntime({ appRoot = fileURLToPath(new URL(
   // (process ownership stamp set per role by the host) passes through untouched.
   const { env: scrubbed } = scrubProviderEnv(env);
   const workerEnv = { ...scrubbed, ...(spec.env ?? {}), NOZELI_PI_HOME: piHome, NO_COLOR: '1', FORCE_COLOR: '0' };
+  delete workerEnv.NOZELI_PI_SHELL;
+  // Resolve Bash on the host before selecting the private owner environment.
+  // Absence is a device capability fact, not a reason to disable reading/chat.
+  const shell = process.platform === 'win32' ? resolveShell({ env }) : null;
+  if (shell) workerEnv.NOZELI_PI_SHELL = shell.shell;
   const runtimeManifest = JSON.parse(await fs.readFile(path.join(integrationRoot, 'runtime-manifest.json'), 'utf8').catch(() => 'null'));
-  return { command: spec.command, args: spec.args, env: workerEnv, manifest: { node: bundledNode?.manifest ?? null, pi: runtimeManifest }, integrationRoot, entry, agentDir: piHome };
+  const toolPath=Object.entries(env).find(([key])=>key.toLowerCase()==='path')?.[1];
+  return { command: spec.command, args: spec.args, env: workerEnv, manifest: { node: bundledNode?.manifest ?? null, pi: runtimeManifest }, integrationRoot, entry, agentDir: piHome, shell: shell?.shell ?? null, ...(process.platform==='win32'&&typeof toolPath==='string'?{toolPath}:{}) };
 }

@@ -44,3 +44,24 @@ test('backstage storage failure does not manufacture another fault source',async
  await assert.rejects(c.processBackstage(),/storage unavailable/);
  assert.deepEqual(state,before);assert.equal(c.backstageFlight,null);
 });
+
+test('blocked recovery exposes the existing Work todo and opens the original thread without replay',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-backstage-recovery-'));
+ const c=await openTestController({runtimeRoot:path.join(root,'runtime'),contentRoot:path.join(root,'content')});
+ t.after(async()=>{await c.stop();await fs.rm(root,{recursive:true,force:true});});
+ const w=await c.store.submit('original request','original brief',{name:'Original Work'});
+ await c.store.mutate(()=>{
+  Object.assign(c.store.find(w.id),{status:'paused',revision:1,threadId:'original-thread'});
+  c.store.state.jobs.push({id:'worker-source',type:'initial',target:w.id,revision:1,status:'failed'});
+  c.store.state.todos.push({id:'original-recovery',kind:'recovery',workId:w.id,revision:1,sourceJobId:'worker-source',status:'open',text:'Return to original Work'});
+ });
+ await c.processBackstage();
+ const job=c.store.state.jobs.find(j=>j.type==='backstage');
+ await c.respondBackstage(job,{blocked:true,reason:'需要核对原任务'});
+ assert.deepEqual(managedReviewTodos(c.store.state).map(todo=>todo.id),['original-recovery']);
+ const before=c.store.state.jobs.map(j=>j.id);
+ const result=await c.resolveOpenTodo('recovery',{projectId:c.projectId,todoId:'original-recovery',workId:w.id,revision:1,sourceJob:'worker-source',requestKey:'recover-original'});
+ assert.equal(result.threadId,'original-thread');assert.equal(result.automaticReplay,false);
+ assert.deepEqual(c.store.state.jobs.map(j=>j.id),before);
+ assert.deepEqual(managedReviewTodos(c.store.state),[]);
+});

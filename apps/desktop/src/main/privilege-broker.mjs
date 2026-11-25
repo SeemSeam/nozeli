@@ -20,8 +20,13 @@
 //  - 取消/撤销：execution 记录绑定 grantId/sessionId，撤销只终止对应执行；admin 发射后无法
 //    证明 root 后代终止 → 一律 unknown（含“直接子进程已退出但后代仍持有管道”的情况：root 端
 //    killpg 后标 unknown），不声称零效果/无孤儿/可安全重试。
+//  - win32 机制退出码契约：0=完成；1=UAC 取消(Win32 1223)→cancelled（唯一 exit 1 来源）；
+//    3=提权端摘要不符或结果目录已存在（未启动命令）→EFFECT_TAMPERED；7=未获管理员令牌；
+//    8=提权端机制失败、9=非提权核验失败→unknown（绝不报未执行/可重试）。
+//    user 作用域绝不经 UAC 机制（不提权用户可写解释器/助手，见信任模型）。
 //  - darwin/win32：producer/consumer 协议完整实现，但未在真机验证；capabilities 如实标注
-//    platformVerification=implemented-untested 与 resultChannel，不伪称已验证。
+//    platformVerification=implemented-untested 与 resultChannel（win32 为管理员属主+受保护 DACL
+//    回执通道，非 caller-owned；路径式 Get-Acl 核验存在残余 TOCTOU 窗口），不伪称已验证。
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -221,11 +226,21 @@ const STRATEGIES = {
 };
 export const describeStrategies = () => structuredClone(STRATEGIES);
 const PLATFORM_VERIFICATION = { linux: 'implemented', darwin: 'implemented-untested', win32: 'implemented-untested' };
-const RESULT_CHANNEL = { linux: 'root-owned-facts+pipe-frames', darwin: 'root-owned-facts+pipe-frames (untested)', win32: 'caller-owned-receipt-file (unverified channel, untested)' };
+const RESULT_CHANNEL = {
+  linux: 'root-owned-facts+pipe-frames',
+  darwin: 'root-owned-facts+pipe-frames (untested)',
+  // 实际通道：提权端独占写入 Administrators 属主+受保护 DACL 的结果目录（请求用户只读），
+  // 非提权外层脚本核验 reparse/属主/写 ACL/nonce 后经机制独占 stdout 管道回帧——非 caller-owned；
+  // 但 Get-Acl 为路径式核验（残余 TOCTOU 窗口），且整条通道未经真实 UAC 验收 → 如实标注未验证。
+  win32: 'administrator-owned-acl-receipt (elevated-writer + unelevated owner/reparse/write-ACL/nonce verification; path-based Get-Acl; implemented-untested, no real UAC acceptance)',
+};
 
 const posixQuote = value => `'${String(value).replaceAll("'", `'\\''`)}'`;
 const powershellQuote = value => `'${String(value).replaceAll("'", "''")}'`;
 export const powershellArgumentList = items => `@(${items.map(powershellQuote).join(',')})`;
+// Windows argv 命令行引号规则（CreateProcess/CRT 语义）：反斜杠仅在引导引号前翻倍，尾随反斜杠翻倍。
+const quoteWindowsArgument = value => '"' + String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"';
+export const windowsArgumentLine = items => items.map(quoteWindowsArgument).join(' ');
 export function parsePowershellArgumentList(text) {
   if (!text.startsWith('@(') || !text.endsWith(')')) throw Error('not a powershell array literal');
   const body = text.slice(2, -1);
@@ -260,6 +275,62 @@ function parseAdminFrames(stdoutText) {
   frames.outB64 = grab('OUT');
   frames.errB64 = grab('ERR');
   return frames;
+}
+
+// ── win32 UAC producer（两段可单测脚本；构造为纯函数，不在此执行任何真实提权）──
+// 非提权外层核验（Start-Process -Wait 返回后执行）：目录与 receipt.json 不得为 reparse；
+// 属主必须是 Administrators（S-1-5-32-544）；任何非 Administrators/SYSTEM SID 不得持写权限
+// （852310 = 0xD0156：FILE_WRITE_DATA|APPEND_DATA|WRITE_EA|DELETE_CHILD|WRITE_ATTRIBUTES|DELETE|WRITE_DAC|WRITE_OWNER）；
+// 回执 nonce 必须等于本次调用独有 resultName。任一不符 → throw（外层 catch → exit 9，绝不产帧）。
+export function win32ReceiptVerificationScript({ resultDir, resultName }) {
+  return [
+    `$d=${resultDir}`,
+    `foreach($f in @($d,(Join-Path $d 'receipt.json'))){$item=Get-Item -LiteralPath $f; if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'reparse result'}; $a=Get-Acl -LiteralPath $f; if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544'){throw 'untrusted owner'}; foreach($rule in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){ if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin @('S-1-5-32-544','S-1-5-18') -and ([int]$rule.FileSystemRights -band 852310)){throw 'untrusted write ACL'} } }`,
+    `$raw=[IO.File]::ReadAllText((Join-Path $d 'receipt.json')); $r=$raw|ConvertFrom-Json; if($r.nonce -ne ${powershellQuote(resultName)}){throw 'receipt nonce'}; [Console]::WriteLine('NOZELI_WIN_RECEIPT '+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($raw)))`,
+  ].join('; ');
+}
+
+// 提权端写事实、非提权端核验后发帧。inner 经 base64(UTF-16LE) 内嵌（-EncodedCommand），可安全含换行。
+export function win32AdminScripts({ interpreter, admin = {} }) {
+  const resultName = admin.resultName ?? 'nozeli-admin-' + randomUUID();
+  const resultDir = `[IO.Path]::Combine([Environment]::GetFolderPath('CommonApplicationData'),${powershellQuote(resultName)})`;
+  const prelude = [
+    `$ErrorActionPreference='Stop'`,
+    `$id=[Security.Principal.WindowsIdentity]::GetCurrent(); $pr=New-Object Security.Principal.WindowsPrincipal($id)`,
+    `if(-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){ exit 7 }`,
+  ];
+  // 提权端：只在 Administrators 属主+受保护 DACL 的新建目录写事实（Test-Path 先行拒绝已存在目录=防预置）。
+  const body = [
+    `$d=${resultDir}; if(Test-Path -LiteralPath $d){exit 3}`,
+    `$admins=New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'); $system=New-Object Security.Principal.SecurityIdentifier('S-1-5-18'); $caller=New-Object Security.Principal.SecurityIdentifier('__NOZELI_CALLER_SID__')`,
+    `$acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false); $acl.SetOwner($admins)`,
+    `foreach($sid in @($admins,$system)){ $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))) }`,
+    `$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($caller,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow')))`,
+    `[IO.Directory]::CreateDirectory($d,$acl) | Out-Null`,
+    `$rec=@{v=1;nonce=${powershellQuote(resultName)};user=$id.Name;admin=$true;effectHash=${powershellQuote(admin.effectHash ?? '')};phase='identity'}`,
+    ...(admin.identity ? [] : [
+      `$snap=Join-Path $d 'exec.exe'; Copy-Item -LiteralPath ${powershellQuote(admin.command)} -Destination $snap`,
+      `$h=(Get-FileHash -LiteralPath $snap -Algorithm SHA256).Hash; if($h -ne ${powershellQuote(String(admin.commandDigest).toUpperCase())}){exit 3}`,
+      `$rec.phase='pre'; $rec.commandDigest=$h.ToLowerInvariant(); $pre=Join-Path $d 'pre.json'; [IO.File]::WriteAllText($pre,($rec|ConvertTo-Json -Compress))`,
+      `$si=New-Object Diagnostics.ProcessStartInfo; $si.FileName=$snap; $si.Arguments=${powershellQuote(windowsArgumentLine(admin.args ?? []))}; $si.WorkingDirectory=${powershellQuote(admin.cwd)}; $si.UseShellExecute=$false; $si.RedirectStandardOutput=$true; $si.RedirectStandardError=$true`,
+      `$p=New-Object Diagnostics.Process; $p.StartInfo=$si; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()`,
+      `$done=$p.WaitForExit(${Math.min(admin.timeoutMs ?? 60_000, 600_000)}); if(-not $done){ & "$env:SystemRoot\\System32\\taskkill.exe" /PID $p.Id /T /F | Out-Null; $rec.timedOut=$true } else { $rec.exitCode=$p.ExitCode; $rec.timedOut=$false }`,
+      `$rec.phase='post'; if($ot.Wait(3000) -and $et.Wait(3000)){ $rec.stdoutB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ot.Result)); $rec.stderrB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($et.Result)) } else { $rec.timedOut=$true }`,
+    ]),
+    `$r=Join-Path $d 'receipt.json'; [IO.File]::WriteAllText($r,($rec|ConvertTo-Json -Compress)); $fa=Get-Acl -LiteralPath $r; $fa.SetOwner($admins); Set-Acl -LiteralPath $r -AclObject $fa`,
+    `exit 0`,
+  ];
+  // 提权端任何终止性错误 → exit 8（区别于 1223 的 exit 1）：消费端按 unknown 处理，绝不误报“用户取消”。
+  const inner = `${prelude.join('\n')}\ntry {\n${body.join('\n')}\n} catch { exit 8 }`;
+  const encoded = utf16leB64(inner);
+  const outer = [
+    `$ErrorActionPreference='Stop'; $src=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(${powershellQuote(encoded)})); $src=$src.Replace('__NOZELI_CALLER_SID__',[Security.Principal.WindowsIdentity]::GetCurrent().User.Value); $code=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($src))`,
+    `try{ $p=Start-Process -FilePath ${powershellQuote(interpreter)} -ArgumentList @('-NoProfile','-EncodedCommand',$code) -Verb RunAs -Wait -PassThru -WindowStyle Hidden }catch{ if($_.Exception.NativeErrorCode -eq 1223){ exit 1 }; exit 9 }`,
+    `if($p.ExitCode -ne 0){ exit $p.ExitCode }`,
+    `try{ ${win32ReceiptVerificationScript({ resultDir, resultName })} }catch{ exit 9 }`,
+    `exit 0`,
+  ].join('; ');
+  return { resultName, resultDir, inner, outer };
 }
 
 // 平台机制调用构造（纯函数，供平台选择测试）。
@@ -309,50 +380,12 @@ export function buildMechanismInvocation({ platform, mechanismPath, interpreter,
   }
   if (platform === 'win32') {
     if (admin.enabled) {
-      // UAC child writes facts only beneath an Administrators-owned protected directory.
-      // The unelevated launcher verifies ownership/DACL before returning the receipt.
-      const resultName = 'nozeli-admin-' + randomUUID();
-      const resultDir = `[IO.Path]::Combine([Environment]::GetFolderPath('CommonApplicationData'),${powershellQuote(resultName)})`;
-      const quoteArg = value => '"' + String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"';
-      const inner = [
-        `$ErrorActionPreference='Stop'`,
-        `$id=[Security.Principal.WindowsIdentity]::GetCurrent(); $pr=New-Object Security.Principal.WindowsPrincipal($id)`,
-        `if(-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){ exit 7 }`,
-        `$d=${resultDir}; if(Test-Path -LiteralPath $d){exit 3}`,
-        `$admins=New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'); $system=New-Object Security.Principal.SecurityIdentifier('S-1-5-18'); $caller=New-Object Security.Principal.SecurityIdentifier('__NOZELI_CALLER_SID__')`,
-        `$acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false); $acl.SetOwner($admins)`,
-        `foreach($sid in @($admins,$system)){ $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))) }`,
-        `$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($caller,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow')))`,
-        `[IO.Directory]::CreateDirectory($d,$acl) | Out-Null`,
-        `$rec=@{v=1;nonce=${powershellQuote(resultName)};user=$id.Name;admin=$true;effectHash=${powershellQuote(admin.effectHash??'')};phase='identity'}`,
-        ...(admin.identity ? [] : [
-          `$snap=Join-Path $d 'exec.exe'; Copy-Item -LiteralPath ${powershellQuote(admin.command)} -Destination $snap`,
-          `$h=(Get-FileHash -LiteralPath $snap -Algorithm SHA256).Hash; if($h -ne ${powershellQuote(String(admin.commandDigest).toUpperCase())}){exit 3}`,
-          `$rec.phase='pre'; $rec.commandDigest=$h.ToLowerInvariant(); $pre=Join-Path $d 'pre.json'; [IO.File]::WriteAllText($pre,($rec|ConvertTo-Json -Compress))`,
-          `$si=New-Object Diagnostics.ProcessStartInfo; $si.FileName=$snap; $si.Arguments=${powershellQuote((admin.args??[]).map(quoteArg).join(' '))}; $si.WorkingDirectory=${powershellQuote(admin.cwd)}; $si.UseShellExecute=$false; $si.RedirectStandardOutput=$true; $si.RedirectStandardError=$true`,
-          `$p=New-Object Diagnostics.Process; $p.StartInfo=$si; [void]$p.Start(); $ot=$p.StandardOutput.ReadToEndAsync(); $et=$p.StandardError.ReadToEndAsync()`,
-          `$done=$p.WaitForExit(${Math.min(admin.timeoutMs??60000,600000)}); if(-not $done){ & "$env:SystemRoot\\System32\\taskkill.exe" /PID $p.Id /T /F | Out-Null; $rec.timedOut=$true } else { $rec.exitCode=$p.ExitCode; $rec.timedOut=$false }`,
-          `$rec.phase='post'; if($ot.Wait(3000) -and $et.Wait(3000)){ $rec.stdoutB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ot.Result)); $rec.stderrB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($et.Result)) } else { $rec.timedOut=$true }`,
-        ]),
-        `$r=Join-Path $d 'receipt.json'; [IO.File]::WriteAllText($r,($rec|ConvertTo-Json -Compress)); $fa=Get-Acl -LiteralPath $r; $fa.SetOwner($admins); Set-Acl -LiteralPath $r -AclObject $fa`,
-        `exit 0`,
-      ].join('; ');
-      const encoded = utf16leB64(inner);
-      const script = [
-        `$ErrorActionPreference='Stop'; $src=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(${powershellQuote(encoded)})); $src=$src.Replace('__NOZELI_CALLER_SID__',[Security.Principal.WindowsIdentity]::GetCurrent().User.Value); $code=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($src))`,
-        `try{$p=Start-Process -FilePath ${powershellQuote(interpreter)} -ArgumentList @('-NoProfile','-EncodedCommand',$code) -Verb RunAs -Wait -PassThru -WindowStyle Hidden}catch{ if($_.Exception.NativeErrorCode -eq 1223){exit 1}; throw }`,
-        `$d=${resultDir}; if($p.ExitCode -ne 0){exit $p.ExitCode}`,
-        `foreach($f in @($d,(Join-Path $d 'receipt.json'))){$item=Get-Item -LiteralPath $f; if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'reparse result'}; $a=Get-Acl -LiteralPath $f; if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544'){throw 'untrusted owner'}; foreach($rule in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){ if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin @('S-1-5-32-544','S-1-5-18') -and ([int]$rule.FileSystemRights -band 852310)){throw 'untrusted write ACL'} } }`,
-        `$raw=[IO.File]::ReadAllText((Join-Path $d 'receipt.json')); $r=$raw|ConvertFrom-Json; if($r.nonce -ne ${powershellQuote(resultName)}){throw 'receipt nonce'}; [Console]::WriteLine('NOZELI_WIN_RECEIPT '+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($raw)))`,
-      ].join('; ');
-      return { command: mechanismPath, args: ['-NoProfile', '-NonInteractive', '-Command', script] };
+      const { resultName, outer } = win32AdminScripts({ interpreter, admin });
+      return { command: mechanismPath, args: ['-NoProfile', '-NonInteractive', '-Command', outer], resultName };
     }
-    const script = [
-      ...(electronAsNode ? [`$env:ELECTRON_RUN_AS_NODE='1'`] : []),
-      `$p=Start-Process -FilePath ${powershellQuote(interpreter)} -ArgumentList ${powershellArgumentList([helperPath, ...helperArgs])} -Verb RunAs -Wait -PassThru -WindowStyle Hidden`,
-      'exit $p.ExitCode',
-    ].join('; ');
-    return { command: mechanismPath, args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script] };
+    // user 作用域绝不经 UAC 机制提权用户可写解释器/助手（信任模型）；普通执行走 broker 直连助手，
+    // 不存在也不允许“经 UAC 运行助手”的路径——此分支显式拒绝而非留一条未验证提权通路。
+    throw Object.assign(Error('win32 提权机制仅承担 admin 作用域；user 作用域不走 UAC（不提权用户可写解释器/助手）'), { code: 'ELEVATION_MECHANISM_ADMIN_ONLY' });
   }
   throw Object.assign(Error(`unsupported platform ${platform}`), { code: 'PLATFORM_UNSUPPORTED' });
 }
@@ -413,6 +446,23 @@ class ChildRun {
     } finally { clearTimeout(watchdog); clearTimeout(graceTimer); }
   }
 }
+
+// win32 临时根重定向核验（窄域、仅原生 lstat）：目标全部祖先不得为 reparse/link。用于在写入
+// proof.secret/manifest 之前拒绝经 junction/symlink 换向的 TEMP/TMP 根。POSIX 不遍历
+//（macOS /tmp 本身为 symlink 属正常布局，既有已测行为不变）；Windows 下放宽 ACL 的根无法
+// 用权限位核验且不做 ACL 框架——普通用户作用域依赖“普通当前用户会话可信”边界，不声称防篡改证明。
+const reparseAncestors = async target => {
+  if (process.platform !== 'win32') return [];
+  const links = [];
+  let current = path.resolve(target);
+  for (;;) {
+    const stat = await fs.lstat(current).catch(() => null);
+    if (stat?.isSymbolicLink()) links.push(current);
+    const parent = path.dirname(current);
+    if (parent === current) return links;
+    current = parent;
+  }
+};
 
 const parseControlLines = text => text.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
 const validControl = (record, secret, phase) => record && record.phase === phase
@@ -542,7 +592,8 @@ export function createPrivilegeBroker(options = {}) {
     return null;
   };
   let mechanismCache;
-  const resolveMechanism = async () => mechanismCache ??= await findExecutable(strategy.executable);
+  // options.mechanismPath：测试注入口（产品代码绝不设置）；生产恒解析固定 System32 机制。
+  const resolveMechanism = async () => mechanismCache ??= options.mechanismPath ?? await findExecutable(strategy.executable);
 
   const currentIdentity = () => {
     if (platform === 'win32') return { platform, account: env.USERNAME ? `${env.USERDOMAIN ?? ''}\\${env.USERNAME}` : null };
@@ -615,13 +666,17 @@ export function createPrivilegeBroker(options = {}) {
     });
   };
   const runAdminExecution = async ({ execution, mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, identity = false, effectHash }) => {
-    const invocation = adminInvocationParts({ mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, identity, effectHash });
+    // options.adminInvocationBuilder：测试注入口（产品代码绝不设置）；须返回 {command,args,resultName?}。
+    // resultName 缺失时消费端按回执 nonce 不匹配拒绝——注入口不降低核验强度。
+    const invocation = options.adminInvocationBuilder
+      ? options.adminInvocationBuilder({ platform, mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, identity, effectHash })
+      : adminInvocationParts({ mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, identity, effectHash });
     const adminEnv=platform==='win32'?{SystemRoot:env.SystemRoot??'C:\\Windows',WINDIR:env.SystemRoot??'C:\\Windows',PATH:path.win32.join(env.SystemRoot??'C:\\Windows','System32'),TEMP:env.TEMP??os.tmpdir(),TMP:env.TMP??os.tmpdir()}:{PATH:'/usr/bin:/bin:/usr/sbin:/sbin'};
     const run = new ChildRun({ command: invocation.command, args: invocation.args, env: adminEnv });
     execution.run = run;
-    if (execution.cancelRequested) { run.kill(); return { run, stdoutText: '' }; }
+    if (execution.cancelRequested) { run.kill(); return { run, stdoutText: '', nonce: invocation.resultName ?? null }; }
     const exit = await run.waitOrWatchdog(timeoutMs + MECHANISM_OVERHEAD_MS);
-    return { exit, run, stdoutText: run.stdout.text() };
+    return { exit, run, stdoutText: run.stdout.text(), nonce: invocation.resultName ?? null };
   };
 
   const prepareRunFiles = async ({ requestId, grantId, effectHash, frozenEffect, scope, timeoutMs, maxOutputBytes, interpreter, dir }) => {
@@ -650,18 +705,21 @@ export function createPrivilegeBroker(options = {}) {
   };
 
   // admin 结果消费（逐平台）。返回 {status, exitCode?, actualIdentity?, output?, error?}。
-  const consumeAdminOutcome = async ({ exit, run, stdoutText, frozenEffect, effectHash }) => {
+  const consumeAdminOutcome = async ({ exit, run, stdoutText, frozenEffect, effectHash, expectedNonce }) => {
     const stderrText = run.stderr.text();
     const frames = parseAdminFrames(stdoutText);
     const commonFail = (code, message, extra = {}) => ({ status: 'failed', error: { code, message }, ...extra });
     if (run.killed) return { status: 'unknown', killed: true };
     if (stderrText.includes('NOZELI_ADMIN_NOT_ELEVATED') || exit.code === 7) return commonFail('NOT_ELEVATED', 'admin 作用域未获得真实提权身份，已拒绝执行');
     if (platform === 'win32') {
+      // exit 1 = UAC 取消（唯一来源，见 win32AdminScripts）；exit 3 = 提权端篡改/预置判定（命令未启动）；
+      // exit 8/9 = 提权端/核验端机制失败 → unknown。绝不把机制失败误报为“用户取消”或“未执行”。
       if (strategy.cancellationExitCodes.includes(exit.code)) return { status: 'cancelled' };
+      if (exit.code === 3) return commonFail('EFFECT_TAMPERED', '提权端判定批准对象摘要不符或结果目录已存在（疑似篡改/预置），命令未启动');
       const frame = stdoutText.match(/^NOZELI_WIN_RECEIPT ([A-Za-z0-9+/=]+)$/m);
       let receipt;
       try { receipt = JSON.parse(Buffer.from(frame?.[1] ?? '', 'base64').toString('utf8')); } catch {}
-      if (!receipt || receipt.admin !== true || receipt.effectHash !== effectHash || receipt.commandDigest !== frozenEffect.commandDigest || receipt.phase !== 'post') return {status:'unknown',error:{code:'CONTROL_UNVERIFIED',message:'系统授权后的执行回执缺失或不匹配；不自动重放'}};
+      if (!receipt || receipt.admin !== true || receipt.effectHash !== effectHash || receipt.commandDigest !== frozenEffect.commandDigest || receipt.phase !== 'post' || receipt.nonce !== expectedNonce) return {status:'unknown',error:{code:'CONTROL_UNVERIFIED',message:'系统授权后的执行回执缺失或不匹配（含 nonce 绑定核验）；不自动重放'}};
       const actualIdentity = {platform,user:receipt.user,admin:true,channel:'administrator-owned-acl'};
       return {status:receipt.timedOut?'unknown':'completed',exitCode:receipt.exitCode,actualIdentity,output:{stdoutB64:receipt.stdoutB64??'',stderrB64:receipt.stderrB64??''}};
     }
@@ -710,6 +768,8 @@ export function createPrivilegeBroker(options = {}) {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-priv-'));
       try {
         await fs.chmod(dir, 0o700);
+        const reparseRoots = await reparseAncestors(dir);
+        if (reparseRoots.length) return { status: 'failed', error: { code: 'TMP_ROOT_UNTRUSTED', message: `临时根经 reparse/link 重定向（${reparseRoots.join('；')}），拒绝创建证明材料` } };
         const secret = randomBytes(48).toString('hex');
         const proofPath = path.join(dir, 'proof.secret');
         await fs.writeFile(proofPath, secret, { mode: 0o600 });
@@ -734,14 +794,14 @@ export function createPrivilegeBroker(options = {}) {
       await fs.chmod(dir, 0o700);
       const files = { manifestPath: path.join(dir, 'identity'), digest: '', receiptPath: path.join(dir, 'admin-receipt.json'), dir, effectHash: requestedHash };
       const execution = { run: null, scope: 'admin', grantId, sessionId: null, stage: 'preparing', requestId, cancelRequested: false, startedMs: now() };
-      const { exit, run, stdoutText } = await runAdminExecution({ execution, mechanismPath, trustedPython, files, frozenEffect: null, identity: true, timeoutMs: 30_000, maxOutputBytes: 0 });
+      const { exit, run, stdoutText, nonce } = await runAdminExecution({ execution, mechanismPath, trustedPython, files, frozenEffect: null, identity: true, timeoutMs: 30_000, maxOutputBytes: 0 });
       const stderrText = run.stderr.text();
       if (run.killed && !parseAdminFrames(stdoutText).dir) return { status: 'cancelled' };
       if (stderrText.includes('NOZELI_ADMIN_NOT_ELEVATED') || exit.code === 7) return { status: 'failed', error: { code: 'NOT_ELEVATED', message: '系统机制未产生真实提权身份，拒绝认证' } };
       if (platform === 'win32') {
         const frame = stdoutText.match(/^NOZELI_WIN_RECEIPT ([A-Za-z0-9+/=]+)$/m);
         let receipt; try { receipt=JSON.parse(Buffer.from(frame?.[1]??'', 'base64').toString('utf8')); } catch {}
-        if (!receipt || receipt.admin!==true || receipt.phase!=='identity') return {status:strategy.cancellationExitCodes.includes(exit.code)?'cancelled':'failed',error:{code:'IDENTITY_PROBE_FAILED',message:'UAC身份回执缺失或未通过管理员ACL校验'}};
+        if (!receipt || receipt.admin!==true || receipt.phase!=='identity' || receipt.nonce!==nonce) return {status:strategy.cancellationExitCodes.includes(exit.code)?'cancelled':'failed',error:{code:'IDENTITY_PROBE_FAILED',message:'UAC身份回执缺失或未通过管理员ACL/nonce绑定核验'}};
         assertGrantLive(grantId);
         const sessionId=randomUUID();
         sessions.set(sessionId,{sessionId,grantId,generation,scope:'admin',effectHash:requestedHash,expiresAt,createdAt:now(),lastUsedAt:now(),revoked:false});
@@ -815,6 +875,9 @@ export function createPrivilegeBroker(options = {}) {
       execution.stage = 'preparing';
       try {
         await fs.chmod(dir, 0o700);
+        // 写入任何执行材料（proof.secret/manifest）之前：拒绝 reparse/link 重定向的临时根。
+        const reparseRoots = await reparseAncestors(dir);
+        if (reparseRoots.length) return fail('failed', 'TMP_ROOT_UNTRUSTED', `临时根经 reparse/link 重定向（${reparseRoots.join('；')}），拒绝创建执行材料`);
         const interpreter = scope === 'admin' ? { path: '(platform-mechanism)', sha256: '' } : await interpreterReady();
         const files = await prepareRunFiles({ requestId, grantId, effectHash, frozenEffect, scope, timeoutMs, maxOutputBytes, interpreter, dir });
         if (options.onPrepared) await options.onPrepared({ dir, manifest: files.manifest, manifestPath: files.manifestPath });
@@ -862,8 +925,8 @@ export function createPrivilegeBroker(options = {}) {
         // admin：逐平台 producer + 统一消费
         const mechanismPath = await resolveMechanism();
         const trustedPython = await resolveTrustedPython();
-        const { exit, run, stdoutText } = await runAdminExecution({ execution, mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, effectHash });
-        const outcome = await consumeAdminOutcome({ exit, run, stdoutText, frozenEffect, effectHash });
+        const { exit, run, stdoutText, nonce } = await runAdminExecution({ execution, mechanismPath, trustedPython, files, frozenEffect, timeoutMs, maxOutputBytes, effectHash });
+        const outcome = await consumeAdminOutcome({ exit, run, stdoutText, frozenEffect, effectHash, expectedNonce: nonce });
         const receiptId = remember({ ...outcome, scope });
         return { executionId, status: outcome.status, ...(outcome.exitCode != null ? { exitCode: outcome.exitCode } : {}), ...(outcome.actualIdentity ? { actualIdentity: outcome.actualIdentity } : {}), ...(outcome.output ? { output: outcome.output } : {}), ...(outcome.error ? { error: outcome.error } : {}), receiptId };
       } finally {
@@ -911,7 +974,9 @@ export function createPrivilegeBroker(options = {}) {
         osAuthPerLaunch: true,
         platformVerification: PLATFORM_VERIFICATION[platform],
         resultChannel: RESULT_CHANNEL[platform],
-        trustModel: 'root 作用域信任被批准命令本身（完整 root grant 不防御恶意 root 命令）；保证非 root 伪造不可通过：root-owned 0711 事实目录（仅非敏感内容）+ 数值 flags O_NOFOLLOW/目录 fd 绑定读取 + 命令输出走机制独占 stdout 管道分帧 + 批准 digest 的 root 端只读快照执行。',
+        trustModel: platform === 'win32'
+          ? '管理员作用域信任被批准命令本身（完整管理员授权不防御恶意管理员命令）；非管理员伪造防线：提权端独占创建 Administrators 属主+受保护 DACL 的结果目录（请求用户只读）+ 非提权外层核验 reparse/属主/写ACL/nonce + 批准 digest 快照执行 + 机制独占 stdout 管道回帧。Get-Acl 为路径式核验（残余 TOCTOU 窗口），整条通道未经真实 UAC 验收（implemented-untested）。'
+          : 'root 作用域信任被批准命令本身（完整 root grant 不防御恶意 root 命令）；保证非 root 伪造不可通过：root-owned 0711 事实目录（仅非敏感内容）+ 数值 flags O_NOFOLLOW/目录 fd 绑定读取 + 命令输出走机制独占 stdout 管道分帧 + 批准 digest 的 root 端只读快照执行。',
         scopes: ['user', 'admin'],
         maxOutputBytes: defaultMaxOutput,
       };

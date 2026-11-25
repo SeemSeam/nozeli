@@ -1,0 +1,40 @@
+--- a/vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts
+@@ -125,6 +125,9 @@
+ 
+ export interface RuntimeResourcePolicy {
+   readonly settingsManager: SettingsManager;
++  /** Optional host I/O for direct selection reads and persistent login identity. */
++  readonly readSettings?: (scope: "global" | "project") => Promise<Record<string, unknown>>;
++  readonly createPersistentSettingsManager?: () => SettingsManager;
+   readonly loaderOptions: Partial<ConstructorParameters<typeof DefaultResourceLoader>[0]>;
+   readonly resolvePaths: () => Promise<ResolvedPaths>;
+ }
+@@ -183,7 +186,8 @@
+     // manager, because the npm-lookup fallback manager never writes settings to disk.
+     await context.modelRuntime.login(providerId, authType, toAuthInteraction(callbacks), {
+       getDeviceId: () =>
+-        SettingsManager.create(workspace.path, this.agentDir).getOrCreateDeviceId(),
++        (context.resourcePolicy?.createPersistentSettingsManager?.() ??
++          SettingsManager.create(workspace.path, this.agentDir)).getOrCreateDeviceId(),
+     });
+     await this.reloadResources(context);
+     await this.autoEnableModelsForAuthenticatedProviders(context, [providerId]);
+@@ -444,8 +448,15 @@
+   }
+ 
+   async getCurrentModelSettings(workspace: WorkspaceRef): Promise<ModelSettingsSnapshot> {
+-    const globalSettings = await readJsonRecord(join(this.agentDir, "settings.json"));
+-    const projectSettings = await readJsonRecord(join(workspace.path, ".pi", "settings.json"));
++    const policy = this.createRuntimeResources
++      ? (await this.ensureContext(workspace)).resourcePolicy
++      : undefined;
++    const globalSettings = policy?.readSettings
++      ? await policy.readSettings("global")
++      : await readJsonRecord(join(this.agentDir, "settings.json"));
++    const projectSettings = policy?.readSettings
++      ? await policy.readSettings("project")
++      : await readJsonRecord(join(workspace.path, ".pi", "settings.json"));
+     const globalModelSettings = toModelSettingsSnapshot(globalSettings);
+     const projectModelSettings = toModelSettingsSnapshot(projectSettings);
+     const snapshot: {

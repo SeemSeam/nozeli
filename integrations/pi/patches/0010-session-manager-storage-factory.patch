@@ -1,0 +1,209 @@
+--- a/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/session-supervisor.ts
+@@ -160,6 +160,26 @@
+   return requireModel(modelRuntime, provider, modelId);
+ }
+ 
++/** What the supervisor asks a host session-manager factory to build. */
++export interface CreateSessionManagerRequest {
++  /** "create": fresh session in cwd. "open": existing sessionFile. "fork": fork sessionFile into cwd. */
++  readonly kind: "create" | "open" | "fork";
++  /** Workspace the session belongs to; for forks, the target workspace. */
++  readonly cwd: string;
++  /** Session file to open, or to fork from. */
++  readonly sessionFile?: string;
++  /** Session directory the call site has, when it has one. */
++  readonly sessionDir?: string;
++}
++
++/**
++ * Builds the SessionManager for one supervised session. Returning an instance
++ * bound to host-owned persistence keeps every later append, rewrite, branch
++ * and fork on that persistence; the file path the manager reports stays the
++ * session's identity.
++ */
++export type CreateSessionManager = (request: CreateSessionManagerRequest) => SessionManager;
++
+ export interface PiSdkDriverOptions {
+   readonly catalogFilePath?: string;
+   /** Existing owner for catalog state. Takes precedence over catalogFilePath when provided. */
+@@ -167,6 +187,14 @@
+   readonly createAgentSessionRuntimeImpl?: (
+     options?: PiCreateAgentSessionOptions,
+   ) => Promise<AgentSessionRuntime>;
++  /**
++   * Build every SessionManager this supervisor creates, reopens or forks. A
++   * host that owns session persistence binds its storage to the instance it
++   * returns, so the adapter is active before pi reads or creates any session
++   * file. Absent, the supervisor calls pi's own SessionManager statics with
++   * the same arguments pi-gui always used.
++   */
++  readonly createSessionManager?: CreateSessionManager;
+   readonly agentDir?: string;
+   readonly builtinExtensions?: readonly BuiltinExtension[];
+   /** Opens MCP sign-in pages; pi opens the platform browser when omitted. */
+@@ -299,6 +327,7 @@
+   private readonly createAgentSessionRuntimeImpl: (
+     options?: PiCreateAgentSessionOptions,
+   ) => Promise<AgentSessionRuntime>;
++  private readonly createSessionManager: CreateSessionManager | undefined;
+   private readonly agentDir: string | undefined;
+   private readonly builtinExtensions: readonly InlineExtension[];
+   private readonly piAddons: readonly InlineExtension[];
+@@ -326,6 +355,7 @@
+         : new JsonCatalogStore());
+     this.createAgentSessionRuntimeImpl =
+       options.createAgentSessionRuntimeImpl ?? createAgentSessionRuntimeWithNpmFallback;
++    this.createSessionManager = options.createSessionManager;
+     this.builtinExtensions = gatedBuiltinExtensions(
+       options.builtinExtensions ?? [],
+       options.isBuiltinExtensionEnabled ?? (() => true),
+@@ -436,6 +466,37 @@
+     };
+   }
+ 
++  /**
++   * Create the session manager for a session this supervisor manages. Without
++   * a host factory this is exactly pi's own static construction; a factory is
++   * how a host binds its own session persistence before any file is read or
++   * written, so no path here may fall back to direct file IO behind it.
++   */
++  private createSessionManagerInstance(request: CreateSessionManagerRequest): SessionManager {
++    if (this.createSessionManager) {
++      return this.createSessionManager(request);
++    }
++    if (request.kind === "open") {
++      return SessionManager.open(request.sessionFile!, request.sessionDir);
++    }
++    if (request.kind === "fork") {
++      return SessionManager.forkFrom(request.sessionFile!, request.cwd, request.sessionDir);
++    }
++    return SessionManager.create(request.cwd, request.sessionDir);
++  }
++
++  /** Owning workspace path for a session reference, when the catalog still has it. */
++  private async sessionWorkspacePath(
++    sessionRef: SessionRef,
++    sessionEntry?: SessionCatalogSnapshot["sessions"][number],
++  ): Promise<string> {
++    const entry = sessionEntry ?? (await this.catalogs.sessions.getSession(sessionRef));
++    const workspace = entry
++      ? await this.catalogs.workspaces.getWorkspace(entry.workspaceId)
++      : undefined;
++    return workspace?.path ?? process.cwd();
++  }
++
+   listWorkspaces(): Promise<WorkspaceCatalogSnapshot> {
+     return this.catalogs.workspaces.listWorkspaces();
+   }
+@@ -648,7 +709,11 @@
+       throw new Error(`Session ${sessionKey(sessionRef)} has no tracked session file.`);
+     }
+ 
+-    const sessionManager = SessionManager.open(sessionFile);
++    const sessionManager = this.createSessionManagerInstance({
++      kind: "open",
++      cwd: await this.sessionWorkspacePath(sessionRef, sessionEntry),
++      sessionFile,
++    });
+     return transcriptFromSession(sessionManager, sessionEntry?.updatedAt);
+   }
+ 
+@@ -720,7 +785,7 @@
+     const createOptions: PiCreateAgentSessionOptions = {
+       ...this.baseCreateOptions(
+         workspace,
+-        SessionManager.create(workspace.path),
++        this.createSessionManagerInstance({ kind: "create", cwd: workspace.path }),
+         options?.extensionFlagValues,
+       ),
+       ...(initialModel
+@@ -828,17 +893,25 @@
+     let branchedManager: SessionManager;
+     if (!targetLeafId) {
+       // Forking before the first user message: start a fresh empty session in the target.
+-      branchedManager = SessionManager.create(targetWorkspace.path);
++      branchedManager = this.createSessionManagerInstance({ kind: "create", cwd: targetWorkspace.path });
+       branchedManager.newSession({ parentSession: sourceFile });
+     } else if (sameWorkspace) {
+-      const opened = SessionManager.open(sourceFile);
++      const opened = this.createSessionManagerInstance({
++        kind: "open",
++        cwd: sourceRecord.workspace.path,
++        sessionFile: sourceFile,
++      });
+       const forkedPath = opened.createBranchedSession(targetLeafId);
+       if (!forkedPath) {
+         throw new Error(`Failed to create forked session from ${sessionKey(sourceRef)}.`);
+       }
+       branchedManager = opened;
+     } else {
+-      const forked = SessionManager.forkFrom(sourceFile, targetWorkspace.path);
++      const forked = this.createSessionManagerInstance({
++        kind: "fork",
++        cwd: targetWorkspace.path,
++        sessionFile: sourceFile,
++      });
+       const fullForkPath = forked.getSessionFile();
+       let forkedPath: string | undefined;
+       try {
+@@ -1733,7 +1806,7 @@
+       runtime = await this.createAgentSessionRuntimeImpl(
+         this.baseCreateOptions(
+           workspace,
+-          SessionManager.open(sessionFile),
++          this.createSessionManagerInstance({ kind: "open", cwd: workspace.path, sessionFile }),
+           this.extensionFlagValuesForSession?.(sessionRef),
+         ),
+       );
+--- a/vendor/pi-gui/packages/pi-sdk-driver/npm-package-fallback.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/npm-package-fallback.ts
+@@ -33,6 +33,15 @@
+    * `createAgentSessionFromServices` for. Ignored when `model` is set.
+    */
+   readonly resolveInitialModel?: (modelRuntime: ModelRuntime) => PiModelInfo | undefined;
++  /**
++   * Build the initial session manager when `sessionManager` is not supplied.
++   * A host that owns session persistence uses this to bind its storage before
++   * pi reads or creates the session file. Defaults to `SessionManager.create`.
++   */
++  readonly createSessionManager?: (request: {
++    readonly kind: "create";
++    readonly cwd: string;
++  }) => SessionManager;
+ }
+ 
+ export function isGlobalNpmLookupError(error: unknown): boolean {
+@@ -150,11 +159,15 @@
+ ): Promise<AgentSessionRuntime> {
+   const cwd = options?.cwd ?? process.cwd();
+   const agentDir = options?.agentDir ?? getAgentDir();
+-  const initialSessionManager = options?.sessionManager ?? SessionManager.create(cwd);
++  const initialSessionManager = options?.sessionManager
++    ?? (options?.createSessionManager
++      ? options.createSessionManager({ kind: "create", cwd })
++      : SessionManager.create(cwd));
+   const {
+     cwd: _optionCwd,
+     agentDir: _optionAgentDir,
+     sessionManager: _optionSessionManager,
++    createSessionManager: _optionCreateSessionManager,
+     sessionStartEvent: _optionSessionStartEvent,
+     resourceLoaderOptions: stableResourceLoaderOptions,
+     model: initialModel,
+--- a/vendor/pi-gui/packages/pi-sdk-driver/index.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/index.ts
+@@ -17,7 +17,12 @@
+   OPENAI_COMPLETIONS_API,
+   RuntimeSupervisor,
+ } from "./runtime-supervisor.js";
+-export type { PiSdkDriverOptions, SyncWorkspaceResult } from "./session-supervisor.js";
++export type {
++  CreateSessionManager,
++  CreateSessionManagerRequest,
++  PiSdkDriverOptions,
++  SyncWorkspaceResult,
++} from "./session-supervisor.js";
+ export { SessionSupervisor } from "./session-supervisor.js";
+ export { createAgentSessionRuntimeWithNpmFallback } from "./npm-package-fallback.js";
+ export { SessionLeasedError } from "./session-lease.js";

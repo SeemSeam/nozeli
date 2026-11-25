@@ -17,6 +17,49 @@ const bundleDir=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-review-renderer-'
 let reviewDOM;
 after(async()=>{await reviewDOM?.close();await fs.rm(bundleDir,{recursive:true,force:true});});
 function browserTest(name,run,viewport){test(name,async()=>{reviewDOM??=await startReviewDOM(bundleDir);await reviewDOM.run(run,viewport);});}
+browserTest('Worker platform shortcuts send once and preserve Tab, Esc and IME',async t=>{
+ for(const platform of ['Linux','macOS']){
+ Object.defineProperty(navigator,'userAgentData',{configurable:true,value:{platform}});
+ const f=report(t,{options:{discussionHost:true,workMode:true},handle:async op=>op==='managed.review.discussion.send'?{ok:true,value:{accepted:true}}:op==='managed.review.discussion.read'?{ok:true,value:{...reviewReading(),canQueue:true}}:null});await f.surface.ready;
+ const input=f.root.querySelector('[data-review-instruction]');const sends=()=>f.calls.filter(([op])=>op==='managed.review.discussion.send');
+ const mac=navigator.userAgentData.platform==='macOS',right=mac?{metaKey:true}:{ctrlKey:true},wrong=mac?{ctrlKey:true}:{metaKey:true};
+ const press=(key,options)=>input.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...options}));
+ const fill=text=>{input.value=text;input.dispatchEvent(new Event('input',{bubbles:true}));};
+ assert.ok(input.matches(':placeholder-shown'));
+ assert.match(input.placeholder,mac?/⌘ \+ Return/:/Ctrl \+ Enter/);assert.ok(input.placeholder.includes('Tab 排队'));assert.equal(input.placeholder.includes('\n'),false);
+ fill('Original Worker question');
+ assert.equal(press('Enter'),true);assert.equal(press('Enter',wrong),true);assert.equal(press('Enter',{...right,shiftKey:true}),true);assert.equal(press('Enter',{ctrlKey:true,metaKey:true}),true);
+ input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+ assert.equal(press('Enter',right),true);input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
+ assert.equal(press('Enter',{...right,keyCode:229}),true);assert.equal(press('Enter',{...right,repeat:true}),false);
+ assert.equal(press('Tab',{shiftKey:true}),true);assert.equal(press('Escape'),false);assert.equal(press('Tab'),true);
+ await paintReview();assert.equal(sends().length,0);assert.equal(input.value,'Original Worker question');
+ assert.equal(press('Enter',right),false);
+ for(let i=0;i<30&&input.value;i++)await paintReview();
+ assert.equal(sends().length,1);assert.equal(sends()[0]?.[1].text,'Original Worker question');assert.equal(sends()[0]?.[1].lane,'next');assert.ok(input.matches(':placeholder-shown'));
+ fill('Ordinary queue draft');const send=f.root.querySelector('[data-review-action=send]');
+ for(let i=0;i<30&&send.disabled;i++)await paintReview();
+ assert.equal(press('Tab'),false);
+ for(let i=0;i<30&&input.value;i++)await paintReview();
+ assert.deepEqual(sends().map(([,request])=>[request.text,request.lane]),[['Original Worker question','next'],['Ordinary queue draft','normal']]);
+ f.surface.destroy();f.root.remove();
+ }
+});
+browserTest('Report footer keeps discussion feedback and decisions separate at wide and narrow widths',async t=>{
+ const f=report(t,{value:{...review,publicationNumber:7},options:{onDiscard:async()=>{},getDiscardState:()=>({allowed:true})},handle:async op=>op==='workspace.reviewDiscussion.show'?{ok:true,value:{shown:false,reason:'geometry'}}:null});await f.surface.ready;
+ const open=f.root.querySelector('[data-review-action=open-discussion]'),accept=f.root.querySelector('[data-review-action=accept]'),discard=f.root.querySelector('[data-review-action=discard]');
+ const opening=f.root.querySelector('.managed-review-opening-status'),decision=f.root.querySelector('.managed-review-decision');
+ assert.equal(accept.innerText,'采纳并结束');assert.equal(accept.getAttribute('aria-label'),'采纳并结束');
+ assert.equal(f.root.querySelector('.managed-review-version').innerText,'报告 V7');
+ assert.equal(open.parentElement,opening.parentElement);assert.ok(decision.contains(accept)&&decision.contains(discard));assert.equal(decision.contains(open),false);
+ assert.equal(opening.hidden,true);await f.surface.show();assert.equal(opening.hidden,false);assert.match(opening.innerText,/可再次点击/);
+ assert.equal(f.root.querySelector('[data-review-decision-status]').hidden,true);
+ for(const width of [700,320,250]){
+  f.root.style.width=width+'px';await paintReview();const footer=f.root.querySelector('.managed-review'),bounds=footer.getBoundingClientRect();
+  assert.equal(Math.abs(open.getBoundingClientRect().left-accept.getBoundingClientRect().left)<1,width<=440,'narrow footer stacks discussion and decisions');
+  for(const button of [open,accept,discard]){const rect=button.getBoundingClientRect();assert.ok(rect.width>0&&rect.right<=bounds.right+1);}
+ }
+});
 const bundlePath=path.join(bundleDir,'review.mjs');
 await build({absWorkingDir:rendererRoot,entryPoints:[path.join(rendererRoot,'managed-review.mjs')],bundle:true,format:'esm',platform:'browser',outfile:bundlePath,logLevel:'silent'});
 const {mountManagedReview,mountReviewDetail,flushManagedReviews,applyManagedReviewBarrier}=await import(pathToFileURL(bundlePath).href);
@@ -80,8 +123,9 @@ const all=root=>[root,...root.children.flatMap(all)];
 const by=root=>key=>all(root).find(node=>Object.hasOwn(node.dataset,key));
 const file={relPath:'same.md',change:'modified',candidateText:'worker',baselineText:'source',candidateDigest:'candidate',baselineDigest:'baseline',added:2,deleted:1,draft:null};
 const review={workId:'work-a',objectId:'publication-a',revision:1,reviewVersion:'token-a',status:'waiting',files:[file],capabilities:{canAccept:true,canContinue:true},candidate:{targetRef:'refs/heads/topic'}};
-function report(t,{value=review,handle,options={}}={}){
+function report(t,{value=review,handle,options={},subscribe}={}){
  const d=dom(t),calls=[],root=new Node(),opinions={text:'',revision:0};
+ if(subscribe)window.nozeli={subscribe};
  // Minimal display-view host: in-memory CAS per window key, matching the
  // workspace.displayView.read/write contract the shell persists through.
  const views=new Map();
@@ -95,6 +139,7 @@ function report(t,{value=review,handle,options={}}={}){
    if(current&&current.revision!==payload.expectedRevision)return {ok:true,value:{conflict:true,current}};
    const next={...payload.next,revision:(current?.revision??-1)+1};views.set(id,next);return {ok:true,value:{revision:next.revision}};}
   if(op==='workspace.control')return {ok:true,value:{ready:true}};
+  if(op==='workspace.reviewDiscussion.show')return {ok:true,value:{shown:true}};
   if(op.startsWith('workspace.reviewDiscussion.'))return {ok:true,value:{saved:true}};
   throw Error('unexpected '+op);
  };
@@ -161,6 +206,31 @@ test('native show hide and bind use exact owner binding and never create a secon
  assert.equal(f.calls.some(([op])=>op==='managed.review.instruction.read'),false);
 });
 
+test('report deduplicates a pending open and native visibility wins over an older show receipt',async t=>{
+ let notify,resolveShow,started;
+ const entered=new Promise(resolve=>{started=resolve;});
+ const f=report(t,{subscribe:(topic,handler)=>{if(topic==='workspace.control')notify=handler;return ()=>{};},handle:async op=>{
+  if(op!=='workspace.reviewDiscussion.show')return null;
+  started();return new Promise(resolve=>{resolveShow=resolve;});
+ }});
+ await f.surface.ready;
+ const button=all(f.root).find(node=>node.dataset.reviewAction==='open-discussion');
+ const opening=button.onclick();
+ assert.equal(button.getAttribute('aria-busy'),'true');
+ assert.equal(button.getAttribute('aria-expanded'),'false');
+ const duplicate=button.onclick();await entered;
+ assert.equal(f.calls.filter(([op])=>op==='workspace.reviewDiscussion.show').length,1);
+ const visible=shown=>({type:'review-discussion-visibility',projectId:'p',workId:'work-a',objectId:'publication-a',shown});
+ notify({...visible(true),objectId:'different-publication'});assert.equal(button.getAttribute('aria-expanded'),'false');
+ notify(visible(true));assert.equal(button.getAttribute('aria-expanded'),'true');
+ notify(visible(false));resolveShow({ok:true,value:{shown:true}});await Promise.all([opening,duplicate]);
+ assert.equal(button.getAttribute('aria-expanded'),'false');assert.equal(button.getAttribute('aria-busy'),null);
+ const retry=f.surface.show();await tick();resolveShow({ok:true,value:{shown:false}});await retry;
+ assert.equal(button.getAttribute('aria-expanded'),'false');assert.equal(button.getAttribute('aria-busy'),null);
+ assert.equal(f.calls.filter(([op])=>op==='workspace.reviewDiscussion.show').length,2);
+ assert.equal(f.calls.some(([op])=>op.endsWith('.send')),false);
+});
+
 test('accept keeps exact token and receipt is not successful merge',async t=>{
  const f=report(t,{handle:async op=>op==='workspace.review.decide'?{ok:true,value:{accepted:true}}:null});await f.surface.ready;
  await all(f.root).find(node=>node.dataset.reviewAction==='accept').onclick();
@@ -173,7 +243,8 @@ test('token change requires a fresh human confirmation',async t=>{
  const f=report(t,{handle:async op=>op==='workspace.review.decide'?{ok:false,error:{code:'REVIEW_TOKEN_CHANGED',message:'changed'}}:null});await f.surface.ready;
  await all(f.root).find(node=>node.dataset.reviewAction==='accept').onclick();
  assert.equal(f.calls.filter(([op])=>op==='workspace.review.decide').length,1);
- assert.match(by(f.root)('reviewWarning').textContent,/重新核对文档并再次确认/);
+ assert.match(by(f.root)('reviewDecisionStatus').textContent,/重新核对文档并再次确认/);
+ assert.equal(by(f.root)('reviewWarning').textContent,'');
 });
 
 browserTest('only the trusted discussion body holds durable unsent opinions and composition rejects flush',async t=>{
@@ -336,6 +407,24 @@ browserTest('short-window hide and reopen preserve the active outer single scrol
  assert.equal(getComputedStyle(history).overflowY,'visible');assert.ok(outer.scrollHeight>outer.clientHeight);outer.scrollTop=80;const retained=outer.scrollTop;assert.ok(retained>0);await f.surface.hide();await f.surface.show();await paintReview();assert.equal(outer.scrollTop,retained);assert.equal(history.scrollTop,0,'short window does not maintain a second nested scroll position');
  outer.scrollTop=outer.scrollHeight;assert.ok(root.querySelector('[data-review-action="send"]').getBoundingClientRect().bottom<=outer.getBoundingClientRect().bottom+1,'the existing composer remains reachable as the last single-scroll segment');
 },{width:390,height:400});
+
+browserTest('the first report scroll uses the committed publication, while warm reopen keeps the message offset and draft',async t=>{
+ const original={id:'original',jobId:'root',taskRequestId:'root',sequence:1,speaker:'user',source:'host',target:'work-a',text:'Original task. '.repeat(50)};
+ const publication={id:'publication-record',jobId:'round-a',sequence:2,speaker:'agent',source:'host',target:'work-a',publication:'result',objectId:'publication-a'};
+ const tail={id:'after',kind:'review-note',workId:'work-a',objectId:'publication-a',sequence:3,text:'Later host fact. '.repeat(700),source:'host'};
+ const f=report(t,{options:{discussionHost:true},handle:async op=>op==='managed.review.discussion.read'?{ok:true,value:reviewReading([original,publication],[tail])}:null});
+ await f.surface.ready;await f.surface.show({locatePublication:true});
+ const win=f.surface.localWindow.node,history=win.querySelector('.managed-review-history'),target=win.querySelector('[data-publication-object="publication-a"]');
+ assert.equal(target?.dataset.message,'publication-record');
+ assert.equal(target.getBoundingClientRect().bottom<=history.getBoundingClientRect().bottom+1,true);
+ assert.ok(history.scrollTop+100<history.scrollHeight-history.clientHeight,'first show did not follow the tail');
+ const input=win.querySelector('textarea');input.value='Keep this draft';input.dispatchEvent(new Event('input'));input.setSelectionRange(3,8);
+ history.scrollTop+=90;const before=target.getBoundingClientRect().top-history.getBoundingClientRect().top;
+ await f.surface.hide();await f.surface.show();
+ assert.ok(Math.abs(target.getBoundingClientRect().top-history.getBoundingClientRect().top-before)<=1);
+ assert.equal(input.value,'Keep this draft');assert.equal(input.selectionStart,3);assert.equal(input.selectionEnd,8);
+ assert.equal(f.calls.some(([op])=>op.endsWith('.send')),false);
+});
 
 browserTest('task action uses the active discussion job original tool and output records',async t=>{
  let entry={id:'live-activity',jobId:'round-a',sequence:1,target:'work-a',speaker:'agent',source:'native',streaming:true,toolCalls:[{id:'live-read',name:'read',input:{path:'frozen.md'}}]};

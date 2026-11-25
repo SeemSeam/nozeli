@@ -30,7 +30,7 @@ const provider=await serve(async(request,round)=>{
  if(round===2)return {tool:'read',id:'admin-skill-config',args:{path:path.join(skillRoot,'nozeli-admin-configuration/SKILL.md')}};
  if(round===3)return {tools:[{tool:'nozeli_admin_registry',id:'registry',args:{}},{tool:'nozeli_admin_configuration',id:'config',args:{}}]};
  if(round===4)return {tool:'nozeli_admin_prepare_defaults',id:'prepare',args:{role:'worker',model:'admin-local/scripted',effort:'low'}};
- if(round===5)return {text:'已准备 Worker 全局默认模型方案；尚未应用，请在管理页面确认。未读取项目内容。'};
+ if(round===5)return {text:'**已准备 Worker 全局默认模型方案**；尚未应用，请在管理页面确认。未读取项目内容。'};
  if(round===6)return {tool:'read',id:'admin-skill-maintenance',args:{path:path.join(skillRoot,'nozeli-admin-nozeli-maintenance/SKILL.md')}};
  if(round===7)return {tool:'nozeli_admin_diagnostics',id:'diagnostics',args:{projectId:ids[0],cursor:null,limit:24}};
  if(round===8){const result=JSON.parse(request.messages.findLast(row=>row.role==='tool').content);const row=result.rows?.find(row=>row.id===repairBug);assert(row?.source,'actual fault page must issue opaque repair source');repairSource=row.source;return {tool:'nozeli_admin_prepare_repair',id:'prepare-repair',args:{source:repairSource}};}
@@ -96,6 +96,11 @@ try{
  s=await invoke('admin.status');assert.equal(phase,5);assert.equal(s.pendingChanges.length,1);assert(!JSON.stringify(s).includes(key));assert(!JSON.stringify(s).includes(secret));
  report.checks.push('native Pi reads both admin skills and restricted host tools prepare a proposal without applying');
  const proposal=s.pendingChanges[0];await until(()=>shell.$('[data-admin-confirm="'+proposal.id+'"]'),'proposal confirm control');await shell.waitForFunction(()=>document.querySelector('#admin-messages')?.textContent.includes('已准备 Worker 全局默认模型方案'));
+ const firstFlow=await shell.$$eval('#admin-messages [data-admin-message]',rows=>rows.map(row=>row.dataset.adminMessage));
+ assert.deepEqual(firstFlow,s.messages.map(row=>row.id));
+ assert.equal(s.messages[0].role,'user');
+ assert(s.messages.slice(1,-1).some(row=>row.role==='toolResult'));
+ assert.equal(await shell.$eval('#admin-messages .agent-message-body strong',node=>node.textContent),'已准备 Worker 全局默认模型方案');
  await shell.$eval('[data-admin-proposal="'+proposal.id+'"]',el=>el.scrollIntoView({block:'end'}));await shell.screenshot({path:path.join(out,'admin-proposal.png')});await shell.click('[data-admin-confirm="'+proposal.id+'"]');
  await until(async()=>(await invoke('settings.providers.status')).defaults.worker.model.selector==='admin-local/scripted','confirmed default persistence');
  const settings=await invoke('settings.providers.status');assert.equal(settings.defaults.worker.model.selector,'admin-local/scripted');assert.equal(settings.defaults.worker.thinking.level,'low');
@@ -121,7 +126,7 @@ try{
  const denied=await doc.evaluate(()=>window.nozeli.invoke('admin.status',{}));assert.equal(denied.ok,false);report.checks.push('real project document surface denied global admin access');
  s=await invoke('admin.status');const historyBefore=s.messages.map(m=>m.text).join('\n');await invoke('admin.draft',{text:'重启后仍属全局的未发送草稿',expectedRevision:s.draftRevision});
  report.firstExit=await close();
- const requestsBefore=provider.requests.length;await launch();const restored=await invoke('admin.status');assert.equal(restored.draft,'重启后仍属全局的未发送草稿');assert.equal(restored.model,'admin-local/scripted');assert.equal(restored.messages.map(m=>m.text).join('\n'),historyBefore);assert.equal(provider.requests.length,requestsBefore);
+ const requestsBefore=provider.requests.length;await launch();const restored=await invoke('admin.status');assert.equal(restored.draft,'重启后仍属全局的未发送草稿');assert.equal(restored.model,'admin-local/scripted');assert.deepEqual(restored.messages,s.messages);assert.equal(provider.requests.length,requestsBefore);
  report.checks.push('normal cold restart restores global draft, model and native management history without replay');
  await shell.evaluate(()=>window.dispatchEvent(new Event('nozeli-open-admin')));await until(()=>shell.$('#admin-agent:not([hidden])'),'restored floating assistant');await shell.screenshot({path:path.join(out,'admin-restored.png')});
  await shell.waitForFunction(()=>document.querySelector('#admin-messages')?.textContent.includes('已准备 Worker 全局默认模型方案'));assert(await shell.$$eval('#admin-messages .tag-message',nodes=>nodes.every(el=>el.children[1]?.textContent.trim())),'tool-only native entries must not render empty bubbles');

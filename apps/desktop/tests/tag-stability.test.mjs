@@ -1,3 +1,4 @@
+import {desktopHosts} from './fixtures/desktop-hosts.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { ChangeSet } from '@codemirror/state';
 import JSZip from 'jszip';
 import { createHash } from 'node:crypto';
-import { DesktopHost, ops } from '../src/main/host.mjs';
+import { ops } from '../src/main/host.mjs';
 import { FileTags } from '../src/domain/file-tags.mjs';
 import { anchorText, textChangeSet, mapTextAnchor, resolveTextAnchor, mapImageAnchor } from '../src/domain/tag-anchors.mjs';
 import { pptSnapshot } from '../src/main/annotation-package.mjs';
@@ -15,14 +16,14 @@ import { pptSnapshot } from '../src/main/annotation-package.mjs';
 const anchor = (text, quote) => ({ start: text.indexOf(quote), end: text.indexOf(quote) + quote.length, quote });
 async function fixture(t, text = '前言\n目标😀文字\n结尾') {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-stable-'));
-  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const hosts=desktopHosts();t.after(async() => {await hosts.close();await fs.rm(temp, { recursive: true, force: true });});
   const root = path.join(temp, 'project'); await fs.mkdir(root);
   const file = path.join(root, 'test.txt'); await fs.writeFile(file, text);
-  const host = new DesktopHost(path.join(temp, 'profile'));
+  const host = hosts.create(path.join(temp, 'profile'));
   const id = (await host.pick(root)).project.id;
   const source = await host.readFile(id, 'test.txt');
   const note = (await host.addAnnotation(id, { relPath: 'test.txt', materialDigest: source.digest, kind: 'text-selection', anchor: anchor(anchorText(text), '目标😀文字'), note: '原备注' })).annotation;
-  return { root, temp, file, host, id, source, note, store: await host.tagStore(id) };
+  return { root, temp, file, host, hosts, id, source, note, store: await host.tagStore(id) };
 }
 test('text transaction follows Unicode shifts and excludes insertions at both boundaries', () => {
   const before = '前言目标😀文字结尾', a = anchor(before, '目标😀文字');
@@ -58,7 +59,7 @@ test('sidecar and frozen material survive saves, replacements, undo and host res
   const after = '新行\n' + old;
   const changes = ChangeSet.of([{ from: 0, insert: '新行\n' }], old.length);
   let saved = await f.host.save(f.id, 'test.txt', f.source.digest, after, { anchorChanges: changes.toJSON() });
-  let note = (await new DesktopHost(path.join(f.temp, 'profile')).listAnnotations(f.id, 'test.txt')).annotations[0];
+  let note = (await f.hosts.create(path.join(f.temp, 'profile')).listAnnotations(f.id, 'test.txt')).annotations[0];
   assert.equal(note.id, f.note.id); assert.deepEqual(note.anchor, f.note.anchor); assert.equal(note.materialDigest, f.source.digest);
   assert.deepEqual(note.resolution.anchor, anchor(after, f.note.anchor.quote));
   const replaced = after.replace('目标😀文字', '替换内容');
@@ -108,7 +109,7 @@ test('conversation references, draft and collapsed state persist; projection rem
   await assert.rejects(ops['tag.view'](f.host, {projectId:f.id, relPath:'../test.txt', annotationId:f.note.id, collapsed:false}), error => error.code === 'ESCAPE');
   assert.deepEqual(await f.store.read('test.txt'), snapshot);
   assert.equal(await fs.readFile(f.file, 'utf8'), f.source.text);
-  const fresh = new DesktopHost(path.join(f.temp, 'profile'));
+  const fresh = f.hosts.create(path.join(f.temp, 'profile'));
   const notes = (await fresh.listAnnotations(f.id, 'test.txt')).annotations;
   assert.equal(notes.find(n => n.id === f.note.id).view.collapsed, true);
   const tag = notes.find(n => n.id === tagId); assert.equal(tag.projection.draftText, '续问'); assert.equal(tag.projection.open, false); assert.equal(tag.projection.history[0].messageId, 'message-1'); assert.equal(tag.projection.history[0].reply, undefined);
@@ -120,7 +121,7 @@ test('copied project retains annotations and frozen source without old profile',
   const f = await fixture(t); await fs.writeFile(f.file, '已删原文');
   await f.host.storage.closeProjectHandles(f.id);
   const copy = path.join(f.temp, 'copy'); await fs.cp(f.root, copy, { recursive: true });
-  const host = new DesktopHost(path.join(f.temp, 'new-profile')), id = (await host.pick(copy)).project.id;
+  const host = f.hosts.create(path.join(f.temp, 'new-profile')), id = (await host.pick(copy)).project.id;
   const note = (await host.listAnnotations(id, 'test.txt')).annotations[0];
   assert.equal(note.id, f.note.id); assert.equal(note.note, f.note.note); assert.equal(note.resolution.locationStatus, 'unresolved');
   assert.equal((await (await host.tagStore(id)).getMaterial(note.materialDigest)).toString(), f.source.text);
@@ -135,7 +136,7 @@ test('manual relocation verifies current material and preserves frozen origin', 
   const note = (await f.host.listAnnotations(f.id, 'test.txt')).annotations[0];
   assert.deepEqual(note.anchor, f.note.anchor); assert.deepEqual(note.resolution.anchor, a); assert.equal(note.resolution.method, 'manual'); assert.equal(note.relocations.length, 1);
   assert.equal(await fs.readFile(f.file, 'utf8'), text);
-  const restarted = new DesktopHost(path.join(f.temp,'profile'));
+  const restarted = f.hosts.create(path.join(f.temp,'profile'));
   assert.deepEqual((await restarted.listAnnotations(f.id,'test.txt')).annotations[0].resolution.anchor,a);
   assert.equal((await f.store.getMaterial(f.note.materialDigest)).toString(),f.source.text);
 });
@@ -169,7 +170,7 @@ test('Word relocation validates saved serialized material and retains frozen not
   await assert.rejects(ops['tag.reanchor'](f.host, { ...payload, anchor: wordAnchor('再次定位') }), { code: 'ANNOTATION_CONFLICT' });
   assert.deepEqual((await f.host.listAnnotations(f.id, relPath)).annotations[0], first);
   await ops['tag.reanchor'](f.host, { ...payload, expectedUpdatedAt: first.updatedAt, anchor: wordAnchor('再次定位') });
-  const restarted = new DesktopHost(path.join(f.temp, 'profile'));
+  const restarted = f.hosts.create(path.join(f.temp, 'profile'));
   const resolved = (await restarted.listAnnotations(f.id, relPath)).annotations[0];
   assert.deepEqual(resolved.resolution.anchor, wordAnchor('再次定位'));
   assert.equal(resolved.resolution.method, 'manual');
@@ -219,7 +220,7 @@ test('image-region relocation follows changed bytes while preserving frozen scre
   await assert.rejects(ops['tag.reanchor'](f.host, { ...payload, targetDigest: source.digest }), { code: 'CONFLICT' });
   await assert.rejects(ops['tag.reanchor'](f.host, { ...payload, anchor: { ...moved, width: 2 } }), { code: 'ANCHOR_MISMATCH' });
   await ops['tag.reanchor'](f.host, payload);
-  const restarted = new DesktopHost(path.join(f.temp, 'profile'));
+  const restarted = f.hosts.create(path.join(f.temp, 'profile'));
   const relocated = (await restarted.listAnnotations(f.id, relPath)).annotations[0];
   assert.deepEqual(relocated.resolution.anchor, moved);
   assert.equal(relocated.resolution.method, 'manual');
@@ -255,7 +256,7 @@ test('PPT-region relocation pins current draft and invalidates on later draft-on
   await assert.rejects(ops['tag.reanchor'](f.host, { ...payload, anchor: { ...moved, slideId: 'missing' } }), { code: 'ANCHOR_MISMATCH' });
   assert.deepEqual((await f.store.read(relPath)).tags[0], frozen);
   await ops['tag.reanchor'](f.host, payload);
-  const restarted = new DesktopHost(path.join(f.temp, 'profile'));
+  const restarted = f.hosts.create(path.join(f.temp, 'profile'));
   const relocated = (await restarted.listAnnotations(f.id, relPath)).annotations[0];
   assert.deepEqual(relocated.resolution.anchor, moved);
   assert.equal(relocated.resolution.method, 'manual');

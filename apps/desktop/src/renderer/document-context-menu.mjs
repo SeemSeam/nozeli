@@ -48,7 +48,6 @@ export function documentCommands(s) {
   if(s.kind==='unsupported'){items.length=0;add('openExternal','使用系统默认应用打开');add('reveal','在文件管理器中显示');add('relativePath','复制相对路径');}
   if(s.preview?.kind==='tex'||s.editable&&/\.(tex|sty|cls)$/i.test(s.relPath)){
     separator();add('texBuild','编译当前根文档');
-    if(s.preview?.kind==='tex')items.push({id:'tex-auto',label:'自动编译',checked:s.preview.automatic});
   }
   if(s.canCompare||s.canAuthorship){
     separator(); const children=[];
@@ -58,7 +57,8 @@ export function documentCommands(s) {
   }
   const views=[];
   if(s.preview){
-    views.push({id:'preview-toggle',label:s.preview.kind==='markdown'?'实时预览':'编译预览',checked:s.preview.visible});
+    views.push({id:'preview-toggle',label:s.preview.kind==='markdown'?'实时预览':'PDF 预览',checked:s.preview.visible});
+    if(s.preview.kind==='tex')views.push({id:'preview-refresh',label:'刷新预览'});
     views.push({id:'preview-link',label:'源码与预览联动',checked:s.preview.linked,enabled:s.preview.visible&&s.preview.available!==false,hint:s.preview.hint});
   }
   if(s.canAuthorship)views.push({id:'authorship-toggle',label:s.authorshipVisible?'隐藏修改者':'显示修改者',checked:s.authorshipVisible});

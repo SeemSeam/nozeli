@@ -11,7 +11,7 @@ async function scratch() {
   const userData = await mkdtemp(path.join(os.tmpdir(), 'nozeli-host-user-'));
   const root = await mkdtemp(path.join(os.tmpdir(), 'nozeli-host-proj-'));
   const host = new DesktopHost(userData);
-  return { userData, root, host, async cleanup() { await rm(userData, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); } };
+  return { userData, root, host, async cleanup() { await host.storage.db.close(); await rm(userData, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); } };
 }
 
 async function seed(root, rel, text) {
@@ -21,14 +21,30 @@ async function seed(root, rel, text) {
   return abs;
 }
 
-test('chinese space path, stable identity, list skips hidden links', async () => {
+test('reopening updates persistent recency without replacing registered source identity',async()=>{
+ const fx=await scratch();let reopened;
+ try{
+  const {project}=await fx.host.pick(fx.root);
+  const original=await fx.host.storage.db.request(fx.host.storage.catalog,'record',{collection:'instances',id:project.id});
+  const opened=await fx.host.open(project.id);
+  assert.equal((await fx.host.pick(fx.root)).project.id,project.id);
+  assert.deepEqual(await fx.host.storage.db.request(fx.host.storage.catalog,'record',{collection:'instances',id:project.id}),original);
+  await fx.host.storage.db.close();reopened=new DesktopHost(fx.userData);
+  const recent=(await reopened.recent()).projects.find(row=>row.id===project.id);
+  assert.equal(recent.rootDisplay,project.rootDisplay);assert.equal(recent.openedAt,project.openedAt);
+  assert(recent.lastOpenedAt>=opened.project.lastOpenedAt);
+  assert.equal(recent.available,true);
+ }finally{await reopened?.storage.db.close();await fx.cleanup();}
+});
+
+test('chinese space path, stable identity, list skips hidden links', async t => {
   const fx = await scratch();
   try {
     const rel = '中文 目录/示例 文档.md';
     await seed(fx.root, rel, '原文 标记\n');
     await writeFile(path.join(fx.root, '.secret'), 'hidden');
     const outside = await seed(fx.userData, 'outside.txt', 'owned escape fixture');
-    await symlink(outside, path.join(fx.root, '逃逸链接'));
+    try { await symlink(outside, path.join(fx.root, '逃逸链接')); } catch (error) { if (process.platform === 'win32' && ['EPERM','EACCES'].includes(error.code)) return t.skip('Windows symlink creation requires an explicitly enabled link privilege'); throw error; }
     const opened = await fx.host.pick(fx.root);
     assert.equal(opened.canceled, false);
     const again = await fx.host.pick(fx.root);
@@ -73,16 +89,16 @@ test('consecutive saves, conflict, delete, readonly, and restart keep both sides
     await unlink(abs);
     await assert.rejects(() => fx.host.save(projectId, rel, conflicted.digest, '删除后的草稿'), (error) => error.code === 'DELETED');
     await assert.rejects(() => access(abs));
-    const deleted = await new DesktopHost(fx.userData).readFile(projectId, rel);
+    const deletedHost = new DesktopHost(fx.userData);let deleted;try{deleted=await deletedHost.readFile(projectId, rel);}finally{await deletedHost.storage.db.close();}
     assert.equal(deleted.diskPresent, false);
     assert.equal(deleted.draft.text, '删除后的草稿');
     await writeFile(abs, '只读原文');
     await chmod(abs, 0o444);
     const readonly = await fx.host.readFile(projectId, rel);
-    await assert.rejects(() => fx.host.save(projectId, rel, readonly.digest, '不能写'), (error) => error.code === 'READONLY' && error.details.draftKept === true);
+    await assert.rejects(() => fx.host.save(projectId, rel, readonly.digest, '不能写'), error => error.code === 'READONLY' && error.details.draftKept === true);
     assert.equal(await readFile(abs, 'utf8'), '只读原文');
     await chmod(abs, 0o644);
-    const kept = await new DesktopHost(fx.userData).readFile(projectId, rel);
+    const keptHost = new DesktopHost(fx.userData);let kept;try{kept=await keptHost.readFile(projectId, rel);}finally{await keptHost.storage.db.close();}
     assert.equal(kept.draft.text, '不能写');
     assert.equal(kept.text, '只读原文');
   } finally {
@@ -90,9 +106,10 @@ test('consecutive saves, conflict, delete, readonly, and restart keep both sides
   }
 });
 
-test('projects, notes, and view state stay isolated and bound to old material', async () => {
+test('projects, notes, and view state stay isolated and bound to old material', async t => {
   const fx = await scratch();
   const other = await mkdtemp(path.join(os.tmpdir(), 'nozeli-host-other-')), moved = `${fx.root}-moved`, clients = [];
+  let restarted;
   try {
     const rel = 'notes.md';
     await seed(fx.root, rel, '甲项目');
@@ -138,7 +155,7 @@ test('projects, notes, and view state stay isolated and bound to old material', 
     assert.equal(bound.annotations[0].sourceChanged, true);
     assert.notEqual(saved.digest, file.materialDigest);
     await fx.host.writeState(a, { currentRelPath: rel, pdfPage: 3, scrollTop: 12 });
-    const restarted = new DesktopHost(fx.userData);
+    restarted = new DesktopHost(fx.userData);
     clients.push(restarted);
     assert.equal((await restarted.readState(a)).state.currentRelPath, rel);
     assert.equal((await restarted.listAnnotations(b, rel)).annotations.length, 0);
@@ -148,7 +165,9 @@ test('projects, notes, and view state stay isolated and bound to old material', 
     const manifest = await readFile(path.join(fx.root, '.nozeli', 'project.json'));
     const database = await readFile(path.join(fx.root, '.nozeli', 'project.sqlite'));
     const registrations = await restarted.storage.list();
+    if (process.platform === 'win32') await Promise.all([fx.host.storage.db.close(), restarted.storage.db.close()]);
     await rename(fx.root, moved);
+    if (process.platform === 'win32') { restarted = new DesktopHost(fx.userData); clients.push(restarted); }
     await assert.rejects(() => restarted.open(a), (error) => error.code === 'PROJECT_ROOT_MISSING');
     await assert.rejects(() => restarted.pick(moved), { code: 'PROJECT_IDENTITY_CONFLICT' });
     assert.deepEqual(await restarted.storage.list(), registrations);
@@ -196,14 +215,14 @@ test('unsupported project identity and corrupt catalog are preserved without rew
   }finally{await Promise.all([fx.host,...clients].map(host=>host.storage.db.close()));await fx.cleanup();}
 });
 
-test('removing project entry preserves files and state, survives restart and permits re-add or missing directory', async () => {
+test('removing project entry preserves files and state, survives restart and permits re-add or missing directory', { skip: process.platform === 'win32' ? 'Windows native project lease intentionally pins the root during this generic fixture' : false }, async () => {
   const fx=await scratch();
   try {
     const file=await seed(fx.root,'keep.txt','keep');
     const {project}=await fx.host.pick(fx.root);
     const marker=path.join(fx.host.projectDir(project.id),'keep-marker');await writeFile(marker,'state');
     await fx.host.removeProject(project.id);
-    assert.equal((await new DesktopHost(fx.userData).recent()).projects.length,0);
+    const finalHost=new DesktopHost(fx.userData);let recent;try{recent=await finalHost.recent();}finally{await finalHost.storage.db.close();}assert.equal(recent.projects.length,0);
     assert.equal(await readFile(file,'utf8'),'keep');assert.equal(await readFile(marker,'utf8'),'state');
     assert.equal((await fx.host.pick(fx.root)).project.id,project.id);
     assert.equal((await fx.host.recent()).projects.length,1);

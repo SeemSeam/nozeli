@@ -16,6 +16,8 @@ import {prepareReading} from './reading-setup.fixture.mjs';
 const root=path.resolve(import.meta.dirname,'..');
 const output=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-native-drivers-'));
 const project=path.join(output,'project'),configuration=path.join(output,'.Nozeli'),profile=path.join(configuration,'desktop');await fs.mkdir(project);
+await fs.mkdir(configuration);
+console.log('Native workspace fixture:',output);
 await fs.copyFile(path.join(root,'tests/fixtures/office/中文 文档.docx'),path.join(project,'sample.docx'));
 await fs.copyFile(path.join(root,'tests/fixtures/pdf/nozeli-sample.zh.pdf'),path.join(project,'sample.pdf'));
 const markdown='# Native Markdown\n\nSource and rendered preview survive transfer.\n';
@@ -24,9 +26,14 @@ await fs.writeFile(path.join(project,'sample.md'),markdown);await fs.writeFile(p
 const host=new DesktopHost(profile),projectId=(await host.pick(project)).project.id;
 const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const n=s.address().port;s.close(()=>resolve(n));});});
 const ozone=process.env.NOZELI_OZONE||'wayland';
-const child=spawn(createRequire(import.meta.url)('electron'),['--ozone-platform='+ozone,path.join(root,'src/main/main.cjs')],{cwd:root,env:{...process.env,WAYLAND_DISPLAY:process.env.WAYLAND_DISPLAY||'wayland-0',XDG_RUNTIME_DIR:process.env.XDG_RUNTIME_DIR||'/run/user/1000',NOZELI_TEST_INSTANCE:'1',NOZELI_SHOT_DIR:output,NOZELI_CONFIG_ROOT:configuration,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_HIDDEN:'0',NOZELI_OZONE:ozone},stdio:['ignore','pipe','pipe']});
+const env={...process.env};
+for(const key of Object.keys(env))if(/^(NOZELI_|CCB_|CODEX_|OMP_|PI_)/.test(key)||/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|API_?KEY/i.test(key)||key==='ELECTRON_RUN_AS_NODE')delete env[key];
+const linux=process.platform==='linux';
+if(linux)Object.assign(env,{WAYLAND_DISPLAY:env.WAYLAND_DISPLAY||'wayland-0',XDG_RUNTIME_DIR:env.XDG_RUNTIME_DIR||'/run/user/1000',NOZELI_OZONE:ozone});
+Object.assign(env,{NOZELI_TEST_INSTANCE:'1',NOZELI_AGENT_FIXTURE:'1',NOZELI_SHOT_DIR:output,NOZELI_CONFIG_ROOT:configuration,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port)});
+const child=spawn(createRequire(import.meta.url)('electron'),[...(linux?['--ozone-platform='+ozone]:[]),path.join(root,'src/main/main.cjs')],{cwd:root,env,stdio:['ignore','pipe','pipe']});
 let log='',browser,shell,current;for(const s of [child.stdout,child.stderr])s.on('data',c=>log+=c);
-const exited=new Promise(resolve=>child.once('exit',resolve));const report={checks:[],errors:[]};const observed=new WeakSet();
+const exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));const report={checks:[],errors:[]};const observed=new WeakSet();
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(fn,label){const end=Date.now()+45000;do{const v=await fn();if(v)return v;if(child.exitCode!==null)throw Error(log);await pause(100);}while(Date.now()<end);throw Error('Timed out: '+label);}
 async function invoke(p,op,payload={}){const r=await p.evaluate((op,payload)=>nozeli.invoke(op,payload),op,payload);assert.equal(r.ok,true,op+': '+JSON.stringify(r));return r.value;}
@@ -41,26 +48,61 @@ async function open(rel){await shell.locator(`#file-tree button[data-path="${rel
 async function identity(selector){await current.evaluate(selector=>{window.__nativeDriverIdentity={document,node:document.querySelector(selector)};if(!window.__nativeDriverIdentity.node)throw Error('Missing driver DOM '+selector);},selector);}
 async function same(selector){assert.equal(await current.evaluate(selector=>window.__nativeDriverIdentity.document===document&&window.__nativeDriverIdentity.node===document.querySelector(selector),selector),true,'same live driver DOM');}
 async function shortcut(key){await current.keyboard.down('Control');await current.keyboard.press(key);await current.keyboard.up('Control');}
+async function saveText(rel,text){
+ await current.evaluate(()=>__nozeliInput.focus());await shortcut('KeyS');
+ await until(async()=>await fs.readFile(path.join(project,rel),'utf8')===text,'project source writeback: '+rel);
+ await current.waitForFunction(()=>document.querySelector('#save-status').dataset.state==='saved');
+}
 try{
  await until(async()=>{try{return(await fetch(`http://127.0.0.1:${port}/json/version`)).ok;}catch{return false;}},'debug endpoint');
  browser=await puppeteer.connect({browserURL:`http://127.0.0.1:${port}`,defaultViewport:null});shell=(await scoped(s=>s.role==='shell')).page;await prepareReading(shell);await shell.waitForFunction(()=>window.__workspaceGroups&&window.__nozeliReady);
+ const recent=`#recent button[data-project-id="${projectId}"]`;
+ await shell.waitForSelector(recent,{visible:true});await shell.click(recent);await shell.waitForSelector(`${recent}[aria-current="true"]`);
  await invoke(shell,'session.resize',{width:1440,height:1000});
  // Word retains its actual SuperDoc iframe, editor instance and native history.
  let v=await open('sample.docx');await current.waitForSelector('#word-host iframe');let frame=current.frames().find(f=>f.url().endsWith('/word-frame.html'));assert(frame);await frame.waitForFunction(()=>window.nozeliWordEditor?.activeEditor?.state?.doc,{timeout:45000});
  await identity('#word-host iframe');const wordOriginal=await frame.evaluate(()=>nozeliWordEditor.activeEditor.state.doc.textContent);
  await frame.evaluate(()=>{window.__nativeWordIdentity=nozeliWordEditor.activeEditor;nozeliWordEditor.activeEditor.commands.setTextSelection(1);nozeliWordEditor.activeEditor.view.focus();});await current.keyboard.type('NATIVE_WORD_EDIT ');await frame.waitForFunction(()=>nozeliWordEditor.activeEditor.state.doc.textContent.includes('NATIVE_WORD_EDIT'));
  let detached=await detach(v.scope.viewId);await same('#word-host iframe');assert.equal(await frame.evaluate(()=>window.__nativeWordIdentity===nozeliWordEditor.activeEditor),true);await frame.evaluate(()=>nozeliWordEditor.activeEditor.view.focus());await shortcut('KeyZ');await frame.waitForFunction(original=>nozeliWordEditor.activeEditor.state.doc.textContent===original,{},wordOriginal);await shortcut('KeyY');await frame.waitForFunction(()=>nozeliWordEditor.activeEditor.state.doc.textContent.includes('NATIVE_WORD_EDIT'));await current.screenshot({path:path.join(output,'word-detached.png')});await redock(detached,v.scope.viewId);await same('#word-host iframe');assert.equal(await frame.evaluate(()=>window.__nativeWordIdentity===nozeliWordEditor.activeEditor),true);
- const zip=await JSZip.loadAsync(await fs.readFile(path.join(project,'sample.docx')));assert.match(await zip.file('word/document.xml').async('string'),/NATIVE_WORD_EDIT/);report.checks.push('Word explicit native float/return retains iframe/editor, native undo/redo and saved DOCX edit');
+ await frame.evaluate(()=>nozeliWordEditor.activeEditor.view.focus());await shortcut('KeyS');
+ await until(async()=>{
+  const zip=await JSZip.loadAsync(await fs.readFile(path.join(project,'sample.docx')));
+  return (await zip.file('word/document.xml').async('string')).includes('NATIVE_WORD_EDIT');
+ },'explicit Word save writes the project DOCX');
+ await current.waitForFunction(()=>document.querySelector('#save-status').dataset.state==='saved');
+ const cleanWordBytes=await fs.readFile(path.join(project,'sample.docx'));
+ detached=await detach(v.scope.viewId);await same('#word-host iframe');
+ assert.equal(await current.$eval('#save-status',node=>node.dataset.state),'saved');
+ await redock(detached,v.scope.viewId);await same('#word-host iframe');
+ assert.equal(await current.$eval('#save-status',node=>node.dataset.state),'saved');
+ assert.deepEqual(await fs.readFile(path.join(project,'sample.docx')),cleanWordBytes);
+ report.checks.push('Word explicit native float/return retains iframe/editor, native undo/redo and saved DOCX edit');
  // Markdown retains the combined source/preview driver and source undo state.
- v=await open('sample.md');await current.waitForSelector('#text-preview:not([hidden])');await contentToolForPage(current, ['view', 'text-mode']);await current.waitForFunction(()=>document.querySelector('#reader-scroll').classList.contains('markdown-split'));await identity('#text-host .cm-editor');await current.evaluate(()=>{__nozeliInput.select(0,0);__nozeliInput.insert('Native edit\n');});const mdEdited=await current.evaluate(()=>__nozeliInput.text());detached=await detach(v.scope.viewId);await same('#text-host .cm-editor');assert.equal(await current.evaluate(()=>document.querySelector('#reader-scroll').classList.contains('markdown-split')),true);assert.equal(await current.evaluate(()=>__nozeliInput.text()),mdEdited);await current.screenshot({path:path.join(output,'markdown-detached.png')});await redock(detached,v.scope.viewId);await same('#text-host .cm-editor');assert.equal(await fs.readFile(path.join(project,'sample.md'),'utf8'),mdEdited);report.checks.push('Markdown source/preview composition and original source editor survive explicit native float/return with saved edit');
+ v=await open('sample.md');await current.waitForSelector('#text-preview:not([hidden])');await contentToolForPage(current, ['view', 'text-mode']);await current.waitForFunction(()=>document.querySelector('#reader-scroll').classList.contains('markdown-split'));await identity('#text-host .cm-editor');
+ await current.evaluate(()=>{__nozeliInput.select(0,0);__nozeliInput.insert('Native edit\n');});const mdEdited=await current.evaluate(()=>__nozeliInput.text());assert.notEqual(mdEdited,markdown);
+ detached=await detach(v.scope.viewId);await same('#text-host .cm-editor');assert.equal(await current.evaluate(()=>document.querySelector('#reader-scroll').classList.contains('markdown-split')),true);assert.equal(await current.evaluate(()=>__nozeliInput.text()),mdEdited);await current.screenshot({path:path.join(output,'markdown-detached.png')});
+ await redock(detached,v.scope.viewId);await same('#text-host .cm-editor');assert.equal(await current.evaluate(()=>__nozeliInput.text()),mdEdited);await saveText('sample.md',mdEdited);
+ report.checks.push('Markdown source/preview and editor survive native float/return; explicit save writes the retained edit');
  // TeX source driver uses the real existing Monaco editor, without invoking a compiler.
- v=await open('sample.tex');await current.waitForSelector('#text-host .monaco-editor');await identity('#text-host .monaco-editor');await current.evaluate(()=>{__nozeliInput.select(0,0);__nozeliInput.insert('% native transfer\n');});const texEdited=await current.evaluate(()=>__nozeliInput.text());detached=await detach(v.scope.viewId);await same('#text-host .monaco-editor');assert.equal(await current.evaluate(()=>__nozeliInput.text()),texEdited);await current.screenshot({path:path.join(output,'tex-detached.png')});await redock(detached,v.scope.viewId);await same('#text-host .monaco-editor');assert.equal(await fs.readFile(path.join(project,'sample.tex'),'utf8'),texEdited);report.checks.push('TeX Monaco source driver and saved source edit survive explicit native float/return (no compilation claimed)');
+ v=await open('sample.tex');await current.waitForSelector('#text-host .monaco-editor');await identity('#text-host .monaco-editor');
+ await current.evaluate(()=>{__nozeliInput.select(0,0);__nozeliInput.insert('% native transfer\n');});const texEdited=await current.evaluate(()=>__nozeliInput.text());assert.notEqual(texEdited,tex);
+ detached=await detach(v.scope.viewId);await same('#text-host .monaco-editor');assert.equal(await current.evaluate(()=>__nozeliInput.text()),texEdited);await current.screenshot({path:path.join(output,'tex-detached.png')});
+ await redock(detached,v.scope.viewId);await same('#text-host .monaco-editor');assert.equal(await current.evaluate(()=>__nozeliInput.text()),texEdited);await saveText('sample.tex',texEdited);
+ report.checks.push('TeX Monaco editor survives native float/return; explicit save writes the retained edit (no compilation claimed)');
  // PDF retains its live driver root; native resize legitimately redraws canvas.
  v=await open('sample.pdf');await current.waitForSelector('#pdf-host .textLayer span');await identity('#pdf-host');const pdfBefore=await fs.readFile(path.join(project,'sample.pdf'));detached=await detach(v.scope.viewId);await same('#pdf-host');await current.waitForSelector('#pdf-host .textLayer span');await current.screenshot({path:path.join(output,'pdf-detached.png')});await redock(detached,v.scope.viewId);await same('#pdf-host');await current.waitForSelector('#pdf-host .textLayer span');assert.deepEqual(await fs.readFile(path.join(project,'sample.pdf')),pdfBefore);report.checks.push('PDF explicit native float/return retains live driver DOM, rendered text layer and unchanged original bytes; canvas may redraw for changed native bounds');
  v=await open('sample.tex');
  const ids=Object.keys((await layout()).views).sort();for(const [index,command] of ['split-x','split-y','split-y'].entries()){await menu(shell,command);await until(async()=>layoutGroups(await layout()).length===index+2,'explicit split '+command);assert(layoutGroups(await layout()).every(p=>p.views.length<=1));assert.deepEqual(Object.keys((await layout()).views).sort(),ids);}const logicalRoot=(await layout()).mainRoot;await invoke(shell,'session.resize',{width:500,height:800});await shell.waitForSelector('#workspace-groups.workspace-narrow');assert.deepEqual((await layout()).mainRoot,logicalRoot);assert.deepEqual(Object.keys((await layout()).views).sort(),ids);await invoke(shell,'session.resize',{width:1440,height:1000});await shell.waitForFunction(()=>!document.querySelector('#workspace-groups.workspace-narrow'));assert.deepEqual((await layout()).mainRoot,logicalRoot);assert.deepEqual(Object.keys((await layout()).views).sort(),ids);assert.equal(layoutGroups(await layout()).length,4);report.checks.push('three explicit split commands create four single-content panes; narrow/restore preserves the logical layout and every opened resource ID');
  await shell.click(fileRow(v.scope.viewId));await current.waitForSelector('#text-host .monaco-editor');await identity('#text-host .monaco-editor');detached=await detach(v.scope.viewId);await same('#text-host .monaco-editor');
  await invoke(shell,'session.requestClose');await until(async()=>shell.isClosed(),'main native root close');assert.equal(child.exitCode,null);assert.equal(detached.isClosed(),false);assert.equal((await invoke(current,'workspace.bootstrap')).projectId,projectId);await same('#text-host .monaco-editor');assert.equal(await current.evaluate(()=>__nozeliInput.text()),texEdited);await current.screenshot({path:path.join(output,'tex-after-main-close.png')});report.checks.push('closing main native root leaves explicitly floated TeX editor alive, project-pinned and retaining the same live Monaco DOM');
+ if(process.platform!=='darwin'){
+  await invoke(detached,'session.requestClose');
+  let deadline;
+  try{report.exit=await Promise.race([exited,new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('Last detached window did not exit')),15000);})]);}
+  finally{clearTimeout(deadline);}
+  assert.deepEqual(report.exit,{code:0,signal:null});
+  report.checks.push('normal close of the last detached window exits Electron with status 0');
+ }
  assert.deepEqual(report.errors,[]);report.passed=true;console.log(JSON.stringify({output,...report},null,2));
 }catch(error){report.failure=error.stack;report.surface=await current?.evaluate(()=>({ready:window.__nozeliReady,scope:window.__workspaceScope,visibility:document.visibilityState,size:{width:innerWidth,height:innerHeight},pdf:document.querySelector('#pdf-host')?.getBoundingClientRect().toJSON(),canvas:[...document.querySelectorAll('#pdf-host canvas')].map(n=>({width:n.width,height:n.height,rect:n.getBoundingClientRect().toJSON()})),status:document.querySelector('#save-status')?.textContent,body:document.body.innerText.slice(-2000),resources:performance.getEntriesByType('resource').filter(r=>/pdf/i.test(r.name)).map(r=>({name:r.name,duration:r.duration}))})).catch(()=>null);await current?.screenshot({path:path.join(output,'failure-surface.png')}).catch(()=>{});console.error(JSON.stringify({output,...report},null,2));throw error;}
 finally{await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2));await fs.writeFile(path.join(output,'main.log'),log);await browser?.disconnect();if(child.exitCode===null&&!child.signalCode)child.kill('SIGTERM');let timer;const stopped=await Promise.race([exited.then(()=>true),new Promise(resolve=>{timer=setTimeout(()=>resolve(false),3000);})]);clearTimeout(timer);if(!stopped){child.kill('SIGKILL');await exited;}}

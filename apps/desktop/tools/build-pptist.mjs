@@ -14,10 +14,16 @@ const archive=path.join(temporary,'upstream.tar');
 const run=(bin,args)=>{const r=spawnSync(bin,args,{cwd:work,stdio:'inherit',shell:process.platform==='win32'});if(r.error)throw r.error;if(r.status!==0)throw Error(bin+' failed with status '+r.status);};
 try {
 await fs.mkdir(work);
+// An offline cache must contain the exact canonical git archive; it passes
+// the same fixed digest check as a fresh fetch, never a different source tree.
+if(process.env.NOZELI_PPTIST_ARCHIVE){
+await fs.copyFile(path.resolve(process.env.NOZELI_PPTIST_ARCHIVE),archive,fs.constants.COPYFILE_EXCL);
+}else{
 run('git',['init','.']);
 run('git',['remote','add','origin','https://github.com/pipipi-pikachu/PPTist.git']);
 run('git',['fetch','--depth=1','origin',revision]);
 run('git',['-c','core.autocrlf=false','archive','--format=tar','--output='+archive,revision]);
+}
 const digest=createHash('sha256');for await(const chunk of createReadStream(archive))digest.update(chunk);
 const actual=digest.digest('hex');if(actual!==sourceSha256)throw Error('PPTist source SHA-256 mismatch: '+actual);
 run('tar',['-xf',archive]);

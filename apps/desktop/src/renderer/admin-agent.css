@@ -1,3 +1,4 @@
+.local-window-layer:has(>#admin-agent[data-store-analysis]:not([hidden])){z-index:1301}
 #admin-agent *{box-sizing:border-box}
 #admin-agent [hidden]{display:none!important}
 #admin-agent>.local-window-body{overflow:hidden}
@@ -20,8 +21,12 @@
 #admin-agent :is(.admin-project,.admin-actions,.admin-compose-footer)>button:disabled{opacity:.55;cursor:not-allowed}
 #admin-agent :is(button,summary,input):focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
 #admin-agent #admin-transcript{max-height:none;margin:0;overscroll-behavior:contain}
+#admin-agent .admin-skill-handoff{order:1;flex:none;margin:4px 12px;font-size:12px}
 #admin-agent :is(#admin-messages,#admin-proposals,#admin-suggestions){display:flex;flex:none;flex-direction:column;gap:12px;min-width:0}
 #admin-agent :is(#admin-proposals,#admin-suggestions):empty{display:none}
+#admin-agent .admin-native-event{font-size:.9em;color:var(--muted);overflow-wrap:anywhere}
+#admin-agent .tag-message-toolResult{margin-block:0;padding-block:4px}
+#admin-agent .tag-message-user .agent-message-body{white-space:pre-wrap}
 #admin-agent .admin-proposal{padding:10px 12px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
 #admin-agent .admin-proposal p{margin:6px 0}
 #admin-agent .admin-impact{color:var(--muted);font-size:12px}

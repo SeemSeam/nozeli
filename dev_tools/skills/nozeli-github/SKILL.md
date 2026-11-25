@@ -45,6 +45,8 @@ python3 "$HOME/.omp/agent/skills/nozeli-github/scripts/check_release_state.py" -
 
 `draft` requires a still-unpublished prerelease, matching local/remote tag, exact-commit CI and complete checksum-bound assets; it does not require default-branch publication or authorize publishing. Required macOS assets are selected by the union of `release.platformsTargeted` and `platformsExercised`: targeting a platform must not silently skip its archive checks, and does not claim qualification. macOS arm64 uses `apps/desktop/tools/package-macos-release.mjs` on a real arm64 Mac, with ad-hoc signing and no notarization; local asset checks inspect its sealed in-zip `RELEASE.json`. See `docs/release.md` for combining both platforms' checksum manifests and separately exercising extracted applications.
 
+Windows x64 本地集成保留 beta.8，不等于已发布或已验平台。`node apps/desktop/tools/package-windows-release.mjs <absolute-new-output-directory>` 只在原生 Windows x64、Node 22.23.4、干净精确提交上打包；先准备 locked desktop/Pi 依赖、Pi runtime 和 PPTist，安装 MSVC/Spectre 构建依赖。输出 Windows ZIP、同 SHA source tar、`USAGE-windows.zh-CN.md`、`WINDOWS-SMOKE.json` 和 checksum；不安装、上传、发布。ZIP 内 `RELEASE.json`、候选完整清单和原生文件/构建输入 digest 绑定实际字节。提取后实际加载 Node/Electron 原生桥及执行 Git；不以该有限 smoke 代替 GUI、业务、隔离安装、冷恢复或断电持久性验收。当前无 Authenticode 签名，Windows 自动更新不支持；手动升级/回退仅用 `install-windows.mjs` 的专用隔离目录，不动日常安装。Windows 草稿 workflow 仅 workflow_dispatch 精确 SHA，输出留 runner 临时目录，不自动上传任何附件。资产检查按 targeted/exercised 并集要求 Windows ZIP/说明/smoke，CI gate 始终要求 Windows native safety，同时保留 Linux/macOS 原门。以上源码改动尚未原生运行，不得宣称验收或远端部署。历史 Linux/macOS 审计例外不授权 Windows 公开分发。
+
 If gh cannot find the desktop login under a tool's alternate configuration, explicitly use the user's normal home configuration:
 
 ```sh

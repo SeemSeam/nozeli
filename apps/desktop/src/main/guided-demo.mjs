@@ -5,7 +5,7 @@ import {loadDemoTemplate,createDemoDirectory,demoDirectoryIdentity,sameDemoDirec
 import {demoChapters,demoCommands} from '../domain/guided-demo.mjs';
 import {tagMaterialSnapshot} from '../agents/managed/tag-material-delivery.mjs';
 import {preferredRegionAssets} from '../domain/region-drawing.mjs';
-import {platformPersistence} from '../platform/shared/persistence.mjs';
+import {createDesktopProfileIO} from './desktop-profile-io.mjs';
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -31,16 +31,17 @@ const fixtureTitles={'task-a-done':'【演示内容】任务 A · 方法比较�
 const blankProjection=()=>({source,demo:true,works:[],jobs:[],todos:[],receipts:[],messages:[],drafts:{},agents:[],limit:0,quotaUsed:0,configuringTargets:[],externalTerminalTargets:[],nativeDraftTargets:[],busyTargets:[],stopping:false});
 export async function createGuidedDemo(options){const manager=new GuidedDemo(options);await manager.initialize();return manager;}
 export class GuidedDemo {
- constructor({host,userDataDir,appRoot,examplesRoot,workspace,onEvent=()=>{}}){
+ constructor({host,userDataDir,appRoot,examplesRoot,workspace,onEvent=()=>{},profileIO=createDesktopProfileIO(path.resolve(userDataDir))}){
   Object.assign(this,{host,userDataDir:path.resolve(userDataDir),appRoot:path.resolve(appRoot),examplesRoot:path.resolve(examplesRoot),workspace,onEvent});
+  this.profileIO=profileIO;this.diskHash=null;
   this.file=path.join(this.userDataDir,'guided-demo','registry.json');this.data={schemaVersion:1,projects:{}};this.serial=Promise.resolve();this.pending=new Map();
   this.pointerOrigins=new Map();
  }
  async initialize(){
   if(inside(this.userDataDir,this.examplesRoot)||inside(this.examplesRoot,this.userDataDir))throw fail('DEMO_ROOT_DENIED','演示副本必须位于应用配置目录之外。');
-  await fs.mkdir(path.dirname(this.file),{recursive:true,mode:0o700});
-  const directory=await fs.lstat(path.dirname(this.file));if(!directory.isDirectory()||directory.isSymbolicLink())throw fail('DEMO_REGISTRY_INVALID','演示私有登记目录无效。');
-  try{const stat=await fs.lstat(this.file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>16*1024*1024)throw fail('DEMO_REGISTRY_INVALID','演示登记文件无效。');this.data=JSON.parse(await fs.readFile(this.file,'utf8'));if(this.data.schemaVersion!==1||!this.data.projects||Array.isArray(this.data.projects))throw fail('DEMO_REGISTRY_INVALID','演示登记版本无效。');}catch(error){if(error.code!=='ENOENT')throw error;}
+  await this.profileIO.ensureDirectory(path.dirname(this.file));
+  const record=await this.profileIO.read(this.file);this.diskHash=record.sha256;
+  if(record.bytes!==null){this.data=JSON.parse(record.bytes.toString('utf8'));if(this.data.schemaVersion!==1||!this.data.projects||Array.isArray(this.data.projects))throw fail('DEMO_REGISTRY_INVALID','演示登记版本无效。');}
   for(const [id,row] of Object.entries(this.data.projects)){
    if(row.projectId!==id||!row.session||row.session.projectId!==id||!path.isAbsolute(row.root)||!row.identity||!row.manifestDigest||!row.instanceId)throw fail('DEMO_REGISTRY_INVALID','演示身份登记损坏；未启用模型回退。');
    row.session.epoch++;if(!['stopped','finished','removed'].includes(row.session.status))row.session.status='paused';row.session.recovered=true;
@@ -48,7 +49,7 @@ export class GuidedDemo {
   }
   await this.save();
  }
- async save(){await platformPersistence.writeAtomic(this.file,JSON.stringify(this.data));}
+ async save(){const receipt=await this.profileIO.write(this.file,Buffer.from(JSON.stringify(this.data)),{expectedSha256:this.diskHash});this.diskHash=receipt.sha256;}
  mutate(fn){
   const operation=this.serial.then(async()=>{
    if(this.persistenceUncertain)throw fail('DEMO_PERSISTENCE_UNCERTAIN','演示登记已发布但持久化结果不确定；请重启后核对，不会重复执行。');

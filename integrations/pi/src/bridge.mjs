@@ -18,7 +18,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, stat, open } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -27,6 +27,8 @@ import { createFactChannel } from "./facts.mjs";
 import { createActivityState } from "./activity.mjs";
 import {
   CONTEXT_BUDGET_DEFAULTS,
+  importedSkillError,
+  normalizeImportedSkill,
   normalizeMaterials,
   normalizeProjection,
   parseContextBudget,
@@ -34,19 +36,30 @@ import {
   utf8Bytes,
 } from "./context-delivery.mjs";
 import { createNativeQuestionBridge } from './questions.mjs';
+import {withFlushedJournal,prepareJournalDirectory,parseConfirmedJournal,hasRecoveryIntent,publishRecoveryIntent} from './journal-io.mjs';
+import {createOwnerSettingsIO} from './settings-io.mjs';
+import {createOwnerModelAuthIO} from './model-auth-io.mjs';
+import {createOwnerRoleSkillIO} from './role-skill-io.mjs';
+import {createOwnerJournalStorage} from './journal-storage.mjs';
 import {
   createHostToolBridge,
   createInteractionBridge,
   normalizeHostTools,
 } from "./tools.mjs";
-import { nozeliZaiCodingPlanExtension } from "./zai-coding-plan.mjs";
-import {trustedRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools,roleResourceSettings} from './native-skills.mjs';
+import {nozeliZaiCodingPlanExtension} from "./zai-coding-plan.mjs";
+import {pinnedWorkerShell, createWorkerBashToolDefinition} from './shell.mjs';
+import {trustedRoleResources,nativeRoleExtension,restrictedPolicy,validateRestrictedTools,roleResourceSettings,ownerRuntimeResources} from './native-skills.mjs';
+import {catalogError, guardProviderStream, installCatalog, opaqueId, toolCatalog} from './tool-catalog.mjs';
 import {
   installProviderHttpObserver,
   providerHttpObservations,
   providerHttpObserverSeq,
   runWithHttpCorrelation,
 } from "./http-observer.mjs";
+
+const READ_ONLY_INTAKE_TOOLS = new Set(['read','nozeli_manage','nozeli_inspect_work',
+  'nozeli_document_read','nozeli_history_read','nozeli_report_read','nozeli_memory_search',
+  'nozeli_memory_read','nozeli_project_list','nozeli_project_search','nozeli_source_read','nozeli_frontdesk_work_memory']);
 
 const VENDOR_DRIVER_ENTRY = fileURLToPath(
   new URL("../dist/vendor/pi-gui/packages/pi-sdk-driver/index.js", import.meta.url),
@@ -501,17 +514,18 @@ function runContextExtension({ getTurn, instructions, isRunActive, persistRunEnt
         // provider dispatch. Publish fsync-backed entry identities while the
         // original request/job binding is still live, not only after the run.
         if (turn && !turn.settled) await persistRunEntries();
-        const projection = turn?.projection;
-        if (!projection || turn.settled || !isRunActive()) {
-          return undefined;
+        if (!turn || turn !== getTurn() || turn.settled || !isRunActive()) return undefined;
+        const { importedSkill, projection } = turn;
+        if (!importedSkill && !projection) return undefined;
+        const messages = [...event.messages];
+        if (projection) {
+          projection.llmCalls += 1;
+          messages.push({ role: 'user', content: [{ type: 'text', text: projection.envelopeText }], timestamp: Date.now() });
         }
-        projection.llmCalls += 1;
-        event.messages.push({
-          role: "user",
-          content: [{ type: "text", text: projection.envelopeText }],
-          timestamp: Date.now(),
-        });
-        return { messages: event.messages };
+        if (importedSkill) {
+          messages.push({ role: 'user', content: [{ type: 'text', text: importedSkill.envelopeText }], timestamp: Date.now() });
+        }
+        return { messages };
       });
     },
   };
@@ -581,6 +595,9 @@ export class OwnerRuntime {
     this.promptInFlight = null;
     this.unsubscribeDriver = null;
     this.sessionConfig = { definitions: [], nativeTools: undefined, instructions: undefined };
+    this.ordinaryCatalog = null;
+    this.catalogUnsafe = false;
+    this.catalogCompacting = false;
     this.contextBudget = { ...CONTEXT_BUDGET_DEFAULTS };
     // Delivery ledger: one record per explicit requestId. The record IS the
     // duplicate guard — same identity is never resent, while the same text
@@ -614,18 +631,43 @@ export class OwnerRuntime {
     await mkdir(this.agentDir, { recursive: true });
     const vendor = await loadVendor();
     if (!this.driver) {
+      this.settingsIO = await createOwnerSettingsIO({agentDir:this.agentDir});
+      this.modelAuthIO = await createOwnerModelAuthIO({agentDir:this.agentDir});
+      this.roleSkillIO = await createOwnerRoleSkillIO({agentDir:this.agentDir});
+      this.journalStorage=await createOwnerJournalStorage({agentDir:this.agentDir});
       const runtimeImpl = async (options) => {
         const config = this.sessionConfig;
         const merged = { ...options };
         // An application admin conversation keeps native storage separate from
         // the shared credential/settings directory. Preserve the SDK manager
         // on resume; only replace the driver's new-session default manager.
-        if(this.creatingAdminSession)merged.sessionManager=vendor.SessionManager.create(this.cwd,this.adminSessionDir);
-        if(config.resources)merged.settingsManager=roleResourceSettings(options.settingsManager,options.cwd??this.cwd,this.agentDir);
-        if (config.definitions.length > 0) {
-          merged.customTools = [...(options.customTools ?? []), ...config.definitions];
+        if(this.creatingAdminSession)merged.sessionManager=vendor.SessionManager.create(this.cwd,this.adminSessionDir,undefined,this.journalStorage);
+        if(this.modelAuthIO&&!options.modelRuntime)merged.modelRuntime=await this.modelAuthIO.createModelRuntime({refreshOnCreate:true,signal:options.modelRuntimeSignal});
+        const settings=options.settingsManager??this.settingsIO?.createSettingsManager(options.cwd??this.cwd);
+        if(config.resources)merged.settingsManager=roleResourceSettings(settings,options.cwd??this.cwd,this.agentDir);
+        else if(settings)merged.settingsManager=settings;
+        // Windows owner environments are fixed, so the SDK's ambient bash
+        // discovery cannot run in the worker: pin the host-verified shell when
+        // present, and keep the tool explicit about the missing device
+        // prerequisite otherwise. Sessions that do not expose bash (nativeTools
+        // 'none' or a list without it) stay untouched.
+        const definitions = [...config.definitions];
+        const workerShell = pinnedWorkerShell();
+        if (workerShell || process.platform === "win32") {
+          const exposesBash = config.nativeTools === undefined
+            || (Array.isArray(config.nativeTools) && config.nativeTools.includes("bash"));
+          if (exposesBash) {
+            definitions.push(createWorkerBashToolDefinition({ cwd: options.cwd ?? this.cwd, shell: workerShell }));
+          }
         }
-        if (config.nativeTools === "none") {
+        if (!config.resources && definitions.length > 0) {
+          merged.customTools = [...(options.customTools ?? []), ...definitions];
+        }
+        if (config.resources) {
+          // An SDK allowlist also filters runtime registration. The trusted
+          // role's exact catalog below owns activation instead.
+          delete merged.tools;
+        } else if (config.nativeTools === "none") {
           merged.tools = [];
         } else if (Array.isArray(config.nativeTools)) {
           merged.tools = [
@@ -641,7 +683,7 @@ export class OwnerRuntime {
           ...config.resources?.options,
           extensionFactories: [
             ...(options.resourceLoaderOptions?.extensionFactories ?? []),
-            ...(config.resources?[nativeRoleExtension({cwd:this.cwd,resources:config.resources,getTurn:()=>this.promptInFlight,onApi:api=>{this.roleApi=api;}})]:[]),
+            ...(config.resources?[nativeRoleExtension({cwd:this.cwd,resources:config.resources,definitions,getTurn:()=>this.promptInFlight,onApi:(api,read)=>{this.roleApi=api;this.roleRead=read;}})]:[]),
             runContextExtension({
               getTurn: () => this.promptInFlight,
               persistRunEntries: () => this.flush(),
@@ -653,17 +695,51 @@ export class OwnerRuntime {
           ],
         };
         const runtime = await vendor.createAgentSessionRuntimeWithNpmFallback(merged);
+        if (config.resources) {
+          const {session} = runtime;
+          const nativeNames = config.nativeTools === 'none' || merged.noTools ? [] : config.nativeTools ?? session.settingsManager.getDefaultTools() ?? ['read','bash','edit','write'];
+          const configured = [...nativeNames.filter(name => !definitions.some(tool => tool.name === name))
+            .map(name => session.getToolDefinition(name)), ...definitions];
+          if (configured.some(tool => !tool)) throw catalogError();
+          const ordinary = toolCatalog(configured);
+          if (this.ordinaryCatalog && this.ordinaryCatalog.digest !== ordinary.digest) throw catalogError();
+          this.ordinaryCatalog ??= ordinary;
+          const readOnly = toolCatalog(configured.filter(tool => READ_ONLY_INTAKE_TOOLS.has(tool.name)));
+          if (this.readOnlyIntakeCatalog && this.readOnlyIntakeCatalog.digest !== readOnly.digest) throw catalogError();
+          this.readOnlyIntakeCatalog ??= readOnly;
+          installCatalog(session, this.ordinaryCatalog);
+          guardProviderStream(session, {
+            currentTurn: () => this.promptInFlight,
+            canSummarize: () => !this.catalogUnsafe && (this.catalogCompacting || this.facts.isCompacting()),
+            observe: (turn, purpose, api, wire) => {
+              this.catalogFact(turn, 'outbound-verified', {
+                purpose, api, tools: wire.tools, schemaDigest: wire.digest,
+              });
+              if (purpose === 'inference') turn.onImportedSkillVerified?.();
+            },
+          });
+        }
         this.nativeRuntime = runtime;
         return runtime;
       };
+      const builtinExtensions = [nozeliZaiCodingPlanExtension()];
       this.driver = vendor.createPiSdkDriver({
         agentDir: this.agentDir,
+        ...(this.journalStorage?{createSessionManager:request=>{
+          const SessionManager=vendor.SessionManager;
+          if(request.kind==='open')return SessionManager.open(request.sessionFile,request.sessionDir,request.cwd,this.journalStorage);
+          if(request.kind==='fork')return SessionManager.forkFrom(request.sessionFile,request.cwd,request.sessionDir,undefined,this.journalStorage);
+          return SessionManager.create(request.cwd,request.sessionDir,undefined,this.journalStorage);
+        }}:{}),
+        ...(this.modelAuthIO?{createModelRuntime:options=>this.modelAuthIO.createModelRuntime(options),
+          modelConfigStorage:{read:()=>this.modelAuthIO.readModels(),update:fn=>this.modelAuthIO.updateModels(fn)}}:{}),
         catalogStorage: this.storage,
         createAgentSessionRuntimeImpl: runtimeImpl,
         // The ZCode browser sign-in rides the same builtin-extension path for
         // settings snapshots AND live sessions, so a stored credential
         // resolves for real requests, not only in the settings UI.
-        builtinExtensions: [nozeliZaiCodingPlanExtension()],
+        builtinExtensions,
+        createRuntimeResources: (cwd,agentDir) => ownerRuntimeResources(cwd,agentDir,builtinExtensions,this.settingsIO),
         onNativeSessionEvent: (ref, event) => this.facts.onNativeSessionEvent(ref, event),
         openUrl: (url) =>
           this.send({ event: "native", eventData: { type: "openUrl", url } }),
@@ -671,6 +747,37 @@ export class OwnerRuntime {
     }
     if (cwd) {
       this.cwd ??= path.resolve(cwd);
+    }
+  }
+
+  catalogFact(turn, phase, evidence = {}) {
+    // Do not use the general delivery helper: it can inject raw host ids.
+    if (phase === 'outbound-verified' && turn && (turn.catalogObservations = (turn.catalogObservations ?? 0) + 1) > 64) return;
+    this.send({event:'native', eventData:{type:'nozeliToolCatalog', phase,
+      projectInstanceId:turn?.projectInstanceId ?? this.projectInstanceId ?? null,
+      requestId:opaqueId(turn?.requestId), jobId:opaqueId(turn?.jobId), attemptId:opaqueId(turn?.turnId),
+      mode:turn?.restricted?.mode ?? (turn?.readOnlyIntake ? 'read-only' : 'ordinary'), ...evidence,
+    }});
+  }
+
+  installOrdinaryCatalog(turn) {
+    for (const definition of turn?.overriddenTools ?? []) this.roleApi.registerTool(definition);
+    installCatalog(this.nativeRuntime.session, this.ordinaryCatalog);
+  }
+
+  restoreCatalog(turn, deliveryPhase) {
+    if (!this.ordinaryCatalog) return;
+    if (!turn.settled) {
+      this.catalogUnsafe = true;
+      return;
+    }
+    try {
+      if (this.nativeRuntime.session.isStreaming) throw catalogError('PI_TOOL_CATALOG_UNSAFE');
+      this.installOrdinaryCatalog(turn);
+    }
+    catch {
+      this.catalogUnsafe = true;
+      throw Object.assign(catalogError('PI_TOOL_CATALOG_UNSAFE'), {deliveryPhase});
     }
   }
 
@@ -766,9 +873,16 @@ export class OwnerRuntime {
     await this.ensureInitialized(params);
     if(params.role==='admin'){
       const home=typeof params.home==='string'?path.resolve(params.home):null;
-      if(!home||typeof params.sessionDir!=='string'||path.resolve(params.sessionDir)!==path.join(home,'sessions'))throw Object.assign(new Error('Admin requires its exact private native session directory'),{code:'PI_SESSION_SCOPE'});
+      // Windows journals live under the pinned agent directory; other
+      // platforms retain the existing private admin sessions layout.
+      const sessionDirectory=process.platform==='win32'?path.join(home??'','config','sessions'):path.join(home??'','sessions');
+      if(!home||typeof params.sessionDir!=='string'||path.resolve(params.sessionDir)!==sessionDirectory)throw Object.assign(new Error('Admin requires its exact private native session directory'),{code:'PI_SESSION_SCOPE'});
       this.adminSessionDir=path.resolve(params.sessionDir);
-      await mkdir(this.adminSessionDir,{recursive:true,mode:0o700});
+      // Under native custody the pinned journal directory creation itself
+      // provisions the private DACL; a plain mkdir here would break it.
+      const prepared=await prepareJournalDirectory(this.cwd,this.agentDir,this.adminSessionDir);
+      this.journalDirectory??=prepared;
+      if(!prepared)await mkdir(this.adminSessionDir,{recursive:true,mode:0o700});
     }else if(params.sessionDir!==undefined)throw Object.assign(new Error('Explicit session directory is restricted to the application admin role'),{code:'PI_SESSION_SCOPE'});
     else this.adminSessionDir=null;
     if (this.sessionRef) {
@@ -780,6 +894,7 @@ export class OwnerRuntime {
       throw Object.assign(new Error("cwd is required"), { code: "PI_INVALID_PARAMS" });
     }
     this.cwd = path.resolve(params.cwd);
+    this.journalDirectory ??= await prepareJournalDirectory(this.cwd,this.agentDir);
     const { SessionManager } = await loadVendor();
 
     const model = parseModelSelector(params.model ?? null);
@@ -800,8 +915,10 @@ export class OwnerRuntime {
               )
             : undefined,
       instructions: typeof params.instructions === "string" ? params.instructions : undefined,
-      resources: params.role ? await trustedRoleResources(params.role,params.roleSkillCatalog,params.rolePackageRoot) : null,
+      role: params.role,
+      resources: params.role ? await trustedRoleResources(params.role,params.roleSkillCatalog,params.rolePackageRoot,this.roleSkillIO) : null,
     };
+    this.projectInstanceId = opaqueId(params.projectInstanceId);
     this.contextBudget = parseContextBudget(params?.budget);
 
     let sessionFile = null;
@@ -828,7 +945,7 @@ export class OwnerRuntime {
     const workspace = workspaceRefFor(this.cwd);
     let snapshot;
     if (sessionFile) {
-      const probe = SessionManager.open(sessionFile);
+      const probe = SessionManager.open(sessionFile,undefined,this.cwd,this.journalStorage??undefined);
       sessionId = probe.getSessionId();
       if (params.sessionId && sessionId !== params.sessionId) {
         throw Object.assign(
@@ -878,9 +995,11 @@ export class OwnerRuntime {
     );
     const config = snapshot.config ?? {};
     const effort = this.effectiveNow().effort ?? null;
-    await this.flush();
+    const journalSnapshot = await this.flush();
     return {
       sessionId,
+      ...(params.metadataEvidence?{metadataEvidence:params.metadataEvidence}:{}),
+      ...(process.platform === 'win32' ? {journalSnapshot} : {}),
       sessionFile: resolvedSessionFile,
       resume,
       model:
@@ -905,9 +1024,8 @@ export class OwnerRuntime {
       if (typeof params[key] !== 'string' || !params[key]) throw Object.assign(new Error(`Recovery requires ${key}`), {code:'PI_RECOVERY_IDENTITY'});
     }
     if (params.sessionId !== this.sessionRef.sessionId) throw Object.assign(new Error('Recovery session mismatch'), {code:'PI_RECOVERY_IDENTITY'});
-    await this.flush();
-    const file = await this.resolvedSessionFile();
-    const manager = (await loadVendor()).SessionManager.open(file);
+    const {manager,snapshot} = await this.readJournalSnapshot({project:true});
+    const file = snapshot.sessionFile;
     const leafId = manager.getLeafId();
     if (manager.getSessionId() !== params.sessionId || params.expectedLeafId && params.expectedLeafId !== leafId || this.nativeRuntime.session.sessionManager.getLeafId() !== leafId) throw Object.assign(new Error('Recovery journal leaf changed'), {code:'PI_RECOVERY_STALE_LEAF'});
     const branch = manager.getBranch();
@@ -928,7 +1046,7 @@ export class OwnerRuntime {
     const completed = tail?.role === 'assistant' && ['stop', 'length'].includes(tail.stopReason);
     const resumable = tail?.role === 'user' || tail?.role === 'toolResult' || tail?.role === 'assistant' && tail.stopReason === 'aborted';
     const intentFile = `${file}.recovery-${createHash('sha256').update(String(leafId)).digest('hex')}.json`;
-    const fenced = existsSync(intentFile);
+    const fenced = await hasRecoveryIntent(intentFile);
     return {sessionId:params.sessionId,requestId:params.requestId,jobId:params.jobId,userEntryId:params.userEntryId,leafId,
       state:pendingToolCalls.length || fenced || !completed && !resumable ? 'needs-reconciliation' : completed ? 'completed' : 'resumable',
       reason:pendingToolCalls.length ? 'pending-tool-effect-unknown' : fenced ? 'recovery-intent-already-dispatched' : !completed && !resumable ? 'unsupported-journal-tail' : null,
@@ -936,6 +1054,10 @@ export class OwnerRuntime {
   }
 
   async recover(params = {}) {
+    if (this.catalogUnsafe) throw catalogError('PI_TOOL_CATALOG_UNSAFE');
+    if (params.job?.type === 'intake' || params.job?.context?.restrictedMode) {
+      throw Object.assign(Error('Historical intake or restricted job requires reconciliation; it cannot continue natively'), {code:'PI_RECOVERY_RECONCILIATION'});
+    }
     if (!params.expectedLeafId || !params.recoveryAttemptId || params.job?.id !== params.jobId) throw Object.assign(new Error('Recovery requires exact leaf, attempt and durable job'), {code:'PI_RECOVERY_IDENTITY'});
     const inspection = await this.inspectRecovery(params);
     if (inspection.state === 'needs-reconciliation') throw Object.assign(new Error(inspection.reason), {code:'PI_RECOVERY_RECONCILIATION'});
@@ -945,15 +1067,22 @@ export class OwnerRuntime {
       const message = branch.filter(entry => entry.type === 'message').at(-1)?.message;
       return {text:(message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join(''),completion:'provider-completed',recovery,entries:[],settlement:{observed:true,persisted:true},effective:this.effectiveNow(),contextEpoch:this.contextEpoch()};
     }
+    if (params.importedSkill !== undefined || params.job?.context?.importedSkill != null ||
+        this.deliveryRecords.get(params.requestId)?.importedSkill) {
+      throw Object.assign(Error('An imported-skill turn requires reconciliation; it cannot continue natively'), {code:'PI_RECOVERY_RECONCILIATION'});
+    }
     const file = await this.resolvedSessionFile();
     const intentFile = `${file}.recovery-${createHash('sha256').update(String(inspection.leafId)).digest('hex')}.json`;
-    const handle = await open(intentFile,'wx',0o600);
-    try {await handle.writeFile(JSON.stringify(recovery));await handle.sync();} finally {await handle.close();}
-    const directory = await open(path.dirname(file),'r');try {await directory.sync();} finally {await directory.close();}
+    await publishRecoveryIntent(intentFile,recovery);
     // This intent deliberately remains after errors/crashes: an uncertain model
     // dispatch cannot be replayed at the same leaf by another owner.
     const before = new Set(this.nativeRuntime.session.sessionManager.getEntries().map(entry => entry.id));
     const turn = {turnId:params.recoveryAttemptId,requestId:params.requestId,jobId:params.jobId,sessionId:params.sessionId,settled:false,aborted:false};
+    if (this.promptInFlight || this.catalogCompacting) throw Object.assign(Error('Pi owner is busy'), {code:'PI_BUSY'});
+    if (this.ordinaryCatalog) {
+      installCatalog(this.nativeRuntime.session, this.ordinaryCatalog);
+      turn.toolCatalog = this.ordinaryCatalog;
+    }
     this.promptInFlight = turn;this.facts.beginTurn(turn);this.tools.setTurn(turn);this.questions.setTurn(turn);
     try {
       await runWithHttpCorrelation(turn.turnId, () => this.driver.continueSession(this.sessionRef, async () => {
@@ -961,20 +1090,20 @@ export class OwnerRuntime {
         const preparedLeafId = this.nativeRuntime.session.sessionManager.getLeafId();
         if (preparedLeafId !== inspection.leafId) {
           const preparedIntent = `${file}.recovery-${createHash('sha256').update(String(preparedLeafId)).digest('hex')}.json`;
-          const preparedHandle = await open(preparedIntent,'wx',0o600);
-          try {await preparedHandle.writeFile(JSON.stringify({...recovery,preparedLeafId}));await preparedHandle.sync();} finally {await preparedHandle.close();}
-          const dir = await open(path.dirname(file),'r');try {await dir.sync();} finally {await dir.close();}
+          await publishRecoveryIntent(preparedIntent,{...recovery,preparedLeafId});
         }
       }));
       if (!turn.settled) throw Object.assign(new Error('Native recovery settlement not observed'), {code:'PI_SETTLEMENT_UNKNOWN'});
       await this.flush();
+      if (turn.catalogFailure) throw turn.catalogFailure;
       if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message), {code:'PI_HOST_TOOL_FAILED',failureOrigin:'host',...(typeof turn.hostToolError.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(turn.hostToolError.code)?{hostToolCode:turn.hostToolError.code}:{})});
       if (this.facts.state.turnErrorMessage && !turn.aborted) throw Object.assign(new Error(this.facts.state.turnErrorMessage), {code:'PI_PROVIDER_FAILED'});
       recovery.nativeAdmitted = this.facts.state.admitted === true;
       return {text:this.facts.state.lastAssistantText ?? '',completion:turn.hostControl?'host-control':turn.aborted?'aborted':'provider-completed',effective:this.effectiveNow(),contextEpoch:this.contextEpoch(),recovery,
         entries:this.nativeRuntime.session.sessionManager.getEntries().filter(entry => !before.has(entry.id)),settlement:{observed:true,persisted:true}};
     } finally {
-      if (turn.settled) {this.promptInFlight=null;this.facts.endTurn();this.tools.setTurn(null);this.questions.setTurn(null);}
+      try { this.restoreCatalog(turn, 'unknown'); }
+      finally { if (turn.settled) {this.promptInFlight=null;this.facts.endTurn();this.tools.setTurn(null);this.questions.setTurn(null);} }
     }
   }
 
@@ -982,35 +1111,40 @@ export class OwnerRuntime {
     if (!this.sessionRef) {
       throw Object.assign(new Error("session not started"), { code: "PI_NOT_STARTED" });
     }
-    if (this.promptInFlight) {
-      throw Object.assign(new Error("a prompt is already in flight"), { code: "PI_BUSY" });
+    const requestId = typeof params?.requestId === 'string' && params.requestId ? params.requestId : undefined;
+    const assertNotDuplicate = () => {
+      const prior = requestId && this.deliveryRecords.get(requestId);
+      if (prior) throw Object.assign(Error('Request already reserved; reconcile its original delivery without replay'),
+        { code: 'PI_DUPLICATE_REQUEST', deliveryPhase: prior.phase });
+    };
+    assertNotDuplicate();
+    if (this.catalogUnsafe) throw Object.assign(catalogError('PI_TOOL_CATALOG_UNSAFE'), {definitiveNonDispatch:true, deliveryPhase:'not-submitted'});
+    if (this.promptInFlight || this.catalogCompacting) {
+      throw Object.assign(new Error('a prompt is already in flight'), { code: 'PI_BUSY' });
     }
-    if (typeof params?.text !== "string" || !params.text) {
-      throw Object.assign(new Error("text is required"), { code: "PI_INVALID_PARAMS" });
+    if (typeof params?.text !== 'string' || !params.text) {
+      throw Object.assign(new Error('text is required'), { code: 'PI_INVALID_PARAMS' });
     }
-    const requestId = typeof params.requestId === "string" && params.requestId ? params.requestId : undefined;
-    if (requestId) {
-      const prior = this.deliveryRecords.get(requestId);
-      if (prior) {
-        // One delivery identity, one native send: never resent here. A prior
-        // unknown stays fenced until the host reconciles against the journal.
-        throw Object.assign(
-          new Error(
-            prior.phase === "native-record-confirmed"
-              ? `request ${requestId} was already delivered as native entry ${prior.text.entryId ?? "?"}; resend requires a new explicit input identity`
-              : `request ${requestId} has unknown settlement (phase ${prior.phase}); reconcile before any resend`,
-          ),
-          { code: "PI_DUPLICATE_REQUEST", deliveryPhase: prior.phase },
-        );
+    const turnId = randomUUID();
+    const readOnlyIntake = params.job?.context?.routingMode === 'read-only';
+    let importedSkill = null;
+    if (params.importedSkill !== undefined) {
+      if (!this.ordinaryCatalog || !['frontdesk', 'orchestrator', 'worker'].includes(this.sessionConfig.role) ||
+          params.restrictedMode != null || params.job?.context?.restrictedMode != null || readOnlyIntake) {
+        throw importedSkillError('PI_IMPORTED_SKILL_FORBIDDEN', 'Imported skills require an ordinary project role turn', true);
       }
+      if (!requestId) throw importedSkillError('PI_IMPORTED_SKILL_INVALID', 'Imported skills require a requestId', true);
+      importedSkill = normalizeImportedSkill(params.importedSkill, turnId);
     }
     const attachments = await normalizeImages(params.images);
+    if (!this.sessionRef) throw Object.assign(Error('session not started'), {code:'PI_NOT_STARTED'});
+    assertNotDuplicate();
     if (attachments.length && !this.nativeRuntime.session.model?.input?.includes('image')) {
       throw Object.assign(new Error('当前模型未声明支持图片，截图未发送。请在 AI 源为支持图片的模型添加 [image]，或切换支持图片的模型。'), {code:'PI_IMAGE_UNSUPPORTED'});
     }
     const restricted=restrictedPolicy(params.restrictedMode??params.job?.context?.restrictedMode,params);
     const supplied=restricted?validateRestrictedTools(restricted,normalizeHostTools(params.tools??[])):null;
-    const ordinaryTools=restricted?this.nativeRuntime.session.getActiveToolNames():null;
+    if (this.promptInFlight || this.catalogCompacting) throw Object.assign(Error('Pi owner is busy'), {code:'PI_BUSY'});
     const projection = normalizeProjection(params.projection, this.contextBudget.projectionMaxBytes);
     const materials = normalizeMaterials(params.materials, { requestId, jobId: params.job?.id });
     const textBytes = utf8Bytes(params.text);
@@ -1024,6 +1158,10 @@ export class OwnerRuntime {
       projection: projection
         ? { bytes: projection.bytes, sha256: projection.sha256, llmCalls: 0, persisted: false }
         : null,
+      ...(importedSkill ? { importedSkill: {
+        id: importedSkill.id, version: importedSkill.version, digest: importedSkill.digest,
+        bytes: importedSkill.bytes, persisted: false, outboundVerifiedCalls: 0,
+      } } : {}),
       budget: null,
     };
     const budgetSnapshot = () => {
@@ -1036,22 +1174,72 @@ export class OwnerRuntime {
         contextEpoch: this.contextEpoch(),
       };
     };
-    const emitDelivery = () => this.facts.delivery({ type: "nozeliDelivery", ...record, projection: record.projection });
+    const emitDelivery = () => this.facts.delivery({ type: 'nozeliDelivery', ...toJsonShallow(record) });
     const turn = {
-      turnId: randomUUID(),
+      turnId,
       requestId,
       jobId: record.jobId,
-      restricted,allowedTools:new Set(supplied?.map(tool=>tool.name)??[]),
+      projectInstanceId: this.projectInstanceId ?? opaqueId(params.projectInstanceId ?? params.job?.context?.projectInstanceId),
+      restricted,readOnlyIntake,allowedTools:new Set(supplied?.map(tool=>tool.name)??[]),
       // The raw user text stays the ONLY user entry; materials ride one
       // journaled custom message, the projection never journals at all.
       rawText: params.text,
       materialsMessage: materials ? materials.message : null,
       projection,
+      importedSkill,
+      ...(importedSkill ? { onImportedSkillVerified: () => {
+        if (++record.importedSkill.outboundVerifiedCalls === 1) emitDelivery();
+      } } : {}),
       sessionId: this.sessionRef.sessionId,
       settled: false,
       aborted: false,
       notifySettled: null,
     };
+    // Installation and verification precede both identity reservation and
+    // submission. A refusal here is positive non-dispatch evidence.
+    if (this.ordinaryCatalog || restricted || readOnlyIntake) {
+      const session = this.nativeRuntime.session;
+      try {
+        const boundMode = params.job?.context?.restrictedMode;
+        if (boundMode != null && boundMode !== restricted?.mode ||
+            this.projectInstanceId && [params.projectInstanceId,params.job?.context?.projectInstanceId]
+              .some(id => id != null && id !== this.projectInstanceId)) throw catalogError();
+        if (readOnlyIntake && (restricted || params.job?.type !== 'intake' || this.sessionConfig.role !== 'orchestrator')) throw catalogError();
+        if (session.isStreaming || this.catalogUnsafe) {
+          this.catalogUnsafe = true;
+          throw catalogError('PI_TOOL_CATALOG_UNSAFE');
+        }
+        if (restricted) {
+          if (!this.roleApi || !this.ordinaryCatalog) throw catalogError();
+          const definitions = this.tools.definitionsFor(supplied);
+          const includeRead = !['frontdesk-memory','work-handoff','handoff-dispatch','handoff-worker'].includes(restricted.mode);
+          turn.toolCatalog = toolCatalog(includeRead ? [this.roleRead, ...definitions] : definitions);
+          // A host name (e.g. nozeli_maintenance) can deliberately have a
+          // narrower, different schema in DEBUG. Restore the original DEF,
+          // not just its name, after this turn is confirmed stopped.
+          turn.overriddenTools = this.sessionConfig.definitions.filter(definition => turn.allowedTools.has(definition.name));
+          for (const definition of definitions) this.roleApi.registerTool(definition);
+        } else if (readOnlyIntake) {
+          turn.toolCatalog = this.readOnlyIntakeCatalog;
+          if (!turn.toolCatalog?.tools.some(tool => tool.name === 'nozeli_manage')) throw catalogError();
+        } else {
+          turn.toolCatalog = this.ordinaryCatalog;
+          if (this.sessionConfig.role === 'orchestrator' && params.job?.type === 'intake' &&
+              ['nozeli_dispatch','nozeli_manage'].some(name => !turn.toolCatalog.tools.some(tool => tool.name === name))) throw catalogError();
+        }
+        installCatalog(session, turn.toolCatalog);
+      } catch {
+        if (!this.catalogUnsafe && this.ordinaryCatalog) {
+          try { this.installOrdinaryCatalog(turn); } catch { this.catalogUnsafe = true; }
+        }
+        this.catalogFact(turn, 'admission-rejected');
+        throw Object.assign(catalogError(this.catalogUnsafe ? 'PI_TOOL_CATALOG_UNSAFE' : 'PI_TOOL_CATALOG_MISMATCH'),
+          {definitiveNonDispatch:true, deliveryPhase:'not-submitted'});
+      }
+    }
+    // Reserve before publishing any events. A duplicate (including a changed
+    // skill selection) gets the original phase and can never send natively.
+    if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
     this.facts.beginTurn(turn);
     this.tools.setTurn(turn);
     this.questions.setTurn(turn);
@@ -1170,11 +1358,6 @@ export class OwnerRuntime {
       if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
       emitDelivery();
     };
-    // Reserve the delivery identity in memory immediately BEFORE submission
-    // (validation has already passed): once the native send may have started,
-    // the same requestId can never be replayed through this owner, whatever
-    // happens next. No disk ledger — the durable cold guard is host-side.
-    if (requestId) this.deliveryRecords.set(requestId, toJsonShallow(record));
     // Windowed real-transport evidence for this turn: sanitized provider HTTP
     // observations captured by the owner-process fetch observer. Attribution
     // inputs are fixed BEFORE the native send: the opaque per-turn
@@ -1188,11 +1371,6 @@ export class OwnerRuntime {
     const turnCorrelation = turn.turnId;
     const turnEndpoint = this.nativeInferenceEndpoint();
     try {
-    if(restricted){
-      if(!this.roleApi)throw Object.assign(Error('Restricted jobs require a trusted role resource boundary'),{code:'PI_INVALID_PARAMS'});
-      for(const definition of this.tools.definitionsFor(supplied))this.roleApi.registerTool(definition);
-      this.nativeRuntime.session.setActiveToolsByName(['read',...supplied.map(tool=>tool.name)]);
-    }
       try {
         // The whole native run — submission, streaming and any SDK-internal
         // bounded auto-retry — executes inside this turn's correlation scope,
@@ -1216,7 +1394,8 @@ export class OwnerRuntime {
         // entry: verify instead of guessing, then report unknown if absent.
         await this.flush().catch(() => {});
         if (!confirmRecordedEntry()) markUnknown(error?.code ?? error?.message ?? "submit-failed");
-        const mapped = mapError(error, "PI_PROMPT_FAILED");
+        const mapped = turn.catalogFailure ?? mapError(error, "PI_PROMPT_FAILED");
+        if (turn.catalogFailure) throw Object.assign(mapped, {deliveryPhase:record.phase});
         // Structured evidence for the host: real HTTP status from the thrown
         // SDK error (when present) plus the journaled failed-attempt fields.
         // The delivery phase tells the host whether this can ever be treated
@@ -1233,9 +1412,15 @@ export class OwnerRuntime {
       // confirmation, host-tool/provider errors) must leave the reserved
       // identity fenced as unknown unless it was EXACTLY confirmed — an
       // unconfirmed outcome never reopens the same requestId for replay.
+      let journalSnapshot;
       try {
-        await this.flush();
+        journalSnapshot = await this.flush();
         confirmRecordedEntry();
+        if (turn.catalogFailure) throw Object.assign(turn.catalogFailure, {deliveryPhase:record.phase});
+        if (importedSkill && !aborted && record.importedSkill.outboundVerifiedCalls === 0) {
+          throw Object.assign(importedSkillError('PI_IMPORTED_SKILL_UNVERIFIED', 'No verified outbound payload carried the imported skill'),
+            { deliveryPhase: record.phase });
+        }
         if(turn.limitError)throw turn.limitError;
         if (turn.hostToolError) throw Object.assign(new Error(turn.hostToolError.message ?? String(turn.hostToolError)), {code:'PI_HOST_TOOL_FAILED',failureOrigin:'host',...(typeof turn.hostToolError.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(turn.hostToolError.code)?{hostToolCode:turn.hostToolError.code}:{}),cause:turn.hostToolError});
         if (this.facts.state.turnErrorMessage && !aborted) {
@@ -1255,6 +1440,7 @@ export class OwnerRuntime {
       }
       return {
         text: this.facts.state.lastAssistantText ?? '',
+        ...(process.platform === 'win32' ? {journalSnapshot} : {}),
         completion: turn.hostControl ? 'host-control' : aborted ? 'aborted' : 'provider-completed',
         metrics: { ...(this.facts.state.turnUsage ? { usage: this.facts.state.turnUsage } : {}), ...(this.snapshot?.usage ? { sessionUsage: this.snapshot.usage } : {}) },
         effective: this.effectiveNow(), projectedNative: true,
@@ -1267,17 +1453,30 @@ export class OwnerRuntime {
         delivery: toJsonShallow(record),
         contextEpoch: this.contextEpoch(),
       };
+    } catch (error) {
+      turn.promptFailed = true;
+      throw error;
     } finally {
       // An unknown settlement stays fenced by its reserved record; a known
       // provider failure may recover. The owner frees the in-flight slot only
       // after settlement, and the reserved identity — not the slot — is what
       // blocks replay.
-      if (turn.settled) {
-        if(restricted)this.nativeRuntime.session.setActiveToolsByName(ordinaryTools);
-        this.promptInFlight = null;
-        this.facts.endTurn();
-        this.tools.setTurn(null);
-        this.questions.setTurn(null);
+      try { this.restoreCatalog(turn, record.phase); }
+      finally {
+        if (turn.settled) {
+          this.promptInFlight = null;
+          this.facts.endTurn();
+          this.tools.setTurn(null);
+          this.questions.setTurn(null);
+        }
+        if (turn.toolCatalog) this.catalogFact(turn, 'settlement', {
+          outcome: !turn.settled ? 'unknown' : turn.catalogFailure ? 'catalog-rejected' :
+            turn.promptFailed || this.catalogUnsafe ? 'error' : turn.hostControl ? 'host-control' :
+            turn.aborted || turn.cancelRequested ? 'aborted' : 'completed',
+          stopReason: turn.stopReason ?? null, lastToolResult: turn.lastToolResult ?? null,
+          routingReceipt: turn.routingReceipt ?? null, deliveryPhase: record.phase,
+          catalogRestored: turn.settled && !this.catalogUnsafe,
+        });
       }
     }
   }
@@ -1303,13 +1502,15 @@ export class OwnerRuntime {
     if (!current.settled) {
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 10000);
+        const notifyPrompt = current.notifySettled;
         current.notifySettled = () => {
           clearTimeout(timer);
+          notifyPrompt?.();
           resolve();
         };
       });
     }
-    return { stopped: true, requestId: current.requestId };
+    return { stopped: current.settled && !this.nativeRuntime.session.isStreaming, requestId: current.requestId };
   }
 
   async respond(params) {
@@ -1407,7 +1608,8 @@ export class OwnerRuntime {
     if (!this.sessionRef) {
       throw Object.assign(new Error("session not started"), { code: "PI_NOT_STARTED" });
     }
-    if (this.promptInFlight) {
+    if (this.catalogUnsafe) throw catalogError('PI_TOOL_CATALOG_UNSAFE');
+    if (this.promptInFlight || this.catalogCompacting) {
       throw Object.assign(new Error("cannot reload while a prompt runs"), { code: "PI_BUSY" });
     }
     await this.driver.reloadSession(this.sessionRef);
@@ -1422,8 +1624,11 @@ export class OwnerRuntime {
 
   async compact() {
     if (!this.sessionRef) throw Object.assign(new Error('session not started'), {code:'PI_NOT_STARTED'});
-    if (this.promptInFlight) throw Object.assign(new Error('cannot compact an active prompt'), {code:'PI_BUSY'});
-    await this.driver.compactSession(this.sessionRef);
+    if (this.catalogUnsafe) throw catalogError('PI_TOOL_CATALOG_UNSAFE');
+    if (this.promptInFlight || this.catalogCompacting) throw Object.assign(Error('cannot compact an active prompt'), {code:'PI_BUSY'});
+    this.catalogCompacting = true;
+    try { await this.driver.compactSession(this.sessionRef); }
+    finally { this.catalogCompacting = false; }
     const saved = await this.flush();
     return {compacted:true,sessionId:this.sessionRef.sessionId,entryCount:saved.entryCount,leafId:saved.leafId};
   }
@@ -1439,16 +1644,22 @@ export class OwnerRuntime {
     return file;
   }
 
-  async flush() {
+  async flush({metadataEvidence}={}) {
+    const snapshot=(await this.readJournalSnapshot({project:true})).snapshot;
+    return metadataEvidence?{...snapshot,metadataEvidence}:snapshot;
+  }
+
+  async readJournalSnapshot({project=false}={}) {
     if (!this.sessionRef) {
       throw Object.assign(new Error("session not started"), { code: "PI_NOT_STARTED" });
     }
     const file = await this.resolvedSessionFile();
-    const handle = await open(file, 'r');
-    let bytes;
-    try { await handle.sync(); bytes = await handle.readFile(); } finally { await handle.close(); }
-    const entries = bytes.toString('utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(row => row.type !== 'session');
-    for (const entry of entries) {
+    this.journalDirectory?.verify(file);
+    const readJournal=this.journalStorage?this.journalStorage.withFlushed:withFlushedJournal;
+    return readJournal(file,async (bytes,persistence)=>{
+    const {header,entries} = parseConfirmedJournal(bytes,this.sessionRef.sessionId);
+    const manager = (await loadVendor()).SessionManager.inMemory(this.cwd,undefined,[header,...entries]);
+    for (const entry of project?entries:[]) {
       if (typeof entry.id !== 'string') throw Object.assign(new Error('Pi journal entry has no native identity'), {code:'PI_JOURNAL_INVALID'});
       const encoded = JSON.stringify(entry), prior = this.journalEntries.get(entry.id);
       if (prior && prior !== encoded) throw Object.assign(new Error('Pi journal entry identity changed'), {code:'PI_JOURNAL_COLLISION'});
@@ -1472,8 +1683,7 @@ export class OwnerRuntime {
       }
     }
     const stats = await stat(file), digest = createHash('sha256').update(bytes).digest('hex');
-    const manager = (await loadVendor()).SessionManager.open(file);
-    return {
+    const snapshot = {
       sessionFile: file,
       entryCount: entries.length,
       persistedEntryCount: manager.getEntries().length,
@@ -1481,8 +1691,16 @@ export class OwnerRuntime {
       seq: this.facts.currentSeq(),
       mtimeMs: stats.mtimeMs,
       sha256File: digest,
+      ...(process.platform === 'win32' ? {byteLength:bytes.length} : {}),
       contextEpoch: this.contextEpoch(),
+      persistence,
+      ...(this.settingsIO?{settingsReads:this.settingsIO.snapshot()}:{}),
+      ...(this.modelAuthIO?{modelAuthReads:this.modelAuthIO.snapshot()}:{}),
+      ...(this.roleSkillIO?{roleReads:this.roleSkillIO.snapshot()}:{}),
+      ...(this.journalStorage?{journalCustody:this.journalStorage.snapshot()}:{}),
     };
+    return {snapshot,manager};
+    });
   }
 
   activity() {
@@ -1517,6 +1735,7 @@ export class OwnerRuntime {
       thinkingLevels: await this.safeThinkingLevels(),
       hasPrompted: true,
       busy: Boolean(this.promptInFlight),
+      catalogUnsafe: this.catalogUnsafe,
       entryCount,
       leafId,
       seq: this.facts.currentSeq(),
@@ -1532,13 +1751,16 @@ export class OwnerRuntime {
   }
 
   async stop() {
+    try{
+    let finalJournal=null,sessionId=null;
     this.authAbort?.abort(Object.assign(new Error('worker stopping'), { code: 'PI_INTERACTION_CANCELLED' }));
     this.questions.cancelAll();
     if (this.sessionRef) {
+      sessionId=this.sessionRef.sessionId;
       const current = this.promptInFlight;
       if (current && !current.settled) await this.cancel({requestId:current.requestId});
       await this.driver.closeSession(this.sessionRef);
-      await this.flush();
+      finalJournal=await this.flush();
       this.unsubscribeDriver?.();
       this.unsubscribeDriver = null;
       this.promptInFlight = null;
@@ -1546,7 +1768,15 @@ export class OwnerRuntime {
       this.tools.setTurn(null);
       this.sessionRef = null;
     }
-    return { confirmationComplete: true };
+    this.journalDirectory?.close();
+    this.journalDirectory = null;
+    return { confirmationComplete: true,sessionId,finalJournal };
+    }finally{
+      // Release the pinned trusted-role custody HANDLEs on every stop path.
+      // A closure failure stays visible as an unknown custody outcome.
+      this.roleSkillIO?.close();
+      this.journalStorage?.close();
+    }
   }
 
   // ---- provider settings (usable without start) ----

@@ -19,8 +19,7 @@ export async function testStorageOptions(options){
  if(!flight){
   flight=(async()=>{
    await fs.mkdir(contentRoot,{recursive:true});
-   const storage=new ProjectStorage(path.join(path.dirname(contentRoot),'.test-storage'));
-   storages.add(storage);
+   const storage=new ProjectStorage(path.join(path.dirname(contentRoot),'.test-storage'),process.platform==='win32'?{windowsDesktopProjects:true}:undefined);
    const project=await storage.register(contentRoot);
    return {storage,projectId:project.id};
   })();

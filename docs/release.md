@@ -1,6 +1,52 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-beta.8`**（Linux x64＋macOS arm64预发行候选，公开状态以[GitHub发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.8)为准，见[CHANGELOG](../CHANGELOG.md)）。本版聚焦Linux发行副本去特殊权限与Mac arm64原生更新签名验证、原子交换、健康确认、回退及父退出竞态；风险专项、最终精确提交完整CI及双平台实包验收完成后才公开，不预填通过，不重复无关本地全量套件。
+当前版本基线：**`0.1.0-beta.9`**（Linux x64、macOS arm64 与 Windows x64 预发行候选，尚待同一提交的 CI 和三平台实包验收）。用户明确批准本版 Beta 公开预发行审计例外：SuperDoc/PPTist 与 Git、OMP 对应源码，Electron/Chromium 第三方通知，PPTist 传递依赖及 Pi 运行时闭包六项仍未签核，`--public` 继续阻断，不构成合规认证或稳定版授权。
+
+## 三平台稳定版准备（2026-11-18，用户已确认）
+
+目标为真正的稳定正式版，不通过Beta例外绕过分发审计。平台固定Linux x64、macOS arm64、Windows x64；不暗含Intel Mac或Windows ARM。当前源码版本仍为beta.8历史基线，不提前分配稳定tag、不修改已公开附件，不推送／开PR／上传或替换日常安装。
+
+| 门槛 | 当前证据／缺口 | 完成标准 |
+| --- | --- | --- |
+| 统一源码及版本 | 本地主线已含三平台，远端main仍bf7483f | 一个最终产品提交；版本、package/lock、inventory、README、CHANGELOG、来源及三平台包内RELEASE.json一致 |
+| Linux/macOS更新 | 实现保留，本轮仅共享逻辑和Linux限定烟测 | 最终原生包成功更新、启动失败回退、中断恢复、父退出竞态与草稿保护；Mac真实arm64运行，不拿Linux代替 |
+| Windows更新 | 旧95d14e5仅手工安装；现用户授权VM直接补齐 | 真实Windows独立helper、原进程身份停稳、验证包、健康确认、回退／中断恢复、外部赢家／UNKNOWN不重放，全链路新包验收后才能开放支持 |
+| 签名与分发 | Mac ad-hoc未公证；Windows unsigned | 准备正式签名与目标系统分发验证；需要所有者合法证书／账号权限，不自购／读取凭据或关闭系统安全检查 |
+| 六项再分发审计 | 全部pending，历史Beta例外不能用于稳定版 | 各义务真实对应源码／通告／闭包证据及具名人工审核；未签收时public gate继续失败 |
+| 三平台同提交资格 | Windows95d14e5限定通过，不是未来稳定包 | 三平台最终干净提交原生构建、真实解压程序保存／正常退出／冷恢复、业务及平台风险专项、checksum绑定，无旧包改名 |
+| 远端合并与CI | 受保护main要求线性历史及CI gate | 先按权限准备线性候选并取得最终SHA必需CI；当前本地历史含merge提交，不能直接推入受保护main或改保护绕过 |
+
+Windows执行已交VM原生Agent：在独立C盘95d14e5基线补自动更新和Windows稳定使用缺口，保留原N盘源码／profile／UNKNOWN／helper和旧包；仅确定性本地Provider，不付费推理。宿主负责回收源码、共享接口审阅和Linux/Mac消费者验证；VM完成不自动代表三平台签收。任务合同保留于主机 `project-migration/WINDOWS-STABLE-IMPLEMENT.md`，不是产品运行依赖。
+
+实施顺序：Windows现有更新／安装合同与持久状态先明确 → 原生helper／切换／健康与恢复端到端实施 → 原生最终包专项 → 宿主合并与共享回归 → 所有者签名／审计门 → 冻结新版本并三平台同提交验收 → 当前明确授权后才发布。前述门未满足时只称“稳定版准备”，不得标stable/latest；能力缺口不能靠文案隐藏。
+
+## Windows x64 本地整合（2026-11-18）
+
+本轮授权：将 VM 最终源码本地合入 main、对齐 beta.8 并增加 Windows release 构建与校验入口；不推送、不开 PR、不改既有 tag／附件、不公开发布或替换日常安装。保留 `0.1.0-beta.8` 作为源码版本对齐，不冒充已发布 beta.8 的新增 Windows 资产。未来公开新提交必须另定新版本及获得当轮发布授权。
+
+Windows 包必须由真实 Windows x64 从最终干净提交构建，包含独立 Node／Git／Pi、原生文件与进程组件及完整来源记录；最终 ZIP 的 RELEASE.json、校验和与实际解压程序须绑定同一提交。原 VM 候选中的真实任务闭环和 11/11 采用后测试是旧输入证据，不替代合并后原生构建、文件保存／正常退出／冷恢复及派工采纳验证。
+
+在 `95d14e5` 基线中，Windows 自动更新明确不支持，手工安装／升级／回退沿原生安装工具执行。签名／SmartScreen、真实物理 IME／多屏、未知效果对账和旧 helper/home 完整释放资格按[Windows 清单](windows-w0-w5-qualification.md)逐项核验。六项分发审计仍 pending，历史 Linux/macOS 公开例外不覆盖 Windows 或未来版本。
+
+本地完成结果：运行源码 `95d14e5` 已真实 Windows 原生构建并产出 `Nozeli-0.1.0-beta.8-windows-x64.zip`（415749370 bytes，SHA256 `71d6271a26dbf875266d84012c4c64336df59e54ff1a969bf608464138553bf1`），位于 VM `C:/NozeliValidation/release-95d14e5-20261118/`。独立解压包GUI7项、托管业务及安全14项通过；[完整记录](testing.md#2026-11-18-windows-本地整合验证限定通过未公开发布)。本地main后续文档提交不重标包内SHA、不移动现有beta.8 tag，也不将此本地候选当作公开Windows发行。
+
+### Windows stable updater implementation contract (not yet qualified)
+
+Windows VM 提交 `36a6ea0` 已实现原生自动更新，并构建出同提交的未签名 Windows x64 本地候选。解压启动烟测通过；安装验收在 900 秒后超时，未取得成功回执。此候选不构成合并后提交的原生验收或发布资格。
+
+The Windows development branch starts from `95d14e594169fd9799b46f3ce12a1cc1562ec768`; its original ZIP and validation remain immutable. The observed baseline reports `UPDATE_PLATFORM_UNSUPPORTED` before creating update storage. This section specifies implementation and acceptance, not a supported flag or a release approval.
+
+- **Authority:** the native manual installation owns `WINDOWS-INSTALL.json`, `WINDOWS-PROFILE.json`, `ACTIVE.json`, private root/profile FileIDs and the existing `.install-lock`. Updates use those same records and activation CAS; update progress/preferences/attempt/health remain in the existing updater record namespace. A launcher holding its original lock is not a stale lock to steal. Legacy manual installs remain valid and source checkouts remain check-only.
+- **Selection and staging:** Windows x64 ZIP only; exact SemVer/tag commit, archive checksum, `RELEASE.json`, package version, complete candidate membership and native provenance must agree. A stable version excludes prerelease tags/flags. Dedicated credential-free Chromium networking retains its existing GitHub allowlist; loopback is host-test-only. ZIP rejects duplicate/case-fold collisions, reparse/link entries, traversal, reserved/alias paths, wrong architecture and replaced archive. Each Windows download uses a new private directory beneath `profile/desktop/updates` so the archive's retained read handle does not exclude writes to status or preferences. Candidate promotion remains on the owned installation volume with independently revalidated native FileIDs/digests.
+- **Admission:** both automatic and explicit installation require shared lifecycle readiness: no unsaved document/composer/IME input, queued/running/unknown business effect, retained website form, active filesystem operation or unresolved recovery. Freeze, flush, then recheck; never save/cancel user work to make an update admissible. Inspection/download does not authorize activation.
+- **Attempt states:** `prepared` binds token, parent incarnation, installation/active generation and digest, source version/commit, candidate version/commit/digest and private identities. `helper-ready` requires the independent bundled runtime to retain the original parent process HANDLE and original installation authority before main may quit. `promoting` is persisted before the `ACTIVE.json` CAS; `awaiting-health` binds the new active generation and actual child incarnation. `complete` requires a renderer-ready acknowledgment matching the original token, exact version/commit, selected payload and child identity. Each transition is a compare-and-swap against the prior attempt; a lost publication reply remains UNKNOWN for the issuer.
+- **Receipt contention:** Native readers and transactional writers can briefly refuse one another with `ERROR_SHARING_VIOLATION`. Updater JSON access waits briefly without relaxing handle sharing. Each write retry uses the same expected raw digest; digest conflicts, failed commits, and uncertain cleanup are never retried.
+- **Cancellation before promotion:** the helper checks the native private, token-bound cancellation receipt while waiting for the parent and again after the exact parent HANDLE signals exit. A missing receipt permits progress; a valid receipt stands down; malformed or unreadable evidence stops the attempt before lock acquisition.
+- **Failure and restart:** kernel-observed original parent HANDLE exit permits activation, including exit during identity inspection; an unprovable/live/reused process never does. No PID-name kill or timeout-based ownership inference. Failed startup rolls back only active binary selection via the exact expected generation, preserving profile and documents. A concurrent activation winner is retained and blocks rollback. Interrupted download/stage never activates; interrupted `promoting`/`awaiting-health` reconciles exact old/new activation receipts and original process facts, never repeats unknown business. A failed version is quarantined from automatic retry until an explicit check; no restart retry loop.
+- **Official restart custody:** the installer corroborates the attempt and compares its raw record digest through the held native delete lease. It authorizes recovery with a compare-and-swap against the same journal bytes it validated and removes the attempt without releasing custody in between. The relaunched app recognizes the replacement launcher lock by its exact directory FileID, not by a sharing error alone. Recovery of the still-selected promoted version waits for the real renderer-ready acknowledgment; it does not replay activation.
+- **Synthetic crash fixtures:** A crash is injected only when the installation-bound test record explicitly names the transition phase or stage. An omitted hook is inert even when the transition has no stage.
+- **Acceptance:** fresh source-bound native packages and extracted GUI journeys must prove healthy upgrade, startup-failure rollback, interrupted switch/restart, parent-exit-during-identity-check, foreign winner and unsaved draft refusal, failed-version quarantine and tampered/wrong-platform refusal. Synthetic test versions must identify real source commits and real manifests, not renamed baseline packages. Linux/macOS affected contract regressions remain required; signing, SmartScreen, physical IME/multiscreen and power-loss durability are separate gates.
+
 
 ## 版本状态
 

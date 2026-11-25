@@ -17,9 +17,11 @@ for(const item of ['node_modules','vendor','assets'])await symlink(path.join(sou
 const panelPath=path.join(root,'src/renderer/managed-agent-panel.mjs');
 let panel=await readFile(panelPath,'utf8');
 const callAnchor=' const call=async(op,p={},id=projectId)=>{';assert.ok(panel.includes(callAnchor));
-panel=panel.replace(callAnchor,`${callAnchor}window.__uiCalls??=[];window.__uiCalls.push({op,p});if(op==='status')return {state:window.__intakeState,ready:true};if(op==='terminal.screen')return {available:false,reason:'尚未就绪'};`);
+panel=panel.replace(callAnchor,`${callAnchor}window.__uiCalls??=[];window.__uiCalls.push({op,p});if(op==='status')return {state:window.__intakeState,ready:true};if(op==='terminal.screen')return {available:false,reason:'尚未就绪'};if(op==='intake.reconcile'||op==='intake.withdraw'){const job=window.__intakeState.jobs.find(row=>row.id===p.jobId);if(!job||job.errorCode!=='INTAKE_ROUTE_REQUIRED')throw Error('unexpected request');if(op==='intake.withdraw'){if(p.projectInstanceId!=='fixture-instance')throw Error('invalid project instance');job.intakeWithdrawal={projectInstanceId:p.projectInstanceId,effectUnknown:true};}return {jobId:job.id,projectInstanceId:'fixture-instance',status:job.intakeWithdrawal?'withdrawn':'needs-reconciliation',nativeEntryId:'entry',effectUnknown:true,canWithdraw:!job.intakeWithdrawal};}`);
 const previewAnchor=' return {get active()';assert.ok(panel.includes(previewAnchor));
 panel=panel.replace(previewAnchor,` window.__previewTest=s=>{projectId='intake-project';state=s;window.__intakeState=s;ready=true;show(true);render();};${previewAnchor}`);
+// The synthetic project has no registered native discussion. Use the directory’s
+// context menu to open the real overview instead of stubbing native navigation.
 await writeFile(panelPath,panel);
 const agentPanelPath=path.join(root,'src/renderer/agent-panel.mjs');
 await writeFile(agentPanelPath,(await readFile(agentPanelPath,'utf8')).replace('async function loadProjectSettings(id, gen) {','async function loadProjectSettings(id, gen) { return;'));
@@ -35,6 +37,7 @@ child.stdout.on('data',c=>log+=c);child.stderr.on('data',c=>log+=c);
 const report={evidenceKind:'injected-durable-state-real-shell-DOM',checks:[],errors:[]};
 const check=name=>{report.checks.push(name);console.log(JSON.stringify({check:name}));};
 const category=async name=>{await page.$eval('#managed-work-category-more',n=>n.click());await page.waitForFunction(()=>!document.querySelector('#managed-work-filter-menu').hidden);await page.$eval(`[data-command="filter-${name}"]`,n=>n.click());};
+const menuAction=async(row,action)=>{await page.$eval(row+' .managed-work-more',n=>n.click());await page.waitForSelector(`#managed-work-menu:not([hidden]) [data-command="${action}"]`,{visible:true});await page.$eval(`#managed-work-menu [data-command="${action}"]`,n=>n.click());};
 try{
  const deadline=Date.now()+60000;
  for(;;){if(child.exitCode!==null||child.signalCode)throw Error(log);try{if((await fetch(`http://127.0.0.1:${port}/json/version`)).ok)break;}catch{}if(Date.now()>deadline)throw Error('Startup timeout: '+log);await new Promise(r=>setTimeout(r,100));}
@@ -49,34 +52,57 @@ try{
  await page.$eval('[data-managed-category="active"]',n=>n.click());await page.evaluate(()=>window.__firstRow=document.querySelector('[data-managed-request="request:intake-1"]'));
  check('durable pending intake appears under submitted and active directory controls before Work exists');
  await page.evaluate(()=>{const s=window.__intakeState;s.jobs[0].status='completed';s.jobs[0].routing={action:'clarify'};s.todos.push({id:'q',sourceJobId:'intake-1',kind:'routing',status:'open',text:'后台核对格式'});window.__previewTest(s);});
- assert.match(await page.$eval('[data-managed-request="request:intake-1"]',n=>n.textContent),/后台核对中.*原请求已保留/);
+ assert.match(await page.$eval('[data-managed-request="request:intake-1"] .managed-work-open',n=>n.getAttribute('aria-label')), /后台核对中.*原请求已保留/);
  assert.equal(await page.$$eval('#inbox-reports [data-managed-todo="q"]',ns=>ns.length),0);
- await page.$eval('[data-managed-request="request:intake-1"] .managed-work-open',n=>n.click());await page.waitForFunction(()=>document.querySelector('#managed-agent-details').open);
+ await menuAction('[data-managed-request="request:intake-1"]','details');await page.waitForSelector('#managed-agent-details[open]');
  assert.equal(await page.$$eval('#managed-current-request button',ns=>ns.length),0);await page.evaluate(()=>document.querySelector('#managed-agent-details').close());
  check('internal routing gate stays read-only rather than becoming a user technical question');
  await page.evaluate(()=>{const s=window.__intakeState;s.todos[0].status='resolved';s.jobs.push({id:'answer',target:'orchestrator',type:'intake',text:'核对完成',status:'completed',context:{routingQuestionId:'q'},routing:{action:'dispatch',workId:'w'}});s.works.push({id:'w',name:'核对',sourceJob:'answer',request:'先核对',status:'queued',revision:1});window.__previewTest(s);});
  assert.equal(await page.evaluate(()=>window.__firstRow===document.querySelector('[data-managed-work="w"]')),true);
- await page.$eval('[data-managed-work="w"] .managed-work-open',n=>n.click());await page.waitForFunction(()=>document.querySelector('#managed-agent-details').open);
+ await page.$eval('[data-managed-work="w"]',n=>n.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})));await page.waitForSelector('#managed-work-menu [data-command="details"]',{visible:true});await page.$eval('#managed-work-menu [data-command="details"]',n=>n.click());await page.waitForFunction(()=>document.querySelector('#managed-agent-details').open);
  assert.equal(await page.$$eval('#managed-current-work [data-work-control-details]',ns=>ns.length),1);assert.equal(await page.$$eval('#managed-current-work [data-managed-work-end]',ns=>ns.length),1);
  await page.evaluate(()=>document.querySelector('#managed-agent-details').close());check('dispatch preserves the same request row and genuine Work execution/cancellation controls');
  await page.evaluate(()=>{const s=window.__intakeState;s.jobs.push({id:'failed',target:'orchestrator',type:'intake',text:'[protocol wrapper] nozeli_inspect_work @state cursor=""',status:'failed',context:{userGoal:'开始落盘'},error:'INVALID_CURSOR internal stack',maintenanceBugId:'bug-intake',maintenanceFault:{phase:'runtime',code:'INVALID_CURSOR'}});s.todos.push({id:'internal-todo',kind:'system',sourceJobId:'failed',status:'open',text:'INVALID_CURSOR'});window.__previewTest(s);window.__faultCallStart=window.__uiCalls.length;});
  assert.equal(await page.$eval('[data-managed-request="request:failed"] .managed-work-name',n=>n.textContent),'开始落盘');
  assert.equal(await page.$eval('[data-managed-request="request:failed"] .managed-work-status',n=>n.textContent),'系统问题待处理');
- assert.match(await page.$eval('[data-managed-request="request:failed"] .managed-work-detail',n=>n.textContent),/原请求已保留/);
- await page.$eval('[data-managed-request="request:failed"] .managed-work-open',n=>n.click());await page.waitForFunction(()=>document.querySelector('#managed-agent-details').open);
+ await menuAction('[data-managed-request="request:failed"]','details');await page.waitForSelector('#managed-agent-details[open]');
  assert.equal(await page.$$eval('#managed-current-request button',ns=>ns.length),0);assert.equal(await page.$eval('[data-request-diagnostics]',n=>n.open),false);
- assert.equal(await page.$eval('[data-request-diagnostics] pre',n=>n.checkVisibility()),false);assert.match(await page.$eval('#managed-current-request',n=>n.textContent),/尚未创建后台工作/);
+ assert.equal(await page.$eval('[data-request-diagnostics] pre',n=>n.checkVisibility()),false);assert.match(await page.$eval('#managed-current-request',n=>n.textContent),/开始落盘/);
  await page.screenshot({path:path.join(output,'internal-request-readonly.png')});
  await page.$eval('[data-request-diagnostics]',n=>n.open=true);assert.match(await page.$eval('[data-request-diagnostics]',n=>n.textContent),/INVALID_CURSOR/);
  await page.evaluate(()=>document.querySelector('#managed-agent-details').close());
  await page.$eval('[data-managed-request="request:failed"]',n=>n.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true})));
- assert.equal(await page.$eval('#managed-agent-details',n=>n.open),true);await page.evaluate(()=>document.querySelector('#managed-agent-details').close());
+ await page.waitForSelector('#managed-work-menu:not([hidden])');assert.equal(await page.$eval('#managed-agent-details',n=>n.open),false);await page.keyboard.press('Escape');
  assert.equal(await page.$$eval('#inbox-reports [data-managed-todo="internal-todo"]',ns=>ns.length),0);
  assert.deepEqual(await page.evaluate(()=>window.__uiCalls.slice(window.__faultCallStart).filter(c=>['intake.retry','work.control','work.control.status'].includes(c.op))),[]);
  check('internal failed intake keeps exact goal and optional diagnostics with no retry/control dispatch');
  await category('fault');assert.deepEqual(await page.$$eval('#work-items [data-managed-request]',ns=>ns.map(n=>n.dataset.managedRequest)),['request:failed']);
  for(const width of [1440,600]){await page.setViewport({width,height:800});await page.evaluate(()=>document.dispatchEvent(new Event('nozeli-reveal-work-sidebar')));assert.equal(await page.$eval('#app',n=>n.classList.contains('narrow-layout')),width<=1000);assert.equal(await page.$eval('#toggle-sidebar',n=>n.getAttribute('aria-expanded')),'true');await page.screenshot({path:path.join(output,'fault-directory-'+width+'.png')});}
  check('failed intake remains visible in fault category at wide and narrow widths');
+ await page.evaluate(()=>{const s=window.__intakeState;s.jobs.push({id:'unrouted',target:'orchestrator',type:'intake',text:'原文不可重发',status:'failed',errorCode:'INTAKE_ROUTE_REQUIRED',maintenanceBugId:'historical-bug',maintenanceFault:{symptom:'历史诊断举证'}});window.__previewTest(s);window.__recoveryCallStart=window.__uiCalls.length;});
+ await menuAction('[data-managed-request="request:unrouted"]','details');
+ const recovery='[aria-label="原请求核对"]';
+ await page.waitForSelector(`${recovery} [data-intake-reconcile]`,{visible:true});
+ assert.deepEqual(await page.evaluate(()=>window.__uiCalls.slice(window.__recoveryCallStart).map(c=>c.op)),['intake.reconcile']);
+ await page.$eval(`${recovery} [data-intake-reconcile]`,n=>n.click());
+ await page.waitForSelector(`${recovery} [data-intake-withdraw]`,{visible:true});
+ assert.match(await page.$eval(recovery,n=>n.textContent),/原请求已入册.*执行效果仍未知/);
+ await page.$eval(`${recovery} [data-intake-withdraw]`,n=>n.click());
+ await page.waitForSelector('[data-confirmation-dialog][open] [data-confirmation-confirm]');
+ assert.deepEqual(await page.evaluate(()=>window.__uiCalls.slice(window.__recoveryCallStart).map(c=>c.op)),Array(3).fill('intake.reconcile'));
+ await page.evaluate(()=>{const s=window.__intakeState;s.jobs.push({id:'new-attempt',target:'orchestrator',type:'intake',text:'后续请求',status:'failed',context:{retryOf:'unrouted'}});window.__previewTest(s);});
+ assert.equal(await page.$eval(`${recovery} [data-intake-withdraw]`,n=>n.hidden),true);
+ await page.$eval('[data-confirmation-dialog][open] [data-confirmation-confirm]',n=>n.click());
+ await page.evaluate(()=>{const s=window.__intakeState;s.jobs.pop();window.__previewTest(s);});
+ await page.$eval(`${recovery} [data-intake-reconcile]`,n=>n.click());
+ await page.waitForSelector(`${recovery} [data-intake-withdraw]`,{visible:true});
+ await page.$eval(`${recovery} [data-intake-withdraw]`,n=>n.click());await page.waitForSelector('[data-confirmation-dialog][open] [data-confirmation-confirm]');
+ await page.$eval('[data-confirmation-dialog][open] [data-confirmation-confirm]',n=>n.click());
+ await page.waitForFunction(()=>window.__intakeState.jobs.find(j=>j.id==='unrouted').intakeWithdrawal?.effectUnknown===true);
+ assert.match(await page.$eval('#managed-current-request [data-request-diagnostics]',n=>n.textContent),/historical-bug.*历史诊断举证/);
+ await page.waitForFunction(()=>/已撤销.*执行效果仍未知/.test(document.querySelector('#managed-current-request').textContent));
+ assert.deepEqual(await page.evaluate(()=>window.__uiCalls.slice(window.__recoveryCallStart).filter(c=>c.op!=='status')), [...Array.from({length:5},()=>({op:'intake.reconcile',p:{jobId:'unrouted'}})),{op:'intake.withdraw',p:{jobId:'unrouted',projectInstanceId:'fixture-instance'}}]);
+ check('request reconciliation is user initiated; withdrawal requires confirmation and keeps unknown effect visible');
  assert.deepEqual(report.errors,[]);await writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({output,...report}));
 }catch(error){report.failure=error.stack;report.processLog=log;report.pageState=await page?.evaluate(()=>({url:location.href,ready:window.__nozeliReady,text:document.body?.innerText})).catch(e=>({error:e.message}));await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});await writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2));console.error('Evidence: '+output);throw error;}
 finally{await browser?.disconnect();if(child.exitCode===null&&!child.signalCode)child.kill('SIGTERM');let timer;const stopped=await Promise.race([exited.then(()=>true),new Promise(r=>{timer=setTimeout(()=>r(false),3000);})]);clearTimeout(timer);if(!stopped){child.kill('SIGKILL');await exited;}}

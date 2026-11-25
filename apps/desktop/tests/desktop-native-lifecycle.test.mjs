@@ -1,4 +1,5 @@
 import { contentToolForPage } from './native-content-tools.fixture.mjs';
+import { prepareReading } from './reading-setup.fixture.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import net from 'node:net';import {spawn} from 'node:child_process';import {createRequire} from 'node:module';import puppeteer from 'puppeteer-core';
 const appRoot=path.resolve(import.meta.dirname,'..'),out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-native-lifecycle-')),project=path.join(out,'project'),configRoot=path.join(out,'.Nozeli');await fs.mkdir(project);await fs.writeFile(path.join(project,'sample.txt'),'Lifecycle source\n');
@@ -9,10 +10,10 @@ async function scopePage(test){for(let n=0;n<200;n++){for(const p of await brows
 async function waitFor(fn){for(let n=0;n<200;n++){if(await fn())return;await pause(50);}throw Error('condition timeout');}
 try{
  for(let n=0;n<150;n++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{await pause(100);}}
- shell=(await scopePage(s=>s.role==='shell')).page;await shell.waitForSelector('#configuration-setup[open]');await shell.click('#configuration-cancel');await shell.click('#pick-project');await shell.waitForSelector('#file-tree button[data-path="sample.txt"]');await shell.click('#file-tree button[data-path="sample.txt"]');
+ shell=(await scopePage(s=>s.role==='shell')).page;await prepareReading(shell);await shell.click('#pick-project');await shell.waitForSelector('#file-tree button[data-path="sample.txt"]');await shell.click('#file-tree button[data-path="sample.txt"]');
  const doc=await scopePage(s=>s.kind==='document'&&s.relPath==='sample.txt'),projectId=doc.scope.projectId,viewId=doc.scope.viewId;await doc.page.waitForFunction(()=>__nozeliInput.text()==='Lifecycle source\n');
  await doc.page.evaluate(()=>{window.retainedInput=__nozeliInput;});await contentToolForPage(doc.page, ['view', 'document-font', 'document-font-larger']);
- await waitFor(async()=>{const r=await call(shell,'state.read',{projectId});return r.state.workspace.fontSize===15;});checks.push('document font preference persists in project shared state');
+ await waitFor(async()=>{const r=await call(shell,'state.read',{projectId});return r.state?.workspace?.fontSize===15;});checks.push('document font preference persists in project shared state');
  const row='[data-editor-view="'+viewId+'"]';
  await shell.locator('#workspace-open-editors '+row).click({button:'right'});await shell.waitForSelector('.nozeli-context-menu:not([hidden]) [data-command="float"]',{visible:true});await shell.locator('.nozeli-context-menu:not([hidden]) [data-command="float"]').click();
  const firstDetached=await scopePage(s=>s.role==='detached');await waitFor(async()=>{const s=await call(doc.page,'workspace.bootstrap');return s.windowId===firstDetached.scope.windowId;});assert.equal(await doc.page.evaluate(()=>retainedInput===__nozeliInput),true);checks.push('opened-resource context menu float keeps live document object');
@@ -24,14 +25,14 @@ try{
  for(const size of [{width:600,height:500},{width:340,height:480},{width:1000,height:760},{width:500,height:520},{width:850,height:680}]){
   await call(doc.page,'session.resize',size);try{await detached.page.waitForFunction(({width,height})=>innerWidth===width&&innerHeight===height,{},size);}catch(error){console.error('RESIZE_FAILURE',JSON.stringify({requested:size,root:await detached.page.evaluate(()=>({width:innerWidth,height:innerHeight})),owner:await call(doc.page,'workspace.bootstrap'),windows:await call(detached.page,'workspace.windows.list',{projectId})}));throw error;}
   await waitFor(async()=>{const surface=(await call(detached.page,'workspace.windows.list',{projectId})).find(w=>w.id===detached.scope.windowId)?.surfaces.find(s=>s.viewId===viewId),rect=await detached.page.$eval('[data-workspace-content]',n=>{const r=n.getBoundingClientRect();return {width:r.width,height:r.height};});return surface?.visible&&Math.abs(surface.bounds.width-rect.width)<=1&&Math.abs(surface.bounds.height-rect.height)<=1;});
-  if(size.width===340){const late=await call(detached.page,'workspace.bounds',{projectId,windowId:detached.scope.windowId,viewport:{width:1200,height:900},groups:[{groupId:ownGroup,viewId,rect:{x:1,y:34,width:1198,height:865}}]});assert.equal(late.stale,true);}
+  if(size.width===340){const late=await call(detached.page,'workspace.bounds',{projectId,windowId:detached.scope.windowId,navigationGeneration:detached.scope.generation,viewport:{width:1200,height:900},groups:[{groupId:ownGroup,viewId,rect:{x:1,y:34,width:1198,height:865}}]});assert.equal(late.stale,true);}
   const surface=(await call(detached.page,'workspace.windows.list',{projectId})).find(w=>w.id===detached.scope.windowId).surfaces.find(s=>s.viewId===viewId);assert.equal(surface.visible,true);assert.equal(await doc.page.evaluate(()=>retainedInput===__nozeliInput),true);assert.equal(await doc.page.evaluate(()=>__nozeliInput.text()),'Lifecycle source\n');resizeSamples.push({size,bounds:surface.bounds,visible:surface.visible});
  }
  await doc.page.screenshot({path:path.join(out,'resized-floating-content.png')});checks.push('native float repeated shrink/grow keeps original editor visible; stale pre-resize bounds cannot blank content');console.log(JSON.stringify({resizeSamples}));
  const savedLayout=(await call(detached.page,'workspace.snapshot',{projectId})).layout;
  child.kill('SIGTERM');await exited;await browser.disconnect();browser=null;launch();
  for(let n=0;n<150;n++){try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});break;}catch{await pause(100);}}
- shell=(await scopePage(s=>s.role==='shell')).page;if(await shell.$eval('#configuration-setup',e=>e.open))await shell.click('#configuration-cancel');
+ shell=(await scopePage(s=>s.role==='shell')).page;await prepareReading(shell);
  // Cold startup may retain project-managed floats hidden until their project is selected.
  await shell.locator('#recent [data-project-id="'+projectId+'"]').click();await shell.waitForFunction(id=>document.querySelector('#recent [aria-current=true]')?.dataset.projectId===id,{},projectId);
  const restored=await scopePage(s=>s.role==='detached'&&s.windowId===detached.scope.windowId),restoredDoc=await scopePage(s=>s.kind==='document'&&s.viewId===viewId);

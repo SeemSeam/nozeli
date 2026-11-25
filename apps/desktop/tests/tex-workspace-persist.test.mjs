@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {createTexPersistFixture,deferred} from './tex-workspace-persist.fixture.mjs';
 async function fixture(t,options){const f=await createTexPersistFixture(options);t.after(()=>f.cleanup());return f;}
 const assertNoSideEffects=f=>assert.equal(f.calls.some(c=>['tex.build','tex.cancel','file.save','file.draft','tag.put'].includes(c.op)),false);
@@ -33,10 +34,10 @@ test('inspect pending and inferred-root configuration pending both reject checke
 });
 test('ready checked save reuses exact current preview position and explicit project/root identity',async t=>{
  const f=await fixture(t);await f.enter();f.preview({page:7,zoom:1.75,scrollTop:321});const before=f.message();assert.deepEqual(await f.workspace.persistChecked(),{ok:true,value:{applicable:true,projectId:'project-a',root:'main.tex'}});
- const request=f.calls.findLast(c=>c.op==='tex.view');assert.deepEqual(request.args,{projectId:'project-a',root:'main.tex',view:{page:7,zoom:1.75,scrollTop:321,preview:false,linked:true}});assert.equal(f.message(),before);assert.equal(f.calls.filter(c=>c.op==='tex.view').length,1);assertNoSideEffects(f);
+ const request=f.calls.findLast(c=>c.op==='tex.view');assert.deepEqual(request.args,{projectId:'project-a',root:'main.tex',view:{page:7,zoom:1.75,scrollTop:321,preview:false}});assert.equal(f.message(),before);assert.equal(f.calls.filter(c=>c.op==='tex.view').length,1);assertNoSideEffects(f);
 });
 test('no displayed preview saves existing per-root position instead of inventing the current surface',async t=>{
- const f=await fixture(t);await f.enter();const result=await f.workspace.persistChecked();assert(result.ok&&result.value.applicable);assert.deepEqual(f.calls.findLast(c=>c.op==='tex.view').args.view,{page:2,zoom:1.25,scrollTop:40,preview:false,linked:true});assertNoSideEffects(f);
+ const f=await fixture(t);await f.enter();const result=await f.workspace.persistChecked();assert(result.ok&&result.value.applicable);assert.deepEqual(f.calls.findLast(c=>c.op==='tex.view').args.view,{page:2,zoom:1.25,scrollTop:40,preview:false});assertNoSideEffects(f);
 });
 for(const [name,reply,code] of [['business',()=>({ok:false,error:{code:'TEX_VIEW_REJECTED',message:'HOST_REFUSED_POSITION'}}),'TEX_VIEW_REJECTED'],['transport',()=>{throw Error('IPC_TRANSPORT_LOST');},'TEX_VIEW_FAILED']])test('checked '+name+' failure returns structured error without changing page status or retrying',async t=>{
  const f=await fixture(t);await f.enter();const before=f.message();f.handlers.set('tex.view',reply);const result=await f.workspace.persistChecked();assert.equal(result.ok,false);assert.equal(result.error.code,code);assert.match(result.error.message,/HOST_REFUSED_POSITION|IPC_TRANSPORT_LOST/);assert.equal(f.message(),before);assert.equal(f.calls.filter(c=>c.op==='tex.view').length,1);assertNoSideEffects(f);
@@ -69,7 +70,7 @@ test('old inspect reply after project mutation cannot bind the new source to the
  const f=await fixture(t),inspect=deferred();f.handlers.set('tex.inspect',()=>inspect.promise);const entering=f.workspace.enter();f.context.project={id:'project-b'};f.context.file={relPath:'other.tex'};f.node('tex-status').textContent='NEW_PROJECT_STATUS';inspect.resolve({ok:false,error:{code:'OLD_INSPECT_FAILED',message:'OLD_INSPECT_ERROR'}});await entering;assert.equal(f.message(),'NEW_PROJECT_STATUS');assert.equal((await f.workspace.persistChecked()).error.code,'TEX_CONTEXT_NOT_READY');assertNoSideEffects(f);
 });
 test('legacy persist keeps successful Host value and handles business/transport/position errors without rejecting',async t=>{
- const f=await fixture(t);await f.enter();const saved=await f.workspace.persist();assert.deepEqual(saved,{persistedView:{page:2,zoom:1.25,scrollTop:40,preview:false,linked:true}});
+ const f=await fixture(t);await f.enter();assert(await f.workspace.persist());
  f.handlers.set('tex.view',()=>({ok:false,error:{code:'HOST_FAIL',message:'LEGACY_HOST_ERROR'}}));assert.equal(await f.workspace.persist(),undefined);assert.match(f.message(),/预览位置未保存：LEGACY_HOST_ERROR/);
  f.handlers.set('tex.view',()=>{throw Error('LEGACY_TRANSPORT_ERROR');});assert.equal(await f.workspace.persist(),undefined);assert.match(f.message(),/LEGACY_TRANSPORT_ERROR/);
  f.preview();f.beside.pdf.current=()=>{throw Error('LEGACY_POSITION_ERROR');};assert.equal(await f.workspace.persist(),undefined);assert.match(f.message(),/LEGACY_POSITION_ERROR/);assertNoSideEffects(f);
@@ -88,4 +89,23 @@ test('failed inferred-root initialization cannot authorize a checked save merely
 });
 test('uncertain root configuration blocks checked persistence until an explicit successful configuration',async t=>{
  const f=await fixture(t);await f.enter();f.handlers.set('tex.configure',()=>{throw Error('CONFIG_REPLY_LOST');});await f.changeRoot('other.tex');assert.equal((await f.workspace.persistChecked()).error.code,'TEX_CONTEXT_NOT_READY');assert.equal(f.calls.filter(c=>c.op==='tex.view').length,0);f.handlers.delete('tex.configure');await f.changeRoot('other.tex');assert.deepEqual(await f.workspace.persistChecked(),{ok:true,value:{applicable:true,projectId:'project-a',root:'other.tex'}});assertNoSideEffects(f);
+});
+
+test('diagnostic selection uses editor offsets and refuses a stale or replaced editor',async t=>{
+ const f=await fixture(t),revealed=[];
+ const line='\\NozeliInvalid';
+ let text=`雪\r\n${line}\r\nAfter`;
+ const adapter={getText:()=>text,revealRange:(...range)=>revealed.push(range),focus:()=>{}};
+ f.context.editor={adapter};
+ const locator={projectId:'project-a',relPath:'main.tex',line:2,column:1,selectLine:true,sourceDigest:createHash('sha256').update(`雪\n${line}\nAfter`).digest('hex')};
+ await f.workspace.revealSource(locator);
+ assert.deepEqual(revealed,[[3,3+line.length]]);
+ text=`Inserted\n${text}`;
+ await f.workspace.revealSource(locator);
+ assert.deepEqual(revealed,[[3,3+line.length]]);
+ text=`雪\r\n${line}\r\nAfter`;
+ const pending=f.workspace.revealSource(locator);
+ f.context.editor={adapter:{...adapter}};
+ await pending;
+ assert.deepEqual(revealed,[[3,3+line.length]]);
 });

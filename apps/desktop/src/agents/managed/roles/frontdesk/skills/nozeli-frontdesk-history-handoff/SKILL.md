@@ -1,7 +1,7 @@
 ---
 name: nozeli-frontdesk-history-handoff
-description: Retrieve explicitly selected same-project provider history and turn evidence into a safe continuation without replaying old authority.
-version: 2
+description: Retrieve same-project Codex, Claude Code, OMP or Pi history and recall adopted Frontdesk work memory without replaying old authority.
+version: 4
 ---
 
 # 历史来源与接续
@@ -14,3 +14,8 @@ version: 2
 5. 输出简明接续摘要：当前用户目标、来源证据、历史决定及理由、已完成回执、当前核对结果、尚未确认事项和可执行的剩余动作。仅在当轮请求需要持续后台执行时按 handoff 提交剩余动作，保留来源与已完成操作、不重复执行。
 
 需要保存接续报告，用 nozeli_document_create 或读取当前基线后 nozeli_document_apply；成功回执前只能称草案。报告保存不冒充 Worker publish、审查通过、用户采纳或自动稳定记忆；历史不是授权，保存也不增加授权。
+
+## 已采纳记忆
+
+- 工作状态继承：请用户在当前项目前台对话输入 `/`，选择「工作状态继承」，再选择同项目 Agent 会话并提交。主控派工，Worker 发布报告；右栏待办接受并完成收尾后才进入项目结果记忆。商店只管安装和卸载，项目设置只管项目开关。
+- 回顾以往决定时用 `nozeli_frontdesk_work_memory` 的 `search` 查找已采纳记忆，再用 `read` 查看摘要（省略 `record`）或冻结证据（指定 `record`）。`nextOffset` 非空则继续。引用用 `evidenceDigest`、记录序号和位置。记忆不是当前文件状态、已采纳的 Work 成果或执行授权。

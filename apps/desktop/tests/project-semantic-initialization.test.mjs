@@ -12,6 +12,8 @@ import {MemoryVersion} from '../src/agents/managed/memory-version.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
 
+const requiresInitialization={skip:defaultFilesystemAdapter.supported?false:'Semantic initialization requires a verified shared filesystem adapter; Windows refusal is covered in windows-alpha6-boundaries.test.mjs'};
+
 async function fixture(t){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-init-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const content=path.join(root,'project'),memory=path.join(content,'.nozeli','memory','plantree');await fs.mkdir(memory,{recursive:true});await fs.writeFile(path.join(memory,'index.md'),'# Plan Tree\n');
@@ -19,7 +21,7 @@ async function fixture(t){
  const controller={projectId:'project-a',store:{content,plan:path.join(memory,'index.md'),state:{jobs:[job]},storage:{requireRegistered:async()=>project,assertActive(){}},mutate:async fn=>fn()},memoryVersion:new MemoryVersion(memory)};
  return {root,content,memory,project,job,controller,init:new ProjectInitialization(controller)};
 }
-test('inventory excludes credentials, generated directories and symbolic links; reads only own inventory',async t=>{
+test('inventory excludes credentials, generated directories and symbolic links; reads only own inventory',requiresInitialization,async t=>{
  const {content,job,init}=await fixture(t);await fs.writeFile(path.join(content,'README.md'),'# Project\nA local project\n');await fs.writeFile(path.join(content,'.env'),'TOKEN=private');await fs.mkdir(path.join(content,'node_modules'));await fs.writeFile(path.join(content,'node_modules','private.txt'),'private');await fs.symlink('/etc/passwd',path.join(content,'outside.txt'));
  const inventory=await init.tool(job,'nozeli_project_inventory');assert.deepEqual(inventory.files,['README.md']);assert(inventory.coverage.excludedEntries>=4);
  const read=await init.tool(job,'nozeli_project_read',{relPath:'README.md'});assert.match(read.text,/local project/);assert.equal(read.startLine,1);assert.match(read.version,/^[a-f0-9]{64}$/);
@@ -27,7 +29,7 @@ test('inventory excludes credentials, generated directories and symbolic links; 
  for(const rel of ['../outside','https://example.org/a','.env','node_modules/private.txt','outside.txt'])await assert.rejects(init.tool(job,'nozeli_project_read',{relPath:rel}));
  await assert.rejects(init.tool(job,'nozeli_privileged_execute',{command:'true'}),{code:'PROJECT_INITIALIZATION_TOOL_REJECTED'});
 });
-test('single editable root-linked topic records host sources and refuses concurrent user edits',async t=>{
+test('single editable root-linked topic records host sources and refuses concurrent user edits',requiresInitialization,async t=>{
  const {content,memory,job,init,controller}=await fixture(t);await fs.writeFile(path.join(content,'README.md'),'# Purpose\nLocal notes\n');
  const inventory=await init.tool(job,'nozeli_project_inventory');await init.tool(job,'nozeli_project_read',{relPath:'README.md'});
  const published=await init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'Purpose: local notes. Unverified project understanding.'});assert.equal(published.saved,true);
@@ -36,30 +38,30 @@ test('single editable root-linked topic records host sources and refuses concurr
  await fs.writeFile(path.join(memory,'topics','project-map.md'),'User correction must survive.');
  await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:published.version,text:'Replacement'}),{code:'PROJECT_INITIALIZATION_MAP_CONFLICT'});assert.equal(await fs.readFile(path.join(memory,'topics','project-map.md'),'utf8'),'User correction must survive.');
 });
-test('stale instance and cancellation refuse late map publication',async t=>{
+test('stale instance and cancellation refuse late map publication',requiresInitialization,async t=>{
  const {job,init,project,memory}=await fixture(t);const inventory=await init.tool(job,'nozeli_project_inventory');project.instanceId='instance-b';
  await assert.rejects(init.tool(job,'nozeli_project_map',{expectedVersion:inventory.map.expectedVersion,text:'late'}),{code:'PROJECT_INITIALIZATION_STALE'});
  project.instanceId='instance-a';job.context.cancelRequested=true;await assert.rejects(init.tool(job,'nozeli_project_inventory'),{code:'PROJECT_INITIALIZATION_CANCELLED'});
  await assert.rejects(fs.stat(path.join(memory,'topics','project-map.md')),{code:'ENOENT'});
 });
-test('traversal and read budgets report honest partial coverage without paging beyond the run budget',async t=>{
+test('traversal and read budgets report honest partial coverage without paging beyond the run budget',requiresInitialization,async t=>{
  const {content,job,init}=await fixture(t);await Promise.all(Array.from({length:INITIALIZATION_LIMITS.entries+10},(_,i)=>fs.writeFile(path.join(content,`file-${i}.txt`),'x'.repeat(20000))));
  const inventory=await init.tool(job,'nozeli_project_inventory');assert(inventory.coverage.inventoryTruncated);assert(inventory.coverage.visitedEntries<=INITIALIZATION_LIMITS.entries);
  let bytes=0;for(let i=0;i<8;i++){const read=await init.tool(job,'nozeli_project_read',{relPath:inventory.files[i]});bytes+=Math.min(read.size,INITIALIZATION_LIMITS.fileBytes);assert(read.truncated);}
  assert.equal(bytes,INITIALIZATION_LIMITS.bytes);await assert.rejects(init.tool(job,'nozeli_project_read',{relPath:inventory.files[8]}),{code:'PROJECT_INITIALIZATION_READ_BUDGET'});
 });
-test('program creates one serial job per instance; retry is explicit and never creates a Work',async()=>{
+test('program creates one serial job per instance; retry is explicit and never creates a Work',requiresInitialization,async()=>{
  const jobs=[],c={projectId:'p',store:{state:{jobs,works:[]},storage:{requireOnline:async()=>({instanceId:'i'}),requireRegistered:async()=>({instanceId:'i'})},mutate:async fn=>fn()},queueJob(target,type,text,{context}){jobs.push({id:'job-'+jobs.length,target,type,text,context,status:'queued'});},changed(){},kick(){},initializationStatus:Controller.prototype.initializationStatus};
  await Controller.prototype.initializeProject.call(c);await Controller.prototype.initializeProject.call(c);assert.equal(jobs.length,1);assert.equal(jobs[0].target,'orchestrator');assert.equal(jobs[0].type,'project-initialization');assert.equal(c.store.state.works.length,0);
  jobs[0].status='failed';await Controller.prototype.initializeProject.call(c);assert.equal(jobs.length,1);await Controller.prototype.initializeProject.call(c,{retry:true,expectedProjectInstanceId:'i'});assert.equal(jobs.length,2);
  await assert.rejects(Controller.prototype.initializeProject.call(c,{retry:true,expectedProjectInstanceId:'old'}),{code:'PROJECT_INITIALIZATION_STALE'});
 });
-test('legacy and AI-disabled local opens do not connect or initialize',async()=>{
+test('legacy and AI-disabled local opens do not connect or initialize',requiresInitialization,async()=>{
  let connects=0;const project={instanceId:'i'},manager={host:{requireRegisteredProject:async()=>project},config:async()=>({enabled:true}),initializationStatus:async()=>({status:'pending'}),connect:async()=>{connects++;},controllers:new Map()};
  await ManagedProjects.prototype.initializeProject.call(manager,'p');assert.equal(connects,0);project.semanticInitializationEligible=true;manager.config=async()=>({enabled:false});await ManagedProjects.prototype.initializeProject.call(manager,'p');assert.equal(connects,0);
 });
 test('path exclusions reject known credential variants',()=>{for(const rel of ['.git/config','.nozeli/project.json','.env.local','x/secret.key','credentials.json','dist/app.js','vendor/module.js'])assert.throws(()=>initializationPath(rel));});
-test('partial publication never claims initialized or leaves an orphan; explicit retry completes the linked topic',async t=>{
+test('partial publication never claims initialized or leaves an orphan; explicit retry completes the linked topic',requiresInitialization,async t=>{
  const {job,init,memory,controller}=await fixture(t),inventory=await init.tool(job,'nozeli_project_inventory');
  // Inject at the pinned synchronous namespace boundary; keep link-first
  // publication, durability barriers, cleanup and retry real.
@@ -70,7 +72,7 @@ test('partial publication never claims initialized or leaves an orphan; explicit
  assert.equal(job.projectMapPublication.state,'durable');const snapshot=await controller.memoryVersion.snapshot();assert.match(snapshot.topics[0].text,/Retry completed/);
 });
 
-for(const target of ['project-map.md','index.md'])test(`final publication retains a host correction queued after reading ${target}`,async t=>{
+for(const target of ['project-map.md','index.md'])test(`final publication retains a host correction queued after reading ${target}`,requiresInitialization,async t=>{
  const {job,init,memory}=await fixture(t);
  await fs.mkdir(path.join(memory,'topics'));await fs.writeFile(path.join(memory,'topics','project-map.md'),'Original map');
  const inventory=await init.tool(job,'nozeli_project_inventory'),chain=defaultFilesystemAdapter.chain;
@@ -87,7 +89,7 @@ for(const target of ['project-map.md','index.md'])test(`final publication retain
  assert.equal(job.projectMapPublication.state,'durable');
 });
 
-for(const target of ['project-map.md','index.md'])test(`final publication refuses a swapped ${target} FIFO without blocking`,async t=>{
+for(const target of ['project-map.md','index.md'])test(`final publication refuses a swapped ${target} FIFO without blocking`,requiresInitialization,async t=>{
  const {memory,content}=await fixture(t);
  // A child deadline protects the test runner even if a synchronous native
  // open regresses to blocking. No writer ever opens the FIFO.

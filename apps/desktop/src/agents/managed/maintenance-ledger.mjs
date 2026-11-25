@@ -18,6 +18,7 @@ export function maintenanceBoundary(error,{phase}={}){
 // (`none`) claim is honored only for the pure offline diagram renderer. Raw
 // messages, tool arguments, stacks and free-form labels never enter.
 const HOST_TOOL_NAMES=new Set(['nozeli_backstage_respond','nozeli_diagram','nozeli_diagram_schema','nozeli_dispatch','nozeli_document_apply','nozeli_document_create','nozeli_document_read','nozeli_handoff','nozeli_history_read','nozeli_inspect_work','nozeli_maintenance','nozeli_manage','nozeli_memory_read','nozeli_memory_search','nozeli_privileged_execute','nozeli_problem_continue','nozeli_project_list','nozeli_project_search','nozeli_publish','nozeli_report_bug','nozeli_report_deviation','nozeli_report_read','nozeli_source_read']);
+HOST_TOOL_NAMES.add('nozeli_frontdesk_work_memory');
 const PURE_HOST_TOOLS=new Set(['nozeli_diagram']);
 const HOST_TOOL_STAGES=new Set(['render','tool']);
 const HOST_TOOL_EFFECTS=new Set(['none','unknown']);
@@ -63,7 +64,12 @@ export function maintenanceError(error){
  const symptom=/cannot lock ref|unable to create.*\.lock|another git process/i.test(message)?'git-ref-lock':/snapshot/i.test(message)?'snapshot':/artifact|frozen candidate/i.test(message)?'artifact-publication':/session|spawn|startup/i.test(message)?'session-start':'host-transaction';
  const frames=[];for(const line of String(error?.stack??'').split('\n').slice(1)){const match=/\/apps\/desktop\/(src\/[A-Za-z0-9_./-]+\.(?:mjs|cjs|js):\d+:\d+)(?:\)|\s|$)/.exec(line);if(match&&!match[1].includes('..')&&!frames.includes(match[1]))frames.push(match[1]);if(frames.length===8)break;}
  const hostToolFailure=sanitizeHostToolFailure(error?.hostToolFailure);
- return {code:/^[A-Z][A-Z0-9_]{0,79}$/.test(raw)?raw:'INTERNAL_FAILURE',symptom,...(frames.length?{frames}:{}),...(hostToolFailure?{hostToolFailure}:{})};
+ const gitEvidence=error?.gitEvidence&&typeof error.gitEvidence==='object'?{
+   command:typeof error.gitEvidence.command==='string'?error.gitEvidence.command:null,
+   exitCode:Number.isInteger(error.gitEvidence.exitCode)?error.gitEvidence.exitCode:null,
+   ...(typeof error.gitEvidence.stderrClass==='string'&&/^[a-z-]{1,31}$/.test(error.gitEvidence.stderrClass)?{stderrClass:error.gitEvidence.stderrClass}:{}),
+ }:undefined;
+ return {code:/^[A-Z][A-Z0-9_]{0,79}$/.test(raw)?raw:'INTERNAL_FAILURE',symptom,...(frames.length?{frames}:{}),...(gitEvidence?{gitEvidence}:{}),...(hostToolFailure?{hostToolFailure}:{})};
 }
 export class MaintenanceLedger{
  constructor(storage,projectId){this.storage=storage;this.projectId=projectId;this.serial=Promise.resolve();}

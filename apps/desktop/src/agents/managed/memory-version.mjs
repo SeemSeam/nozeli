@@ -7,8 +7,9 @@ const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Root-linked topics are the shared memory dependency set. Stat identities are
 // checked each delivery; unchanged files reuse their content digest, not a scan.
 export class MemoryVersion {
- constructor(root){this.root=root;this.cache=new Map();}
+ constructor(root,{readFile}={}){this.root=root;this.cache=new Map();this.readFile=readFile;}
  async file(rel){
+  if(this.readFile){let bytes;try{bytes=await this.readFile(path.join(this.root,rel),{maxBytes:32*1024*1024});}catch(error){if(error.code==='ENOENT')return {path:rel,digest:null,text:null};throw error;}return {path:rel,digest:digest(bytes),text:new TextDecoder('utf-8',{fatal:true}).decode(bytes)};}
   const file=path.join(this.root,rel);let stat;
   try{stat=await fs.lstat(file,{bigint:true});}catch(error){if(error.code==='ENOENT')return {path:rel,digest:null,text:null};throw error;}
   if(!stat.isFile()||stat.isSymbolicLink())throw Error('记忆来源必须是普通文件：'+rel);

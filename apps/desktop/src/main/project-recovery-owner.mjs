@@ -9,8 +9,7 @@
 import {selectCapability} from '../platform/platform-capabilities.mjs';
 import * as linuxRecoveryOwner from '../platform/linux/recovery-owner.mjs';
 import * as macosRecoveryOwner from '../platform/darwin/recovery-owner.mjs';
-
-const fail=(code,message)=>Object.assign(Error(message),{code});
+const fail=(code,message)=>Object.assign(new Error(message),{code});
 const select=()=>selectCapability({capability:'recovery-source-ownership',implementations:{linux:linuxRecoveryOwner,macos:macosRecoveryOwner}});
 
 export async function assertRecoverySourceStopped(root,deps={}){

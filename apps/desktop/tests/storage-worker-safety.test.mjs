@@ -34,6 +34,24 @@ function controlled(t){
  return {storage,workers,file:'/controlled/project.sqlite'};
 }
 
+test('unknown worker reply retains original operation, completion deadline and native source cause without replay',async t=>{
+ const {storage,workers,file}=controlled(t),run=storage.request(file,'put',{operationId:'native-postcheck-unknown'}),worker=workers[0];
+ const pending=storage.channels.get(file).pending.get(worker.messages[0].id),completedAt=pending.deadline-1n;
+ const native={code:'STORAGE_RESULT_UNKNOWN',cause:{code:'WIN32_IO_ERROR',win32Code:303}};
+ const sourceIdentity={node:'17:23',native:'0000000000000011:00000000000000000000000000000023'};
+ const rejected=assert.rejects(run,error=>{
+  assert.equal(error.code,'STORAGE_RESULT_UNKNOWN');assert.equal(error.operationId,'native-postcheck-unknown');
+  assert.equal(error.storageEvidence.workerCompletedAtNs,String(completedAt));
+  assert.equal(error.storageEvidence.originalDeadlineNs,String(pending.deadline));
+  assert.deepEqual(error.storageEvidence.workerError,native);assert.deepEqual(error.storageEvidence.sourceIdentity,sourceIdentity);
+  return true;
+ });
+ worker.respond({id:worker.messages[0].id,completedAt,error:{code:'STORAGE_RESULT_UNKNOWN',message:'native postcheck unknown',evidence:native,sourceIdentity}});
+ await rejected;await microtasks();
+ await assert.rejects(storage.request(file,'put',{operationId:'must-not-replay'}),{code:'STORAGE_RESULT_UNKNOWN'});
+ assert.equal(worker.messages.length,1);worker.finishTermination();await storage.close();
+});
+
 test('close seals admission synchronously, drains accepted replies, and joins one termination',async t=>{
  const {storage,workers,file}=controlled(t),request=storage.request(file,'put',{operationId:'accepted'}),worker=workers[0];
  const closing=storage.closeFile(file);
@@ -210,6 +228,18 @@ test('a worker failure reply received during close settles with its known operat
  const {storage,workers,file}=controlled(t),request=storage.request(file,'put',{operationId:'conflicted'}),worker=workers[0],failure=assert.rejects(request,{code:'STORAGE_CONFLICT',operationId:'conflicted'}),closing=storage.closeFile(file);
  worker.respond({id:worker.messages[0].id,error:{code:'STORAGE_CONFLICT',message:'revision changed'}});await failure;await microtasks();
  assert.equal(worker.terminations,1);assert.equal(storage.quarantined.has(file),false);worker.finishTermination();await closing;await storage.close();
+});
+
+test('a worker reports an unknown storage outcome by fencing all accepted requests until actual exit',async t=>{
+ const {storage,workers,file}=controlled(t),first=storage.request(file,'put',{operationId:'committed-or-unknown'}),second=storage.request(file,'get',{operationId:'queued'}),worker=workers[0];
+ const outcomes=Promise.allSettled([first,second]);
+ worker.emit('message',{id:worker.messages[0].id,error:{code:'STORAGE_RESULT_UNKNOWN',message:'postcommit integrity lost'}});
+ await microtasks();assert.equal(worker.terminations,1);assert.equal(storage.channels.has(file),true);
+ for(const result of await outcomes){assert.equal(result.status,'rejected');assert.equal(result.reason.code,'STORAGE_RESULT_UNKNOWN');}
+ assert.deepEqual(storage.quarantined.get(file).operationIds,['committed-or-unknown','queued']);
+ await assert.rejects(storage.request(file,'put',{operationId:'no-replay'}),{code:'STORAGE_RESULT_UNKNOWN'});
+ await assert.rejects(storage.reconcile(file,'committed-or-unknown'),/尚未退出/);
+ worker.reply(0,{revision:1});assert.equal(workers.length,1);worker.finishTermination();await storage.close();
 });
 
 for(const closeFailure of ['outcome','rejection'])test(`unconfirmed staging close (${closeFailure}) prevents initialization cleanup`,async t=>{

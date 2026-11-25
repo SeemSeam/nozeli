@@ -16,7 +16,7 @@ async function fixture(t){
  const managed=new ManagedProjects({userDataDir:profile,host,legacy:{projects:new Map()}});
  const c=await managed.loadLocal(ids[0]);c.kick=()=>{};
  let now=1000;const maintenance=new AdminMaintenance({host,managed,now:()=>now,ttl:100});
- const options={userDataDir:profile,host,maintenance,providerSettings:new ProviderSettings({source:{agentDir:path.join(profile,'pi')},worker:null})};
+ const options={userDataDir:profile,host,maintenance,providerSettings:new ProviderSettings({source:{root:profile,agentDir:path.join(profile,'pi')},worker:null})};
  const agent=new AdminAgent(options);await agent.start();
  const receiptFile=path.join(root,'repair-receipt');let effects=0;
  async function fault({phase='publication',error=Error('PRIVATE token=SECRET https://user:password@example.test'),jobId,workId,revision}={}){
@@ -30,6 +30,18 @@ async function fixture(t){
 }
 const confirm=(agent,p)=>agent.invoke('confirm',{id:p.id,expectedVersion:p.expectedVersion});
 
+// A realistic crashed-process state write: the durable record is replaced
+// through the same native profile CAS path a real writer would use.
+async function crashWriteState(file,state){
+ if(process.platform==='win32'){
+  const {createWindowsDesktopProfileIO}=await import('../src/platform/windows/desktop-profile.mjs');
+  const profile=createWindowsDesktopProfileIO(path.resolve(file,'..','..'));
+  const observed=(await profile.read(file)).sha256;
+  await profile.write(file,Buffer.from(JSON.stringify(state),'utf8'),{expectedSha256:observed});
+  return;
+ }
+ await fs.writeFile(file,JSON.stringify(state));
+}
 test('real ManagedProjects and Controller repair writes a receipt only after trusted confirm, exact project stays bound and repeat is inert',async t=>{
  const f=await fixture(t),bug=await f.fault(),proposal=await f.prepare(bug);
  assert.equal(proposal.kind,'repair');assert.equal(proposal.project.id,f.ids[0]);assert.equal(proposal.action.mode,'repair');assert.equal(f.effects(),0);
@@ -78,7 +90,7 @@ test('execute refuses stale instance, root, binding, state, revision, mode and l
 test('dismiss, admin busy and cold executing journal do not replay repair',async t=>{
  const f=await fixture(t),bug=await f.fault(),dismissed=await f.prepare(bug);await f.agent.invoke('dismiss',{id:dismissed.id});const result=await confirm(f.agent,dismissed);assert.equal(result.receipt.status,'dismissed');assert(!Object.hasOwn(result.receipt,'saved'));
  const proposal=await f.prepare(bug);f.agent.flight=Promise.resolve();await assert.rejects(confirm(f.agent,proposal),{code:'ADMIN_BUSY'});f.agent.flight=null;
- const state=structuredClone(f.agent.state);state.proposals.find(p=>p.id===proposal.id).status='executing';await fs.writeFile(f.agent.file,JSON.stringify(state));
+ const state=structuredClone(f.agent.state);state.proposals.find(p=>p.id===proposal.id).status='executing';await crashWriteState(f.agent.file,state);
  const recovered=new AdminAgent(f.options);try{const status=await recovered.invoke('status',{});assert.equal(status.pendingChanges.find(p=>p.id===proposal.id).status,'unknown');assert.equal((await confirm(recovered,proposal)).receipt.repaired,null);assert.equal(f.effects(),0);}finally{await recovered.stop();}
 });
 

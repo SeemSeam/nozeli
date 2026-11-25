@@ -8,7 +8,7 @@ export class ControlledAdminSession extends EventEmitter {
  constructor(spec,control={}){super();this.spec=spec;this.control=control;this.model=spec.model;this.busy=false;control.sessions??=[];control.sessions.push(this);}
  async preflightToolsDigest(){}
  async start(resumeId){
-  this.threadId=resumeId??randomUUID();this.sessionFile=path.join(this.spec.home,'sessions',this.threadId+'.jsonl');
+  this.threadId=resumeId??randomUUID();this.sessionFile=path.join(this.spec.sessionDir??path.join(this.spec.home,'sessions'),this.threadId+'.jsonl');
   await fs.mkdir(path.dirname(this.sessionFile),{recursive:true});
   let rows=[];try{rows=(await fs.readFile(this.sessionFile,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);}catch(e){if(e.code!=='ENOENT')throw e;}
   this.lastId=rows.at(-1)?.id??null;

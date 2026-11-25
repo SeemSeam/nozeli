@@ -1,3 +1,4 @@
+import {recoveryHeld} from './workspace-recovery-state.mjs';
 import {applyViewGeometry} from './view-geometry.mjs';
 import {intersectRect} from '../domain/web-window-clip.mjs';
 import path from 'node:path';
@@ -245,7 +246,7 @@ export class OnlineBrowserManager {
       const region = slot.clip ? intersectRect(b, slot.clip) : b;
       const x = Math.min(parent.width, Math.max(0, Math.round(region.x * zoom))), y = Math.min(parent.height, Math.max(0, Math.round(region.y * zoom)));
       const width = Math.max(0, Math.min(Math.round(region.width * zoom), parent.width - x)), height = Math.max(0, Math.min(Math.round(region.height * zoom), parent.height - y));
-      const visible = this.alive(slot) && !scope.transferring && !scope.recoveryHeld && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0;
+      const visible = this.alive(slot) && !scope.transferring && !recoveryHeld(scope) && !scope.previewRecoveryFailed && !slot.overlay && scope.view.getVisible() && width > 0 && height > 0;
       const fullWidth = Math.round(b.width * zoom), fullHeight = Math.round(b.height * zoom);
       if (fullWidth > 0 && fullHeight > 0) applyViewGeometry(slot.view,{x:Math.round(b.x*zoom)-x,y:Math.round(b.y*zoom)-y,width:fullWidth,height:fullHeight},visible);
       else slot.view.setVisible(false);

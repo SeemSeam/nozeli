@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {createHash, randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {ensureGit} from './git-runtime.mjs';
 import {PassThrough} from 'node:stream';
-import {platformPersistence} from '../../platform/shared/persistence.mjs';
+import {createWorkChangesIO} from './work-changes-io.mjs';
 
 // Only private evidence storage is writable. Git never receives renderer paths or refs.
 const MAX_OUTPUT = 64 * 1024 * 1024;
@@ -14,7 +14,10 @@ const reject = (code, message) => { throw Object.assign(new Error(message), {cod
 const env = () => {
  const value = {...process.env};
  for (const key of Object.keys(value)) if (key.startsWith('GIT_')) delete value[key];
- return {...value, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', LC_ALL: 'C'};
+ // Content-addressed ref names under a registered instance exceed MAX_PATH.
+ // These settings belong only to this isolated child, never user Git config.
+ return {...value, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform==='win32'?'NUL':'/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', LC_ALL: 'C',
+  ...(process.platform==='win32'?{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'core.longpaths',GIT_CONFIG_VALUE_0:'true'}:{})};
 };
 const argsFor = args => ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.commitGraph=false', '-c', 'core.fsync=all', ...args];
 function child(cwd, args) {
@@ -35,8 +38,6 @@ async function collect(proc, input, limit = MAX_OUTPUT) {
 }
 const git = (cwd, args, input = '') => collect(child(cwd, args), input);
 const text = async (cwd, args) => (await git(cwd, args)).toString().trim();
-async function json(file) {try {return JSON.parse(await fs.readFile(file, 'utf8'));} catch (error) {if (error.code === 'ENOENT') return null; throw error;}}
-async function atomic(file,value){platformPersistence.requireSupported();await fs.mkdir(path.dirname(file),{recursive:true,mode:0o700});await platformPersistence.writeAtomic(file,JSON.stringify(value));}
 function integer(value, fallback, max, min = 0) {
  if (value === undefined) return fallback;
  if (!Number.isSafeInteger(value) || value < min || value > max) reject('CHANGES_ARGUMENT', 'Invalid bounded option');
@@ -57,22 +58,35 @@ export class WorkChanges {
   if (typeof root !== 'string' || !path.isAbsolute(root)) reject('CHANGES_ARGUMENT', 'Absolute private runtimeRoot required');
   if (!options.storage || ['putObject', 'readObject', 'getProject', 'putProject', 'listProject'].some(key => typeof options.storage[key] !== 'function')) reject('CHANGES_ARGUMENT', 'Project storage authority required');
   this.storage = options.storage; this.projectId = identifier(options.projectId);
+  this.io = createWorkChangesIO(options);
   this.readState = options.readState || (() => typeof options.state === 'function' ? options.state() : options.state);
   this.root = path.join(root, 'work-changes'); this.evidenceRepo = path.join(this.root, 'objects.git'); this.pending = Promise.resolve();
  }
  locked(fn) {const result = this.pending.then(fn); this.pending = result.catch(() => {}); return result;}
  file(id, intent = false) {return path.join(this.root, intent ? 'intents' : 'sets', setId(id) + '.json');}
+ evidenceText(args){return this.evidenceGit(args).then(bytes=>bytes.toString().trim());}
+ evidenceGit(args,input=''){return this.withRepository(()=>git(this.evidenceRepo,args,input));}
+ withRepository(fn){return this.io.withRepository?this.io.withRepository(this.evidenceRepo,fn):fn();}
  async identity() {
-  if (await fs.realpath(this.evidenceRepo) !== this.evidenceRepo || await text(this.evidenceRepo, ['rev-parse', '--is-bare-repository']) !== 'true') reject('CHANGES_IDENTITY', 'Evidence repository identity changed');
+  return this.withRepository(async()=>{
+  if (await fs.realpath(this.evidenceRepo) !== this.evidenceRepo || (await this.evidenceGit(['rev-parse', '--is-bare-repository'])).toString().trim() !== 'true') reject('CHANGES_IDENTITY', 'Evidence repository identity changed');
   for (const name of ['alternates', 'http-alternates']) {
    if (await fs.lstat(path.join(this.evidenceRepo, 'objects', 'info', name)).catch(error => {if (error.code === 'ENOENT') return null; throw error;})) reject('CHANGES_ALTERNATES', 'Evidence must not borrow external objects');
   }
+  });
  }
  async initialize(format) {
-  await fs.mkdir(this.root, {recursive: true, mode: 0o700});
-  if (!await fs.lstat(this.evidenceRepo).catch(error => {if (error.code === 'ENOENT') return null; throw error;})) await git(this.root, ['init', '--bare', '--template=', '--object-format=' + format, this.evidenceRepo]);
+  // This bundled Git cannot initialize/discover an overlong repository cwd,
+  // even with core.longpaths. Ref/blob paths inside a qualified cwd may be long.
+  // Retain candidates before allocating any archive directory or intent.
+  if(process.platform==='win32'&&Buffer.byteLength(this.evidenceRepo,'utf8')>=248)
+   reject('CHANGES_PATH_UNSUPPORTED','当前随包 Git 尚不支持此长度的本机成果仓库目录；原任务、候选和草稿保留，未分配归档。');
+  await this.io.ensureDirectory(this.root);
+  const initialize=()=>git(this.root, ['init', '--bare', '--template=', '--object-format=' + format, this.evidenceRepo]);
+  if(this.io.ensureRepository)await this.io.ensureRepository(this.evidenceRepo,format,initialize);
+  else if (!await fs.lstat(this.evidenceRepo).catch(error => {if (error.code === 'ENOENT') return null; throw error;})) await initialize();
   await this.identity();
-  if (await text(this.evidenceRepo, ['rev-parse', '--show-object-format']) !== format) reject('CHANGES_FORMAT', 'Object format mismatch');
+  if (await this.evidenceText(['rev-parse', '--show-object-format']) !== format) reject('CHANGES_FORMAT', 'Object format mismatch');
  }
  async binding(input) {
   const repo = await fs.realpath(identifier(input.repo)), commonDir = await fs.realpath(identifier(input.commonDir));
@@ -92,30 +106,33 @@ export class WorkChanges {
   return binding;
  }
  async archive(binding) {
+  return this.withRepository(async()=>{
   const producer = await child(binding.repo, ['pack-objects', '--stdout', '--revs', '--no-reuse-delta', '--no-reuse-object']);
   const consumer = await child(this.evidenceRepo, ['index-pack', '--stdin', '--strict']);
   const produced = collect(producer, binding.inputCommit + '\n' + binding.candidateCommit + '\n', null);
   const consumed = collect(consumer, undefined, 1024);
   producer.stdout.pipe(consumer.stdin);
   try {await Promise.all([produced, consumed]);} catch (error) {producer.kill(); consumer.kill(); throw error;}
+  });
  }
  async refs(binding, id) {
   const prefix = 'refs/nozeli/changes/' + id;
-  await git(this.evidenceRepo, ['update-ref', '--stdin'], 'start\nupdate ' + prefix + '/input ' + binding.inputCommit + '\nupdate ' + prefix + '/candidate ' + binding.candidateCommit + '\nprepare\ncommit\n');
+  if(this.io.prepareRefs)await this.io.prepareRefs(this.evidenceRepo,id);
+  await this.evidenceGit(['update-ref', '--stdin'], 'start\nupdate ' + prefix + '/input ' + binding.inputCommit + '\nupdate ' + prefix + '/candidate ' + binding.candidateCommit + '\nprepare\ncommit\n');
  }
  async closure(binding) {
   await this.identity();
-  await git(this.evidenceRepo, ['fsck', '--full', '--strict', '--no-reflogs', '--no-dangling', binding.inputCommit, binding.candidateCommit]);
+  await this.evidenceGit(['fsck', '--full', '--strict', '--no-reflogs', '--no-dangling', binding.inputCommit, binding.candidateCommit]);
   for (const [commit, tree] of [[binding.inputCommit, binding.inputTree], [binding.candidateCommit, binding.candidateTree]]) {
-   if (await text(this.evidenceRepo, ['cat-file', '-t', commit]) !== 'commit' || await text(this.evidenceRepo, ['rev-parse', commit + '^{tree}']) !== tree) reject('CHANGES_CORRUPT', 'Archived tree mismatch');
+   if (await this.evidenceText(['cat-file', '-t', commit]) !== 'commit' || await this.evidenceText(['rev-parse', commit + '^{tree}']) !== tree) reject('CHANGES_CORRUPT', 'Archived tree mismatch');
   }
  }
  async manifest(binding, id) {
   const options = ['--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=none', binding.inputCommit, binding.candidateCommit];
   // Rename detection is deliberately bounded by Git's rename limit; exact matches remain reliable.
   options.splice(2, 1, '--find-renames=100%', '-l1000');
-  const raw = tokens(await git(this.evidenceRepo, ['diff', '--raw', '--no-abbrev', '-z', ...options]));
-  const stats = tokens(await git(this.evidenceRepo, ['diff', '--numstat', '-z', ...options]));
+  const raw = tokens(await this.evidenceGit(['diff', '--raw', '--no-abbrev', '-z', ...options]));
+  const stats = tokens(await this.evidenceGit(['diff', '--numstat', '-z', ...options]));
   const files = []; let statAt = 0;
   for (let at = 0; at < raw.length && raw[at];) {
    const match = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])(\d*)$/.exec(raw[at++]);
@@ -129,9 +146,10 @@ export class WorkChanges {
    const side = async (mode, object) => {
     if (zero(object)) return null;
     if (mode === '160000') return {oid: object, mode, type: 'gitlink', bytes: null};
-    const type = await text(this.evidenceRepo, ['cat-file', '-t', object]);
+    return this.withRepository(async()=>{
+    const type = await this.evidenceText(['cat-file', '-t', object]);
     if (type !== 'blob') reject('CHANGES_CORRUPT', 'File object is not a blob');
-    const size=Number(await text(this.evidenceRepo,['cat-file','-s',object]));
+    const size=Number(await this.evidenceText(['cat-file','-s',object]));
     if(!Number.isSafeInteger(size)||size<0)reject('CHANGES_CORRUPT','Invalid blob size');
     const proc=await child(this.evidenceRepo,['cat-file','blob',object]);
     // ChildProcess drains stdout on exit. Attach a backpressured consumer before
@@ -143,6 +161,7 @@ export class WorkChanges {
     catch(error){proc.kill();output.destroy();await completed.catch(()=>{});throw error;}
     if(reference.byteLength!==size)reject('CHANGES_CORRUPT','Published blob size mismatch');
     return {oid:object,mode,type:mode==='120000'?'symlink':'blob',bytes:size,object:reference};
+    });
    };
    const before = await side(beforeMode, beforeOid), after = await side(afterMode, afterOid), binary = stat[1] === '-';
    const unsupported = [before, after].some(value => value && value.type !== 'blob');
@@ -155,7 +174,7 @@ export class WorkChanges {
   await this.initialize(binding.objectFormat);
   const prior = await this.storage.getProject(this.projectId, 'managed_change_sets', id);
   if (prior) return this.verifyInner(id);
-  await atomic(this.file(id, true), {version: 1, binding, changeSetId: id, status: 'archiving'});
+  await this.io.writeJson(this.file(id, true), {version: 1, binding, changeSetId: id, status: 'archiving'});
   return this.complete(binding, id);
  });}
  async discardUnpublished(changeSetId,expectedBinding){return this.locked(async()=>{
@@ -163,13 +182,15 @@ export class WorkChanges {
   const state=await this.readState();
   if(!state||!Array.isArray(state.receipts))reject('CHANGES_RECOVERY_HELD','Publication state cannot be confirmed; evidence retained');
   if(state.receipts.some(receipt=>receipt.changeSetId===id))reject('CHANGES_REFERENCED','Published evidence cannot be discarded');
-  const manifestBytes=await fs.readFile(this.file(id)),intent=await json(this.file(id,true));
+  const manifest=await this.io.openRemoval(this.file(id)),removed=[];let intentLease;
+  try{
+  intentLease=await this.io.openRemoval(this.file(id,true),{optional:true});const manifestBytes=manifest.bytes,intent=intentLease?JSON.parse(intentLease.bytes.toString()):null;
   if(JSON.stringify(JSON.parse(manifestBytes.toString()))!==JSON.stringify(record)||intent&&(intent.changeSetId!==id||JSON.stringify(intent.binding)!==JSON.stringify(record.binding)))reject('CHANGES_RECOVERY_HELD','Evidence ownership changed; retained');
-  await git(this.evidenceRepo,['update-ref','--stdin'],'start\ndelete refs/nozeli/changes/'+id+'/input '+record.binding.inputCommit+'\ndelete refs/nozeli/changes/'+id+'/candidate '+record.binding.candidateCommit+'\nprepare\ncommit\n');
-  if(!(await fs.readFile(this.file(id))).equals(manifestBytes))reject('CHANGES_RECOVERY_HELD','Evidence manifest changed during cleanup; retained');
-  await fs.unlink(this.file(id));if(intent)await fs.unlink(this.file(id,true));
+  await this.evidenceGit(['update-ref','--stdin'],'start\ndelete refs/nozeli/changes/'+id+'/input '+record.binding.inputCommit+'\ndelete refs/nozeli/changes/'+id+'/candidate '+record.binding.candidateCommit+'\nprepare\ncommit\n');
+  await manifest.remove();removed.push('manifest');if(intentLease){await intentLease.remove();removed.push('intent');}
   // Portable manifests and their immutable objects are retained; only unpublished local evidence is released.
   return {changeSetId:id,discarded:true};
+  }catch(error){if(removed.length){error.committed=true;error.durability='uncertain';error.archiveCleanup={changeSetId:id,removed};}throw error;}finally{try{intentLease?.close();}finally{manifest.close();}}
  });}
  async complete(binding, id) {
   if (binding.projectId !== this.projectId) reject('CHANGES_BINDING', 'Project storage ownership mismatch');
@@ -179,20 +200,21 @@ export class WorkChanges {
    await this.archive(binding); await this.closure(binding);
   }
   await this.refs(binding, id);
+  if(this.io.syncRepository){const localQualification=await this.io.syncRepository(this.evidenceRepo);await this.io.writeJson(this.file(id,true),{version:1,binding,changeSetId:id,status:'archived',localQualification});}
   const files = await this.manifest(binding, id);
   const record = {version: 2, binding, changeSetId: id, status: 'verified', files};
   const bytes = Buffer.from(JSON.stringify(record)), reference = await this.storage.putObject(this.projectId, bytes);
   if (reference.digest !== hash(bytes) || reference.byteLength !== bytes.length) reject('CHANGES_CORRUPT', 'Published manifest digest mismatch');
   const prior = await this.storage.getProject(this.projectId, 'managed_change_sets', id);
   if (prior && (prior.digest !== reference.digest || prior.byteLength !== reference.byteLength)) reject('CHANGES_CORRUPT', 'Immutable change set already published with different content');
-  await atomic(this.file(id), record);
+  await this.io.writeJson(this.file(id), record);
   if (!prior) await this.storage.putProject(this.projectId, 'managed_change_sets', id, reference);
   return this.verifyInner(id);
  }
  async recover(changeSetId) {return this.locked(async () => {
   const id = setId(changeSetId);
   if (await this.storage.getProject(this.projectId, 'managed_change_sets', id)) return this.verifyInner(id);
-  const intent = await json(this.file(id, true));
+  const intent = await this.io.readJson(this.file(id, true));
   if (!intent || intent.version !== 1 || intent.changeSetId !== id || idFor(intent.binding) !== id) reject('CHANGES_UNAVAILABLE', 'Valid archive intent required');
   await this.initialize(intent.binding.objectFormat);
   return this.complete(intent.binding, id);

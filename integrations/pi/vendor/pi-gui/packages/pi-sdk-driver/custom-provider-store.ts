@@ -30,22 +30,39 @@ interface ModelsJson extends Record<string, unknown> {
   providers?: Record<string, unknown>;
 }
 
+export interface ModelsJsonStorage {
+  read(): Promise<string | undefined> | string | undefined;
+  update<T>(callback: (current: string | undefined) => Promise<{result: T; next?: string}>): Promise<T>;
+}
+
 export class CustomProviderStore {
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly modelsJsonPath: string) {}
+  constructor(private readonly modelsJsonPath: string, private readonly storage?: ModelsJsonStorage) {}
+
+  private update<T>(callback: (data: ModelsJson) => {result: T; changed: boolean}): Promise<T> {
+    if (this.storage) return this.storage.update(async current => {
+      const data = parseModelsJson(current ?? "");
+      const value = callback(data);
+      return {result: value.result, ...(value.changed ? {next: JSON.stringify(data, null, 2) + "\n"} : {})};
+    });
+    return (async () => {
+      const data = await readModelsJson(this.modelsJsonPath), value = callback(data);
+      if (value.changed) await atomicWriteJson(this.modelsJsonPath, data);
+      return value.result;
+    })();
+  }
 
   async list(): Promise<readonly CustomProviderEntry[]> {
     return this.enqueue(async () => {
-      const data = await readModelsJson(this.modelsJsonPath);
+      const data = this.storage ? parseModelsJson((await this.storage.read()) ?? "") : await readModelsJson(this.modelsJsonPath);
       return readCustomProviders(data);
     });
   }
 
   async set(input: CustomProviderInput): Promise<void> {
     validateInput(input);
-    await this.enqueue(async () => {
-      const data = await readModelsJson(this.modelsJsonPath);
+    await this.enqueue(() => this.update(data => {
       const providers = ensureProvidersRecord(data);
       const existing = providers[input.providerId];
       if (
@@ -57,25 +74,23 @@ export class CustomProviderStore {
         );
       }
       providers[input.providerId] = toProviderConfig(input);
-      await atomicWriteJson(this.modelsJsonPath, data);
-    });
+      return {result: undefined, changed: true};
+    }));
   }
 
   async delete(providerId: string): Promise<boolean> {
-    return this.enqueue(async () => {
-      const data = await readModelsJson(this.modelsJsonPath);
+    return this.enqueue(() => this.update(data => {
       const providers = data.providers;
       if (!providers || !Object.hasOwn(providers, providerId)) {
-        return false;
+        return {result: false, changed: false};
       }
       const existing = providers[providerId];
       if (!isRecord(existing) || !isPiGuiCustomProviderConfig(providerId, existing)) {
-        return false;
+        return {result: false, changed: false};
       }
       delete providers[providerId];
-      await atomicWriteJson(this.modelsJsonPath, data);
-      return true;
-    });
+      return {result: true, changed: true};
+    }));
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -242,25 +257,27 @@ async function readModelsJson(path: string): Promise<ModelsJson> {
     }
     throw error;
   }
+  return parseModelsJson(text);
+}
+
+function parseModelsJson(text: string): ModelsJson {
   if (text.trim().length === 0) {
     return {};
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
+  } catch {
     throw new Error(
-      `${path} is not valid JSON. Fix or remove the file before editing custom endpoints from the app. (${
-        error instanceof Error ? error.message : String(error)
-      })`,
+      "models.json is not valid JSON. Fix or remove the file before editing custom endpoints from the app. Existing data was not changed.",
     );
   }
   if (!isRecord(parsed)) {
-    throw new Error(`${path} must contain a JSON object at the top level.`);
+    throw new Error("models.json must contain a JSON object at the top level. Existing data was not changed.");
   }
   if (Object.hasOwn(parsed, "providers") && !isRecord(parsed.providers)) {
     throw new Error(
-      `${path} must contain a JSON object for providers. Existing data was not changed.`,
+      "models.json has an invalid structure. Existing data was not changed.",
     );
   }
   return { ...parsed, ...(isRecord(parsed.providers) ? { providers: parsed.providers } : {}) };

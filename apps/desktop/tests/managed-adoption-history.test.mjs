@@ -12,14 +12,17 @@ import { runGit } from '../src/agents/managed/git-runtime.mjs';
 import { recordAdoption } from '../src/agents/managed/adoption-history.mjs';
 import {Controller} from '../src/agents/managed/controller.mjs';
 import {staticReport} from './static-report.fixture.mjs';
+import {experimentalWindowsVersionedFilesystem} from '../src/platform/windows/experimental-filesystem.mjs';
+import {createWindowsDesktopWorkspaceIO} from '../src/platform/windows/experimental-workspace-io.mjs';
+
+const adoptionFilesystem=process.platform==='win32'?experimentalWindowsVersionedFilesystem:undefined;
 
 const hash = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-adoption-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'project'); await fs.mkdir(root);
   const notifications = [], host = new DesktopHost(path.join(dir, 'profile'), { onDocumentChange: event => notifications.push(event) });
-  t.after(()=>host.storage.db.close());
+  t.after(async()=>{await host.storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
   const projectId = (await host.pick(root)).project.id, store = new FileChanges({root,storage:host.storage,projectId});
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@localhost', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@localhost', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
   const git = args => runGit(root, ['-c', 'core.hooksPath=' + path.join(dir, 'no-hooks'), ...args], { env });
@@ -38,7 +41,7 @@ async function fixture(t) {
   await git(['switch', '-q', 'main']); await git(['merge', '--ff-only', 'worker']);
   const work = { id: 'work-adoption', name: 'Writing Worker', threadId: 'thread-adoption', execution: { repo: root, candidate:{commit} } };
   const receipt = { status: 'merged', commit, operations: Object.keys(after).map(relPath => ({ relPath, beforeDigest: hash(before[relPath] ?? null), afterDigest: hash(after[relPath]), commit, workId: work.id })) };
-  return { host, projectId, root, store, work, receipt, before, after, notifications, call: () => recordAdoption({ host, projectId, work, receipt }) };
+  return { host, projectId, root, store, work, receipt, before, after, notifications, call: () => recordAdoption({ host, projectId, work, receipt, filesystem:adoptionFilesystem }) };
 }
 
 test('accepted Git bytes acquire Worker history without rewriting originals; replay is idempotent', async t => {
@@ -106,10 +109,9 @@ test('changed or moved paths and forged receipt digests never acquire Worker att
 
 test('reviewed merges attribute worker, user and mixed provenance without relabeling', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-adoption-reviewed-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'project'); await fs.mkdir(root);
   const host = new DesktopHost(path.join(dir, 'profile'));
-  t.after(() => host.storage.db.close());
+  t.after(async()=>{await host.storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
   const projectId = (await host.pick(root)).project.id, store = new FileChanges({ root, storage: host.storage, projectId });
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@localhost', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@localhost', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
   const git = args => runGit(root, ['-c', 'core.hooksPath=' + path.join(dir, 'no-hooks'), ...args], { env });
@@ -143,7 +145,7 @@ test('reviewed merges attribute worker, user and mixed provenance without relabe
     ] } },
   };
   const receipt = { status: 'merged', commit, operations: Object.keys(final).map(relPath => ({ relPath, beforeDigest: hash(base[relPath] ?? null), afterDigest: hash(final[relPath]), commit, workId: work.id })) };
-  const call = () => recordAdoption({ host, projectId, work, receipt });
+  const call = () => recordAdoption({ host, projectId, work, receipt, filesystem:adoptionFilesystem });
   const result = await call();
   assert.deepEqual(result.files.map(file => file.status), ['recorded', 'recorded', 'recorded']);
   // Mixed chain: worker baseline→candidate, then human candidate→final.
@@ -181,8 +183,11 @@ for(const kind of ['untracked','modified'])test('reviewed '+kind+' input complet
  const input='uncommitted user input\n',candidate='worker candidate\n',human='worker candidate\nhuman polish\n';
  await fs.writeFile(path.join(root,'result.md'),input);
  const host=new DesktopHost(path.join(dir,'profile')),projectId=(await host.pick(root)).project.id;
- const c=await Controller.open({storage:host.storage,projectId,runtimeRoot:path.join(dir,'runtime'),contentRoot:root,afterAdoption:(work,receipt)=>recordAdoption({host,projectId,work,receipt}),sessionFactory:()=>{throw Error('No model may run');}});
- t.after(async()=>{await c.stop();await host.storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
+ let c;
+ t.after(async()=>{await c?.stop();await host.storage.db.close();await fs.rm(dir,{recursive:true,force:true});});
+ const workspaceIO=process.platform==='win32'?createWindowsDesktopWorkspaceIO({storage:host.storage}):undefined;
+ const runtimeRoot=workspaceIO?path.join(await host.storage.localDirectory(projectId),'execution'):path.join(dir,'runtime');
+ c=await Controller.open({storage:host.storage,projectId,runtimeRoot,contentRoot:root,workspaceIO,withAdoption:(_work,run)=>host.projectLock(projectId)(run),afterAdoption:(work,receipt)=>recordAdoption({host,projectId,work,receipt,filesystem:adoptionFilesystem}),sessionFactory:()=>{throw Error('No model may run');}});
  const submission=await c.store.submit('Review frozen input','real Git fixture');await c.store.activate(submission.id);const work=c.store.find(submission.id),jobId='adoption-input-job';
  await c.execution.prepare(work.id);await fs.writeFile(path.join(c.execution.directory(work.id),'result.md'),candidate);
  await c.execution.publish(work,{id:jobId},()=>true);

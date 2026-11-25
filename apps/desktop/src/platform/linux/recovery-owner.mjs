@@ -5,7 +5,7 @@
 // per-step incarnation re-stamping. There is no second proof path — the
 // managed wrapper either delegates here or refuses explicitly.
 import fs from 'node:fs/promises';
-import path from 'node:path';
+import {posix as path} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {processStamp} from './process-ownership.mjs';
 
@@ -57,13 +57,14 @@ async function sandboxedChromiumChild(pid,args,uid,seen=new Set()){
 
 // Only explicit recovery uses this conservative same-user Linux probe. It is
 // not a cross-user lease and never authorizes a recovery after an unknown scan.
-export async function assertRecoverySourceStopped(root){
+export async function assertRecoverySourceStopped(root,{uid=process.getuid?.()}={}){
+ if(!Number.isSafeInteger(uid)||uid<0)throw fail('RECOVERY_OWNER_UNVERIFIED','无法核验当前用户身份；未恢复项目。');
  const ownExe=await fs.readlink('/proc/self/exe');
  for(const entry of await fs.readdir('/proc')){
   if(!/^\d+$/.test(entry)||Number(entry)===process.pid)continue;
   const pid=Number(entry);let stamp;
   try{
-   const stat=await fs.stat('/proc/'+entry);if(stat.uid!==process.getuid())continue;
+   const stat=await fs.stat('/proc/'+entry);if(stat.uid!==uid)continue;
    stamp=await processStamp(pid);if(!stamp)continue;
    const args=await commandLine(pid);
    // Only complete fixed desktop-service argv shapes qualify. PAM additionally

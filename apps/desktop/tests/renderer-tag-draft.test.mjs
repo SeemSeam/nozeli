@@ -84,9 +84,10 @@ globalThis.ResizeObserver = class {
 
 // The composer exposes discussion and task submission; secondary actions live
 // in .tag-menu-actions. The head retains number/title/summary/drift/more/collapse.
-const composerOf = card => card.children.find(node => node.className === 'tag-composer');
+const composerOf = card => card.children.find(node => node.className.split(' ').includes('tag-composer'));
 const editorOf = card => composerOf(card).children.find(node => node.className === 'tag-editor');
-const sendOf = card => composerOf(card).children.find(node => node.className === 'tag-send');
+const actionsOf = card => composerOf(card).children.find(node => node.className === 'discussion-composer-actions');
+const sendOf = card => actionsOf(card).children.find(node => node.className === 'tag-send');
 const menuActionsOf = card => card.children.find(node => node.className === 'tag-menu-actions');
 const summaryOf = head => head.children[2];
 
@@ -285,6 +286,8 @@ test('discussion send keys ignore IME and held keys and share click submission',
   for(const extra of [{isComposing:true},{keyCode:229},{repeat:true}])editor.emit('keydown',{key:'Enter',ctrlKey:true,...extra});
   assert.equal(calls,0);
   editor.emit('keydown',{key:'Enter',metaKey:true});
+  assert.equal(calls,0,'non-platform modifier must not send');
+  editor.emit('keydown',{key:'Enter',ctrlKey:true});
   assert.equal(calls,1);
   editor.emit('keydown',{key:'Enter',ctrlKey:true});
   assert.equal(calls,1,'pending submission cannot dispatch again');
@@ -450,13 +453,15 @@ test('drift is advisory and task receipts preserve newer discussion input', asyn
   let accept, calls=0;
   const drafts=[];
   const root=noteTag.makeAnchorTag({id:'drift-task',ordinal:1,kind:'discuss',anchorKind:'text-selection',text:'old question',draftText:'new task',resolution:{anchor:null,advisory:'原位置未找到'}}, {
+    confirmTask:()=>true,
     execute:async(_id,text)=>{calls++;assert.equal(text,'new task');return new Promise(resolve=>{accept=resolve;});},
     onDraft:(_id,text)=>drafts.push(text),
   });
-  const card=root.children[1],editor=editorOf(card),button=composerOf(card).children.find(node=>node.className==='tag-execute');
+  const card=root.children[1],editor=editorOf(card),button=actionsOf(card).children.find(node=>node.className==='tag-execute');
   const advisory=card.children[0].children.find(node=>node.className==='note-source-change');
   assert.equal(advisory.textContent,'原位置未找到');assert.equal(button.disabled,false);
   const pending=button.emitAsync('click');
+  await Promise.resolve();
   assert.equal(sendOf(card).disabled,true);assert.equal(button.disabled,true);
   await button.emitAsync('click');assert.equal(calls,1);
   editor.value='newer input';editor.emit('input');accept({accepted:true});await pending;
@@ -466,12 +471,22 @@ test('drift is advisory and task receipts preserve newer discussion input', asyn
 
 test('file discussion hides positional advisory and only confirmed acceptance clears its composer', async () => {
   let receipt={accepted:false};
-  const root=noteTag.makeAnchorTag({id:'whole-file',ordinal:2,kind:'discuss',anchorKind:'file',draftText:'task',resolution:{advisory:'原位置未找到'},anchor:{scope:'file'},relPath:'whole.txt'}, {execute:async()=>receipt});
-  const card=root.children[1],editor=editorOf(card),button=composerOf(card).children.find(node=>node.className==='tag-execute');
+  const root=noteTag.makeAnchorTag({id:'whole-file',ordinal:2,kind:'discuss',anchorKind:'file',draftText:'task',resolution:{advisory:'原位置未找到'},anchor:{scope:'file'},relPath:'whole.txt'}, {confirmTask:()=>true,execute:async()=>receipt});
+  const card=root.children[1],editor=editorOf(card),button=actionsOf(card).children.find(node=>node.className==='tag-execute');
   assert.equal(card.children[0].children.find(node=>node.className==='note-source-change').hidden,true);
   await button.emitAsync('click');assert.equal(editor.value,'task');
   receipt={accepted:true,clearDraft:false};await button.emitAsync('click');assert.equal(editor.value,'task');
   receipt={accepted:true};await button.emitAsync('click');assert.equal(editor.value,'');
+});
+
+test('cancelling a background task or editing while its confirmation is open does not submit', async () => {
+  let confirm, calls=0;
+  const root=noteTag.makeAnchorTag({id:'task-confirm',ordinal:1,kind:'discuss',text:'prior question',draftText:'original draft',open:true}, {confirmTask:()=>new Promise(resolve=>{confirm=resolve;}),execute:async()=>{calls++;return {accepted:true};}});
+  const card=root.children[1],editor=editorOf(card),button=actionsOf(card).children.find(node=>node.className==='tag-execute');
+  const cancelled=button.emitAsync('click');confirm(false);await cancelled;
+  assert.equal(editor.value,'original draft');assert.equal(calls,0);
+  const stale=button.emitAsync('click');editor.value='new draft';editor.emit('input');confirm(true);await stale;
+  assert.equal(editor.value,'new draft');assert.equal(calls,0);
 });
 
 test('advisory changes invalidate projected tag content without changing its origin', () => {

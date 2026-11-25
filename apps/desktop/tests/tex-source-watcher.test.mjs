@@ -130,7 +130,7 @@ test('concurrent inspect shares subscriptions; project/all stop invalidate pendi
     findSynctex: async () => null,
   });
   t.after(() => manager.stopAll());
-  manager.config = async () => ({ root: '', engine: 'xelatex', automatic: true });
+  manager.config = async () => ({ root: '', engine: 'xelatex', automatic: false });
   manager.slot = async () => ({ state: { phase: 'idle' } });
   await Promise.all([manager.inspect({ projectId: 'p' }), manager.inspect({ projectId: 'p' })]);
   assert.equal(manager.watchers.size, 1);

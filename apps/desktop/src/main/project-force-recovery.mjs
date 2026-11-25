@@ -38,6 +38,10 @@ export class ProjectForceRecovery {
   }catch(error){if(['STORAGE_RESULT_UNKNOWN','STORAGE_TIMEOUT'].includes(error.code)||this.storage.db.quarantined.get(file)?.operationIds?.length)throw error;return null;}
  }
  async preview(project){
+  // Windows has no verified source-stop adapter; refuse through the shared
+  // wrapper before any admission, hold or effect, instead of surfacing the
+  // Node-stat versus native-FileID identity mismatch below.
+  if(process.platform==='win32')await assertRecoverySourceStopped(project.root);
   if(this.storage.lifecycleHolds.has(project.id))throw fail('PROJECT_STOP_PENDING','项目已有生命周期围栏，未接管或重放。');
   await this.lifecycle.prepareResetAdmission(project.id,project);
   await this.snapshot(project);
@@ -49,6 +53,7 @@ export class ProjectForceRecovery {
  }
  async execute(c){
   const {storage,lifecycle}=this,{projectId,operationId}=c;
+  if(process.platform==='win32')await assertRecoverySourceStopped(c.root);
   const prior=await storage.db.request(storage.catalog,'get',{collection:'force_recovery',id:operationId});
   if(prior)return prior.result??{status:'unknown',recovered:null,projectId,operationId,backupDirectory:c.forceRecovery.backupDirectory,automaticReplay:false,message:'上次恢复结果未知；不会重放。'};
   const project=await lifecycle.host.requireRegisteredProject(projectId);

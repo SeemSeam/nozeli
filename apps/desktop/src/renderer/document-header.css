@@ -74,6 +74,7 @@
 #reader.document-pdf .desk-header,#reader.document-pdf #reader-bar{overflow:visible}
 #reader.document-pdf>.desk-header #subject-title{min-width:20px}
 #reader #pdf-toolbar,#reader #image-toolbar,#reader #secondary-tools{gap:3px;flex:none;white-space:nowrap;background:transparent;border:0;padding:0}
+html[data-workspace-role=surface] #reader #primary-pane>#pdf-toolbar:not([hidden]){flex-wrap:wrap;justify-content:center;padding:4px 8px;border-bottom:1px solid var(--line)}
 #reader #secondary-tools{display:flex;align-items:center;font-size:11px}
 #reader #word-region,#reader #image-region{font-size:0;width:28px!important;min-width:28px;flex:none!important;padding:3px!important}
 #reader #word-region::after,#reader #image-region::after{content:'▣';font-size:15px}
@@ -87,6 +88,10 @@
 #reader #tex-toolbar{display:flex;flex-wrap:nowrap;flex:none;border:0;padding:0;gap:4px;white-space:nowrap;font-size:11px;min-width:0}
 #reader #tex-toolbar select{min-width:66px;max-width:130px;padding:3px}
 #reader #tex-status{display:none}
+#reader #primary-pane>#tex-toolbar{flex-wrap:wrap;padding:6px 8px;border-bottom:1px solid var(--line);white-space:normal}
+#reader #primary-pane>#tex-toolbar[hidden]{display:none}
+#reader #primary-pane>#tex-toolbar #tex-status{display:block;flex:1 1 100%;min-width:0;overflow-wrap:anywhere}
+#reader #primary-pane>#tex-toolbar>label,#reader #primary-pane>#tex-toolbar #tex-engine{display:flex}
 #reader .panel-compact #tex-toolbar>label,#reader .panel-compact #tex-engine{display:none}
 /* Keep the source filename readable before secondary TeX controls consume it. */
 #reader .panel-medium:has(#tex-toolbar:not([hidden])) #tex-toolbar>label,

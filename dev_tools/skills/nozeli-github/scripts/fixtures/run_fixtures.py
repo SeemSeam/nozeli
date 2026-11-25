@@ -77,7 +77,7 @@ def build_repository(root, version, platforms, targeted=None):
     return git(root, 'rev-parse', 'HEAD')
 
 
-def build_assets(directory, version, head, with_mac, mac_commit=None):
+def build_assets(directory, version, head, with_mac, mac_commit=None, with_windows=False, windows_commit=None):
     """Public-asset layout: ASCII manifest names, builder-local 使用说明.md only."""
     directory.mkdir(parents=True, exist_ok=True)
     label = f'Nozeli-{version}-linux-x64'
@@ -107,6 +107,27 @@ def build_assets(directory, version, head, with_mac, mac_commit=None):
         entries[f'Nozeli-{version}-macos-arm64.zip'] = digest(directory / f'Nozeli-{version}-macos-arm64.zip')
         entries['USAGE-macos.zh-CN.md'] = digest(directory / 'USAGE-macos.zh-CN.md')
         names += [f'Nozeli-{version}-macos-arm64.zip', 'USAGE-macos.zh-CN.md']
+    if with_windows:
+        win_commit = windows_commit or head
+        win_name = f'Nozeli-{version}-windows-x64.zip'
+        record = {'application': 'Nozeli', 'version': version, 'platform': 'win32', 'arch': 'x64',
+                  'commit': win_commit, 'codesign': 'unsigned', 'authenticode': False, 'autoUpdate': 'unsupported'}
+        record_bytes = json.dumps(record).encode('utf-8')
+        candidate = {'version': version, 'platform': 'win32', 'arch': 'x64', 'automaticUpdater': 'unsupported',
+                     'entries': [{'path': 'RELEASE.json', 'sha256': hashlib.sha256(record_bytes).hexdigest()}],
+                     'nativeProvenance': {'schema': 1, 'commit': win_commit, 'files': {'fixture.node': 'fixture'}, 'buildInputs': {'fixture.cc': 'fixture'}}}
+        with zipfile.ZipFile(directory / win_name, 'w') as archive:
+            prefix = f'Nozeli-{version}-windows-x64/'
+            archive.writestr(prefix + 'Nozeli.exe', b'fixture executable')
+            archive.writestr(prefix + 'RELEASE.json', record_bytes)
+            archive.writestr(prefix + 'WINDOWS-CANDIDATE.json', json.dumps(candidate))
+        write(directory / 'USAGE-windows.zh-CN.md', 'Unsigned; automatic updater unsupported.\n')
+        smoke = {'commit': win_commit, 'version': version, 'archive': win_name, 'archiveSha256': digest(directory / win_name),
+                 'smoke': {'node': {'node': '22.23.4', 'electron': None}, 'electron': {'electron': '44.9.1'}, 'git': 'git version fixture'}}
+        write(directory / 'WINDOWS-SMOKE.json', json.dumps(smoke))
+        for name in [win_name, 'USAGE-windows.zh-CN.md', 'WINDOWS-SMOKE.json']:
+            names.append(name)
+            entries[name] = digest(directory / name)
     manifest = ''.join(f'{entries[name]}  {name}\n' for name in names)
     write(directory / 'SHA256SUMS.txt', manifest)
     return manifest
@@ -168,6 +189,23 @@ def run_checker(repo, phase, assets_dir, env=None, ci_run_id=None):
 
 
 SCENARIOS = [
+    dict(name='beta-windows-draft-native-ci-required', version='0.1.0-beta.8', platforms=LINUX_PLATFORMS,
+         targeted=['linux-x64', 'windows-x64'], phase='draft', mac=False, windows=True,
+         remote=dict(draft=True, drop_mac=False), expect=1,
+         contains=['FAIL intended SHA has successful CI gate and all required qualification jobs'], excludes=[]),
+    dict(name='beta-windows-draft-native-ci-success', version='0.1.0-beta.8', platforms=LINUX_PLATFORMS,
+         targeted=['linux-x64', 'windows-x64'], phase='draft', mac=False, windows=True, windows_ci=True,
+         remote=dict(draft=True, drop_mac=False), expect=0,
+         contains=['PASS intended SHA has successful CI gate and all required qualification jobs'], excludes=[]),
+    dict(name='beta-windows-local-assets', version='0.1.0-beta.8', platforms=LINUX_PLATFORMS,
+         targeted=['linux-x64', 'windows-x64'], phase='prepare', mac=False, windows=True, remote=None, expect=0,
+         contains=['PASS Windows native smoke binds exact archive', 'PASS Windows ZIP RELEASE.json binds'], excludes=[]),
+    dict(name='beta-windows-wrong-commit', version='0.1.0-beta.8', platforms=LINUX_PLATFORMS,
+         targeted=['linux-x64', 'windows-x64'], phase='prepare', mac=False, windows=True, windows_commit='0' * 40, remote=None, expect=1,
+         contains=['FAIL Windows ZIP RELEASE.json binds'], excludes=[]),
+    dict(name='beta-windows-missing-assets', version='0.1.0-beta.8', platforms=LINUX_PLATFORMS,
+         targeted=['linux-x64', 'windows-x64'], phase='prepare', mac=False, remote=None, expect=1,
+         contains=['FAIL checksum coverage: Nozeli-0.1.0-beta.8-windows-x64.zip'], excludes=[]),
     dict(name='alpha-linux-only-local-assets', version='0.1.0-alpha.6', platforms=LINUX_PLATFORMS,
          phase='prepare', mac=False, remote=None, expect=0,
          contains=['PASS local SHA-256: Nozeli-0.1.0-alpha.6-linux-x64.tar.gz',
@@ -241,7 +279,8 @@ def run_scenario(workspace, scenario):
     if scenario.get('mac') is not None:
         assets = workspace / 'assets'
         manifest = build_assets(assets, scenario['version'], head,
-                                with_mac=scenario['mac'], mac_commit=scenario.get('mac_commit'))
+                                with_mac=scenario['mac'], mac_commit=scenario.get('mac_commit'),
+                                with_windows=scenario.get('windows', False), windows_commit=scenario.get('windows_commit'))
     remote = scenario.get('remote')
     if remote is not None:
         bare = workspace / 'origin.git'
@@ -255,11 +294,15 @@ def run_scenario(workspace, scenario):
                         f'Nozeli-{scenario["version"]}-source.tar.gz', 'USAGE.zh-CN.md']
         if scenario['mac']:
             public_names += [f'Nozeli-{scenario["version"]}-macos-arm64.zip', 'USAGE-macos.zh-CN.md']
+        if scenario.get('windows'):
+            public_names += [f'Nozeli-{scenario["version"]}-windows-x64.zip', 'USAGE-windows.zh-CN.md', 'WINDOWS-SMOKE.json']
         public_names += ['SHA256SUMS.txt']
         mapping = gh_endpoint_map(scenario['version'], head, manifest, public_names,
                                   draft=remote['draft'])
         ci_endpoint = f'repos/{REPO_NAME}/actions/workflows/ci.yml/runs?head_sha={head}&per_page=100'
         detail = mapping[f'repos/{REPO_NAME}/actions/runs/7']
+        if scenario.get('windows_ci'):
+            mapping[f'repos/{REPO_NAME}/actions/runs/7/attempts/1/jobs?per_page=100']['jobs'].append({'name': 'Windows native safety', 'conclusion': 'success'})
         if scenario.get('duplicate'):
             duplicate = dict(mapping[ci_endpoint]['workflow_runs'][0], id=8, run_number=4,
                              status=scenario['duplicate'], conclusion=scenario.get('duplicate_conclusion'))

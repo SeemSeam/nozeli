@@ -3,12 +3,15 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { realUserHome, resolveSystemOmpSource, sanitizeOmpConfig, OMP_CONFIG_FILES } from './omp-system-source.mjs';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
+import {ensureExperimentalPrivateDirectory} from '../../platform/windows/experimental-directories.mjs';
+import {createWindowsConfigurationIO,withWindowsConfigurationLock} from '../../platform/windows/desktop-configuration.mjs';
+import {selectedWindowsInstallProfile} from '../../platform/windows/install-profile.mjs';
 
 const inside = (root, file) => { const rel = path.relative(root, file); return !rel.startsWith('..') && !path.isAbsolute(rel); };
 const present = file => fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
-async function atomic(file,bytes){await platformPersistence.writeAtomic(file,bytes);}
-async function json(file) { const stat = await present(file); if (!stat) return null; if (!stat.isFile() || stat.isSymbolicLink()) fail('CONFIG_UNSAFE', 'Configuration record must be an ordinary file: ' + file); return JSON.parse(await fs.readFile(file, 'utf8')); }
+async function atomic(file,bytes,io){if(io)return io.write(file,Buffer.from(bytes));await platformPersistence.writeAtomic(file,bytes);}
+async function json(file,io) { if(io)return io.readJson(file);const stat = await present(file); if (!stat) return null; if (!stat.isFile() || stat.isSymbolicLink()) fail('CONFIG_UNSAFE', 'Configuration record must be an ordinary file: ' + file); return JSON.parse(await fs.readFile(file, 'utf8')); }
 async function safeDirectory(directory) {
   const parent = path.dirname(directory);
   if (parent !== directory) await safeDirectory(parent);
@@ -21,12 +24,14 @@ export function resolveNozeliPaths({ env = process.env, home = realUserHome() } 
   const testing = env.NOZELI_TEST_INSTANCE === '1';
   const override = testing && env.NOZELI_USER_DATA;
   if (testing && ((env.NOZELI_CONFIG_ROOT && !path.isAbsolute(env.NOZELI_CONFIG_ROOT)) || (override && !path.isAbsolute(override)))) fail('CONFIG_ROOT_INVALID', 'Test roots must be absolute');
-  const root = path.resolve(testing && env.NOZELI_CONFIG_ROOT || (override ? path.dirname(override) : path.join(home, '.Nozeli')));
+  const installedProfile = selectedWindowsInstallProfile(env, home);
+  const root = installedProfile ?? path.resolve(testing && env.NOZELI_CONFIG_ROOT || (override ? path.dirname(override) : path.join(home, '.Nozeli')));
   const desktop = override ? path.resolve(override) : path.join(root, 'desktop');
   if (!inside(root, desktop) || root === desktop) fail('CONFIG_ROOT_INVALID', 'Test desktop must be beneath the explicit Nozeli root');
   return { root, desktop, omp: path.join(root, 'omp'), migrations: path.join(root, 'migrations') };
 }
 async function withLock(paths, fn) {
+  if(process.platform==='win32')return withWindowsConfigurationLock(paths,fn);
   await safeDirectory(paths.migrations);
   const file = path.join(paths.migrations, 'configuration.lock');
   let handle;
@@ -45,26 +50,33 @@ async function withLock(paths, fn) {
 
 export async function initializeNozeliConfiguration(paths) {
   await safeDirectory(paths.root);
-  return withLock(paths, async () => {
+  if(process.platform==='win32'){
+    // Establish private children before Chromium or any desktop consumer opens
+    // them. Existing permissive ACLs are refused, never silently repaired.
+    for(const directory of [paths.migrations,paths.desktop,paths.omp])await ensureExperimentalPrivateDirectory(paths.root,directory);
+  }
+  return withLock(paths, async io => {
     await safeDirectory(paths.desktop); await safeDirectory(paths.omp);
-    return readNozeliConfiguration(paths);
+    return readNozeliConfiguration(paths,io);
   });
 }
-export async function readNozeliConfiguration(paths) {
-  const record = await json(path.join(paths.migrations, 'setup-v1.json'));
+export async function readNozeliConfiguration(paths,io) {
+  const owned=!io&&process.platform==='win32'?createWindowsConfigurationIO(paths):null;io??=owned;
+  let record;try{record = await json(path.join(paths.migrations, 'setup-v1.json'),io);}finally{owned?.close();}
   const initialized = record?.phase === 'complete';
-  return { version: 1, initialized, choiceRequired: !initialized, choice: initialized ? record.choice : null, apiKeyImportSupported: true, oauthRequiresLogin: true };
+  return { version: 1, initialized, choiceRequired: !initialized, choice: initialized ? record.choice : null, apiKeyImportSupported: process.platform!=='win32', oauthRequiresLogin: true };
 }
 export async function completeNozeliConfiguration(paths, { choice, includeApiKeys = false, source = null } = {}) {
   if (!['independent', 'import'].includes(choice)) fail('CONFIG_CHOICE_INVALID', 'Choose independent or import');
-  return withLock(paths, async () => {
+  if(process.platform==='win32'&&choice==='import')fail('CONFIG_IMPORT_UNSUPPORTED','Windows legacy configuration import is not qualified; original records are retained');
+  return withLock(paths, async io => {
     const marker = path.join(paths.migrations, 'setup-v1.json');
-    let record = await json(marker);
+    let record = await json(marker,io);
     if (record?.phase === 'complete') fail('CONFIG_ALREADY_INITIALIZED', 'Configuration choice has already been completed');
     await safeDirectory(paths.omp);
     if (!record) {
       const stage = path.join(paths.migrations, 'import-' + randomUUID());
-      await safeDirectory(stage);
+      const stageInfo=io?await io.ensureDirectory(stage):await safeDirectory(stage);
       if (choice === 'import') {
         const origin = source ?? resolveSystemOmpSource();
         const realOrigin = await fs.realpath(origin.agentDir).catch(error => { if (error.code === 'ENOENT') return path.resolve(origin.agentDir); throw error; });
@@ -82,12 +94,14 @@ export async function completeNozeliConfiguration(paths, { choice, includeApiKey
           await atomic(path.join(stage, name), stringify(sanitizeOmpConfig(doc, { includeApiKeys })));
         }
       }
-      record = { version: 1, phase: 'staged', choice, includeApiKeys: choice === 'import' && includeApiKeys, stage };
-      await atomic(marker, JSON.stringify(record));
+      record = { version: 1, phase: 'staged', choice, includeApiKeys: choice === 'import' && includeApiKeys, stage, ...(io?{stageIdentity:stageInfo.identity}:{}) };
+      await atomic(marker, JSON.stringify(record),io);
     }
     if (record.choice !== choice) fail('CONFIG_IMPORT_RECOVERY_REQUIRED', 'Finish the journaled configuration choice before selecting another');
     if (!inside(paths.migrations, record.stage) || path.dirname(record.stage) !== paths.migrations) fail('CONFIG_IMPORT_UNSAFE', 'Invalid staged import directory');
-    for (const name of await fs.readdir(record.stage)) {
+    const entries=io?io.stageEntries(record.stage,record.stageIdentity):await fs.readdir(record.stage);
+    if(record.choice==='independent'&&entries.length)fail('CONFIG_IMPORT_UNSAFE','Independent configuration stage must remain empty; unexpected contents retained');
+    for (const name of entries) {
       if (!OMP_CONFIG_FILES.includes(name)) fail('CONFIG_IMPORT_UNSAFE', 'Unexpected staged import file');
       const target = path.join(paths.omp, name), bytes = await fs.readFile(path.join(record.stage, name));
       const stat = await present(target);
@@ -96,8 +110,8 @@ export async function completeNozeliConfiguration(paths, { choice, includeApiKey
       } else await atomic(target, bytes);
     }
     record.phase = 'complete'; record.completedAt = new Date().toISOString();
-    await atomic(marker, JSON.stringify(record));
-    await fs.rm(record.stage, { recursive: true });
-    return readNozeliConfiguration(paths);
+    await atomic(marker, JSON.stringify(record),io);
+    if(io)io.removeStage(record.stage,record.stageIdentity);else await fs.rm(record.stage, { recursive: true });
+    return readNozeliConfiguration(paths,io);
   });
 }

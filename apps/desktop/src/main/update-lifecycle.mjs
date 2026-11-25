@@ -1,3 +1,4 @@
+import {recoveryHeld} from './workspace-recovery-state.mjs';
 // Update restarts are stricter than ordinary close: never save over a dirty
 // original or cancel a business task just to make an update installable.
 export function createUpdateLifecycle({workspace,host,managedAgents,agents,adminAgent,powerMonitor,isClosing,freeze,quit,idleSeconds=60}){
@@ -9,12 +10,13 @@ export function createUpdateLifecycle({workspace,host,managedAgents,agents,admin
     if(host.active||workspace.receipts.size||workspace.lifecycle.size||workspace.drags.size)return {ready:false,reason:'等待文件操作与保存回执完成'};
     if(agents?.busy()||managedAgents?.busy()||adminAgent?.lifecycleBusy())return {ready:false,reason:'等待Agent任务或配置保存结束'};
     for(const c of managedAgents?.controllers.values()||[]){
+      if(c.store.commitUnknown||c.store.nativeCommitUnknown||c.store.state.storageBlocked||c.store.state.works?.some(work=>work.status==='closing'))return {ready:false,reason:'后台仍有未知提交结果或未完成的工作收尾，不能切换程序版本'};
       if(c.starting?.size||c.closures?.size||c.running?.size||c.nativeDraftTargets?.size||c.externalTerminalTargets?.size||c.store.state.jobs.some(j=>['queued','running','unknown','cancelling'].includes(j.status)))return {ready:false,reason:'后台仍有待执行任务、未确认操作或终端输入'};
     }
     const records=[...workspace.senders.values()].filter(r=>!r.dead&&!['demo-controls','demo-hint'].includes(r.role));
     if(!records.length)return {ready:false,reason:'等待主窗口就绪'};
     for(const r of records){
-      if(!r.ready||r.contentFailed||r.transferring||r.held||r.recoveryHeld||r.syncHolds?.size)return {ready:false,reason:'有阅读面尚未就绪或正在保留编辑'};
+      if(!r.ready||r.contentFailed||r.transferring||r.held||recoveryHeld(r)||r.syncHolds?.size)return {ready:false,reason:'有阅读面尚未就绪或正在保留编辑'};
       if(r.kind==='terminal')continue;
       let state,timer;
       try{state=await Promise.race([r.wc.executeJavaScript('window.__nozeliUpdateState?.()'),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('更新就绪查询超时')),3000);timer.unref?.();})]);}catch{return {ready:false,reason:'无法确认全部阅读面的保存状态'};}finally{clearTimeout(timer);}

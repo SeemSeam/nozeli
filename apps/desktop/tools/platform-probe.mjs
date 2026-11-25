@@ -69,7 +69,7 @@ async function probeSafeFileIo() {
     if (!read || read.digest !== digest || read.size !== Buffer.byteLength(content)) return { status: 'failed', error: 'safe read digest/size mismatch', root };
     await fs.mkdir(path.join(root, 'linked'));
     await fs.writeFile(path.join(root, 'linked', 'evidence.txt'), content);
-    await fs.symlink(path.join(root, 'linked'), path.join(root, 'documents', 'trap'));
+    await fs.symlink(path.join(root, 'linked'), path.join(root, 'documents', 'trap'), process.platform === 'win32' ? 'junction' : 'dir');
     try {
       await inspectFile(root, 'documents/trap/evidence.txt');
       return { status: 'failed', error: 'safe chain followed a symlinked directory component', root };
@@ -78,7 +78,7 @@ async function probeSafeFileIo() {
       return { status: 'ok', digest, symlinkDirectoryRejected: { code: enforced.code ?? null }, root };
     }
   } catch (error) {
-    return { status: error.code === 'FS_PLATFORM_UNSUPPORTED' ? 'unsupported' : 'failed', error: String(error.message), code: error.code ?? null, root };
+    return { status: ['SAFE_OPEN_UNSUPPORTED', 'FS_PLATFORM_UNSUPPORTED'].includes(error.code) ? 'unsupported' : 'failed', error: String(error.message), code: error.code ?? null, root };
   } finally {
     if (root) await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   }
@@ -107,13 +107,22 @@ async function probeDurablePersistence() {
   }
 }
 
-// Exercise the same platform-selected identity boundary used by live owners.
+// Exercise the selected native service. A platform without one must report
+// its actual capability state, not try Linux /proc paths on the host drive.
 async function probeProcessOwnership() {
   try {
-    const adapter = await import('../src/agents/managed/process-ownership.mjs');
-    const stamp = await adapter.processStamp(process.pid);
-    if (!stamp || !/^[a-f0-9-]{36}:\d+$/.test(stamp) || !await adapter.ownerAlive({pid: process.pid, stamp})) return { status: 'failed', error: 'self process identity was not verified' };
-    return { status: 'ok', pid: process.pid, stampFormat: 'bootId:starttime', mechanisms: adapter.processIdentityCapability().mechanisms };
+    const { hostProcessTree, ownerAlive } = await import('../src/agents/managed/process-ownership.mjs');
+    const service = hostProcessTree();
+    if (!service.verified) return { status: service.status === 'not-run' ? 'not-run' : 'unsupported', reason: service.reason, capability: service.capability };
+    const stamp = await service.stamp(process.pid);
+    if (!stamp || !await ownerAlive({ pid: process.pid, stamp })) return { status: 'failed', error: 'native service could not verify its own process incarnation' };
+    if (service.platform === 'linux') {
+      const { bootId } = await import('../src/platform/linux/process-ownership.mjs');
+      const boot = await bootId();
+      if (!stamp.startsWith(boot + ':')) return { status: 'failed', error: 'self process stamp is not bound to the current boot id' };
+      return { status: 'ok', pid: process.pid, stampFormat: 'bootId:starttime', bootIdLength: boot.length };
+    }
+    return { status: 'ok', pid: process.pid, mechanisms: service.mechanisms };
   } catch (error) {
     return { status: 'failed', error: String(error.message), code: error.code ?? null };
   }
@@ -122,8 +131,11 @@ async function probeProcessOwnership() {
 // Real bwrap availability probe (the production cached check runs true(1)
 // inside the actual sandbox profile).
 async function probeIsolation() {
+  if (isolationGating === 'not-requested') return { status: 'not-run', gating: isolationGating, reason: 'isolation probe explicitly not requested' };
   try {
-    const { isolationAvailable } = await import('../src/agents/managed/process-isolation.mjs');
+    const { isolationAvailable, isolationCapability } = await import('../src/agents/managed/process-isolation.mjs');
+    const capability = isolationCapability();
+    if (capability.state !== 'available') return { status: capability.status === 'not-run' ? 'not-run' : 'unsupported', available: false, gating: isolationGating, reason: capability.reason };
     const available = await isolationAvailable();
     return { status: available ? 'ok' : 'failed', available, gating: isolationGating };
   } catch (error) {

@@ -13,6 +13,9 @@ const fail=(code,message)=>new HostError(code,message+'，未另存。');
 const unavailable=()=>fail('REPORT_UNAVAILABLE','报告来源缺失、过大或不是安全的普通文件');
 const invalid=()=>fail('REPORT_INVALID','历史报告快照损坏或不属于当前项目');
 const changed=()=>fail('REPORT_CHANGED','报告来源或历史快照已变化');
+const reportIdentity=row=>JSON.stringify([row.id,row.workId,row.revision,row.kind,row.report]);
+const sourceMoved=(identity)=>Object.assign(changed(),{sourceMoved:true,identity});
+const readable=error=>{if(/^REPORT_/.test(error.code??''))error.message=error.message.replace(/，未另存。$/,'。');return error;};
 
 function receiptFor(state,project,objectId) {
   if(!state||state.schema!==2||state.workspaceId!==project.id||
@@ -31,7 +34,7 @@ function receiptFor(state,project,objectId) {
 
 // The source is a capability with a revalidated read, never renderer paths/text.
 // A controller in the map is authoritative even while starting or stopping.
-export async function managedReportSource({project,storage,runtime,objectId,controller,currentController=()=>controller}) {
+export async function managedReportSource({project,storage,runtime,objectId,controller,currentController=()=>controller,expectedIdentity}) {
   if(typeof objectId!=='string'||!OBJECT_ID.test(objectId))throw payloadError();
   const offlineState=controller?null:await readManagedState(storage,project.id);
   const state=()=>{
@@ -42,15 +45,18 @@ export async function managedReportSource({project,storage,runtime,objectId,cont
   };
   checkRoot();
   const receipt=receiptFor(state(),project,objectId),report=Object.freeze(structuredClone(receipt.report));
-  const identity=row=>JSON.stringify([row.id,row.workId,row.revision,row.kind,row.report]);
-  const frozenIdentity=identity(receipt);
-  const source={mode:controller?'active':'offline',objectId,report,read:async()=>{
-    if(currentController()!==controller)throw changed();
+  const identity=reportIdentity,frozenIdentity=identity(receipt);
+  if(expectedIdentity!==undefined&&expectedIdentity!==frozenIdentity)throw changed();
+  const source={mode:controller?'active':'offline',objectId,workId:receipt.workId,report,read:async()=>{
+    if(currentController()!==controller)throw sourceMoved(frozenIdentity);
     if(!controller&&identity(receiptFor(await readManagedState(storage,project.id),project,objectId))!==frozenIdentity)throw changed();
     checkRoot();
     if(identity(receiptFor(state(),project,objectId))!==frozenIdentity)throw changed();
     const bytes=await readManagedObject(storage,project.id,report.digest,{maxBytes:report.byteLength});
-    if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest||currentController()!==controller)throw changed();
+    if(bytes.length!==report.byteLength||createHash('sha256').update(bytes).digest('hex')!==report.digest)throw changed();
+    if(currentController()!==controller)throw sourceMoved(frozenIdentity);
+    if(identity(receiptFor(controller?state():await readManagedState(storage,project.id),project,objectId))!==frozenIdentity)throw changed();
+    if(currentController()!==controller)throw sourceMoved(frozenIdentity);
     return bytes;
   },listArtifacts:async()=>managedArtifact({project,storage,runtime,controller,currentController},{objectId}),readEndMatter:async()=>{
     const manifest=await source.readManifest();
@@ -131,7 +137,7 @@ const OBJECT_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const payloadError=()=>new HostError('INVALID_PAYLOAD','历史报告查询参数无效。');
 
 
-async function historySnapshot({project,storage,runtime,controller,currentController}) {
+async function historySnapshot({project,storage,runtime,controller,currentController},objectId) {
   const raw=controller?controller.store?.state:await readManagedState(storage,project.id);
   let state;try{state=decodeReportState(structuredClone(raw));}catch{throw invalid();}
   const bytes=Buffer.from(JSON.stringify(state));
@@ -153,7 +159,7 @@ async function historySnapshot({project,storage,runtime,controller,currentContro
     if(row.snapshot?.reportDigest&&row.snapshot.reportDigest!==row.report.digest)throw invalid();
     objects.add(row.objectId);receipts.add(row.id);
   }
-  if(currentController()!==controller)throw changed();
+  if(currentController()!==controller)throw objectId?sourceMoved(reportIdentity(receiptFor(state,project,objectId))):changed();
   return {state,works,version:createHash('sha256').update(controller?'active\0':'offline\0').update(bytes).digest('hex')};
 }
 
@@ -163,12 +169,27 @@ export async function managedHistory(options,{objectId,version,offset=0,limit=50
   if(version!==undefined&&!(typeof version==='string'&&/^[a-f0-9]{64}$/.test(version)))throw payloadError();
   if(objectId!==undefined&&(typeof objectId!=='string'||!OBJECT_ID.test(objectId)))throw payloadError();
   if(!Number.isSafeInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>100||offset>0&&!version)throw payloadError();
-  const snapshot=await historySnapshot(options);
+  try{return await readHistory(options,{objectId,version,offset,limit});}
+  catch(error){
+    if(!objectId||version!==undefined||!error.sourceMoved)throw readable(error);
+    // Only a controller handoff is retryable. Keep the exact original receipt
+    // and registered project instance; never substitute the latest publication.
+    const project=await options.storage.requireRegistered(options.project.id);
+    if(project.instanceId!==options.project.instanceId||project.removed)throw readable(changed());
+    try{return await readHistory({...options,controller:options.currentController()},{objectId,offset,limit},error.identity);}
+    catch(retryError){throw readable(retryError);}
+  }
+}
+
+async function readHistory(options,{objectId,version,offset,limit},expectedIdentity){
+  const snapshot=await historySnapshot(options,version===undefined?objectId:undefined);
   if(version!==undefined&&version!==snapshot.version)throw changed();
   const mode=options.controller?'active':'offline';
   if(objectId!==undefined) {
     if(!snapshot.state)throw fail('REPORT_MISSING','当前项目没有这份历史报告');
-    const source=await managedReportSource({...options,objectId});
+    const identity=reportIdentity(receiptFor(snapshot.state,options.project,objectId));
+    if(expectedIdentity!==undefined&&expectedIdentity!==identity)throw changed();
+    const source=await managedReportSource({...options,objectId,expectedIdentity:identity});
     const bytes=await source.read();
     // 单对象无version读取：不可变receipt/report/controller身份已由source.read()
     // 严格复验，不再以全state哈希拒绝窗口内无关的后台状态变化（runtime/review等）。

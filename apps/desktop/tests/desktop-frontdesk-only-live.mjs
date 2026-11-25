@@ -136,7 +136,7 @@ async function close(){await idle(aid,bid);await call('session.requestClose');co
 async function check(label,fn){try{await fn();report.checks.push(label);console.log('PASS '+label);}catch(error){report.failures.push({label,message:error.message});console.log('FAIL '+label+': '+error.message);for(const page of [chat,shell])await page?.screenshot({path:path.join(out,'failure-'+report.failures.length+'.png')}).catch(()=>{});}}
 const sidebar=async page=>{if(await page.$eval('#toggle-sidebar',node=>node.getAttribute('aria-expanded')!=='true').catch(()=>false))await page.click('#toggle-sidebar');};
 const clickInPage=async(page,selector,label)=>{await page.waitForSelector(selector,{visible:true});await page.click(selector);};
-const sendHotkey=async page=>{await until(()=>page.$eval('#send-message',node=>!node.disabled),'send enabled');await page.focus('#composer');await page.keyboard.down('Control');await page.keyboard.press('Enter');await page.keyboard.up('Control');};
+const sendHotkey=async page=>{await until(()=>page.$eval('#send-message',node=>!node.disabled),'send enabled');await page.focus('#composer');await page.keyboard.press('Enter');};
 const sourcesBefore={a:await snapshot(a),b:await snapshot(b)};
 try{
   await launch();
@@ -156,7 +156,8 @@ try{
     await until(()=>chat.$eval('#send-message',node=>!node.disabled),'send enabled');
     assert.equal(await composerValue(chat),'FRONT_KEEP_A');
     assert.equal(await chat.$eval('#composer',node=>node.readOnly),false);
-    assert.match(await chat.$eval('#context-bar',node=>node.textContent),/前台对话$/);
+    const context=await chat.$eval('#context-bar',node=>{const style=getComputedStyle(node);return {text:node.textContent,alignment:style.textAlign,weight:style.fontWeight};});
+    assert.deepEqual(context,{text:'前台',alignment:'center',weight:'600'});
     assert.deepEqual(await retainedTexts(chat),[],'no quarantine on a fresh frontdesk view');
   });
 

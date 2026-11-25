@@ -3,11 +3,14 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {atomicJson, ownedDirectory, readJson, processIdentity, validatePackage, compareVersions} from './auto-update-files.mjs';
+import {requireUpdatePlatform} from './auto-update-platform.mjs';
 import {macApplication, exchangeMacBundles, verifyMacRoot, macRecoveryNeedsExchange} from './auto-update-macos.mjs';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export async function acquireInstallLock(root, token, {macos = false} = {}) {
+  if(process.platform==='win32')throw Object.assign(Error('Windows updates require the original native installation handoff'),{code:'UPDATE_NATIVE_HANDOFF_REQUIRED'});
+  requireUpdatePlatform();
   await (macos ? verifyMacRoot(root) : ownedDirectory(root));
   const lock = path.join(root, '.installer-lock');
   await fs.mkdir(lock, {mode: 0o700});
@@ -35,6 +38,8 @@ function launch(release, receipt, token, spawnProcess) {
   return child;
 }
 export async function runUpdateHelper(journalFile, {spawnProcess = spawn, identity = processIdentity, healthTimeout = 90000, exitTimeout = 120000, now = Date.now, pause = sleep} = {}) {
+  if(process.platform==='win32')return (await import('./auto-update-windows-helper.mjs')).runWindowsUpdateHelper(journalFile);
+  requireUpdatePlatform();
   const journalDirectory = path.dirname(journalFile);
   await ownedDirectory(journalDirectory);
   const journal = await readJson(journalFile);
@@ -179,6 +184,8 @@ export async function runUpdateHelper(journalFile, {spawnProcess = spawn, identi
 export async function acknowledgeUpdateHealth({appRoot, env = process.env} = {}) {
   const receipt = env.NOZELI_UPDATE_RECEIPT, token = env.NOZELI_UPDATE_TOKEN;
   if (!receipt || !token) return false;
+  if(process.platform==='win32')return (await import('./auto-update-windows.mjs')).acknowledgeWindowsUpdateHealth({appRoot,env});
+  requireUpdatePlatform();
   if (!/^[a-f0-9]{64}$/.test(token) || path.basename(receipt) !== 'health-' + token + '.json') throw Error('Invalid startup health receipt');
   await ownedDirectory(path.dirname(receipt));
   const release = await fs.realpath(path.resolve(appRoot, process.platform === 'darwin' ? '../../..' : '../..'));

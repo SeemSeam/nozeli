@@ -1,0 +1,19 @@
+# Windows owner 配置管理层资源边界
+
+2026-11-12，v54定向验证完成，固定alpha.6＋已合并PR27。正式基线仍v50；本批不授权原helper/home释放，也不开放默认managed入口。
+
+## 实际问题与实现
+
+v53结束后的隔离Windows探针证明：尚未建立角色sessionConfig时，provider/settings调用就能进入RuntimeSupervisor.ensureContext，默认发现并执行项目`.pi/extensions/*.js`。角色session过滤不能覆盖这条提前读取链。原始探针保留在`D:\nozeli-test\20261112-alpha6-resource-closure-audit`；首次.mjs未执行是SDK不自动发现该后缀，不是过滤有效。
+
+驱动增加可选createRuntimeResources工厂，在第一次settings上下文建立时应用host提供的settings视图、loader选项及inventory路径解析。默认未传工厂的上游驱动保持原行为。Nozeli OwnerRuntime在provider操作和角色选择前即选择固定资源策略，过滤外部packages/extensions/skills/prompts/themes；配置管理层inventory也不扫描这些资源。项目provider/model/thinking与SDK设置写入/reload继续工作，磁盘原资源设置不删除。Nozeli随包Z.AI扩展通过有稳定名称的内联factory保留。
+
+同一SDK的最终systemPromptOverride在读SYSTEM.md之后才执行；本批在配置管理层和角色会话的loader输入端显式传空systemPrompt及appendSystemPrompt，同时关闭非发行theme来源。不会以先读取再丢弃冒充无外部依赖。角色SKILL仍来自原发行catalog。
+
+驱动vendor改动有0006补丁和upstream-manifest精确摘要；Pi实际重建。源码和独立包测试使用合成项目、本地Provider，不访问用户配置或付费服务。验证结果见`D:\nozeli-test\20261112-alpha6-resource-boundary\development-status.json`。最终源码Node/Electron完整Pi各55/55、provider回归各26/26；独立v2包两宿主各资源3/技能8/真实owner1/恢复意图3/显式续作2/Worker布局2通过。运行后核对43636包文件、1790冻结输入、36项未改native输入/输出；Pi重建，native/renderer未重建。最终ZIP SHA256为`19056e22a79720501d71cd78a1784d19e9dfdb0b2e3456f4e0f44b23a78786f9`。初版包技能导入/共享冻结清单局限和初次patch/provider fixture失败均保留原记录，不混入最终资格。
+
+## 剩余边界
+
+这只收紧实际资源发现集合，不证明完整资源生命周期：node_modules/import闭包、原配置实际读取版本、metadata原子替换及journal追加交接、独立只读恢复与原资源处置协议尚需实现。项目模型配置权限保留，因此该外部配置仍需后续原生版本绑定；不能据本批过滤直接释放home/helper。pending/default、终端/TeX/回收、物理桌面及普通账户安装/升级/回滚等W0–W5门仍未完成。跨平台共享修改只在Windows执行，不扩展Linux/macOS资格。
+
+SDK内部枚举限制：DefaultResourceLoader.reload仍调用自身DefaultPackageManager.resolve，可能枚举自动发现目录后才按noExtensions/noSkills等标志丢弃。配置package来源已过滤，本批实际验证非发行扩展零执行、指令不加载及inventory不回退读取外部技能元数据；不宣称零文件系统枚举或完整读取依赖闭包。该边界继续纳入后续原生资源计划。

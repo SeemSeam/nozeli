@@ -26,7 +26,11 @@ class Window extends EventEmitter {
  async loadURL(){}show(){}focus(){}getBounds(){return this.bounds;}getContentBounds(){return this.bounds;}getContentSize(){return [1000,760];}isAlwaysOnTop(){return false;}isDestroyed(){return !!this.destroyed;}destroy(){this.destroyed=true;this.webContents.emit('destroyed');this.emit('closed');}
  setBounds(bounds){this.bounds={...bounds};this.emit('moved');}
 }
-async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'workspace-native-'));t.after(()=>rm(directory,{recursive:true,force:true}));const {storage,projectId}=await testStorageOptions({contentRoot:path.join(directory,'project')});const project=await storage.requireRegistered(projectId);const host={storage,requireProject:async id=>{assert.equal(id,'p');return project;},requireRegisteredProject:async id=>{assert.equal(id,'p');return project;},settled:async()=>{}};
+async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'workspace-native-'));const {storage,projectId}=await testStorageOptions({contentRoot:path.join(directory,'project')});t.after(async()=>{
+ const outcomes=await storage.db.close();
+ assert(!outcomes.some(value=>value?.closed===false),`storage close unconfirmed; retained ${directory}`);
+ await rm(directory,{recursive:true,force:true});
+});const project=await storage.requireRegistered(projectId);const host={storage,requireProject:async id=>{assert.equal(id,'p');return project;},requireRegisteredProject:async id=>{assert.equal(id,'p');return project;},settled:async()=>{}};
 // Native ownership tests deliberately use a stable UI scope; the adapter routes
 // its persistence calls to the registered real project, not a JSON sidecar.
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
@@ -300,6 +304,20 @@ test('document surfaces and detached windows read appearance preferences but can
   assert.equal(native.authorize(event,'settings.appearance.read',{}),record,'the read-only global appearance preference must be readable outside the shell');
   assert.throws(()=>native.authorize(event,'settings.appearance.save',{theme:'dark'}),{code:'IPC_DENIED'},'appearance writes stay shell-owned');
  }
+});
+test('document menu path operations are limited to the surface’s own project file',()=>{
+ const native=new WorkspaceNative({origin:'http://127.0.0.1:9000/',host:{}});
+ const document=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'doc',kind:'document',relPath:'a.txt'});
+ const report=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'report',kind:'report',relPath:'a.txt'});
+ const frozen=native.register(new Contents(),{role:'surface',projectId:'p',viewId:'frozen',kind:'document',relPath:'a.txt',documentSource:{kind:'review'}});
+ const event=r=>({sender:r.wc,senderFrame:r.wc.mainFrame});
+ const exact={projectId:'p',relPath:'a.txt',action:'reveal'};
+ for(const action of ['reveal','openExternal','relativePath'])assert.equal(native.authorize(event(document),'tree.path',{...exact,action}),document);
+ for(const payload of [{...exact,projectId:undefined},{...exact,relPath:'b.txt'},{...exact,action:'absolutePath'}])assert.throws(()=>native.authorize(event(document),'tree.path',payload),{code:'IPC_DENIED'});
+ assert.throws(()=>native.authorize(event(document),'tree.path',{...exact,projectId:'other'}),{code:'PROJECT_SCOPE_DENIED'});
+ assert.throws(()=>native.authorize(event(frozen),'tree.path',exact),{code:'IPC_DENIED'});
+ assert.throws(()=>native.authorize(event(report),'tree.path',exact),{code:'IPC_DENIED'});
+ assert.throws(()=>native.authorize(event(document),'tree.menu',exact),{code:'IPC_DENIED'});
 });
 test('history surfaces can render frozen reports but cannot open executable development previews',async t=>{
  const {native}=await fixture(t),wc=new Contents(),history=native.register(wc,{role:'surface',projectId:'p',viewId:'history',kind:'history'}),event={sender:wc,senderFrame:wc.mainFrame};
@@ -611,6 +629,27 @@ test('a pre-dock layout or out-of-order visibility update cannot blank the curre
  const oldVisibility=await native.invoke(root,'workspace.bounds',{...base,sequence:2,groups:[],overlay:true});assert.equal(oldVisibility.stale,true);assert.equal(s.view.visible,true);
  await native.invoke(root,'workspace.bounds',{...base,sequence:4,overlay:true});assert.equal(s.view.visible,false);
  await native.invoke(root,'workspace.bounds',{...base,sequence:5});assert.equal(s.view.visible,true);
+});
+
+test('bounds awaiting layout across shell reload cannot show content or fence the new shell',async t=>{
+ const {native,root}=await fixture(t);
+ const layout=reduceLayout(native.layouts.get('p'),{type:'open',view:{kind:'document',relPath:'reload.txt'}});
+ native.layouts.set('p',layout);await native.reconcile(layout);
+ const surface=native.surfaces.get(layout.mainRoot.activeViewId);surface.ready=true;
+ const payload={windowId:'main',projectId:'p',navigationGeneration:root.generation,layoutRevision:layout.revision,viewport:{width:1000,height:760},groups:[{groupId:layout.mainRoot.id,viewId:surface.viewId,rect:{x:0,y:40,width:900,height:600}}]};
+ await native.invoke(root,'workspace.bounds',{...payload,sequence:10});assert.equal(surface.view.getVisible(),true);
+ const originalBounds=surface.view.getBounds();
+ const requireRegisteredProject=native.host.requireRegisteredProject;
+ let release;native.host.requireRegisteredProject=()=>new Promise(resolve=>{release=resolve;});
+ const pending=native.invoke(root,'workspace.bounds',{...payload,sequence:11,groups:[{...payload.groups[0],rect:{x:20,y:60,width:800,height:500}}]});
+ root.wc.emit('did-start-navigation',{},native.origin,false,true);assert.equal(surface.view.getVisible(),false);
+ native.host.requireRegisteredProject=requireRegisteredProject;release(await requireRegisteredProject('p'));
+ assert.equal((await pending).stale,true);assert.equal(surface.view.getVisible(),false);
+ assert.deepEqual(surface.view.getBounds(),originalBounds);
+ const late=await native.invoke(root,'workspace.bounds',{...payload,sequence:12});
+ assert.equal(late.stale,true);assert.equal(surface.view.getVisible(),false);
+ const current=await native.invoke(root,'workspace.bounds',{...payload,navigationGeneration:root.generation,sequence:1});
+ assert.notEqual(current.stale,true);assert.equal(surface.view.getVisible(),true);
 });
 
 test('conversation admission failure leaves the current document intact and creates no chat surface',async t=>{

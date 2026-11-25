@@ -10,13 +10,24 @@ export const REPORT_VIEWPORT_META = '<meta name="viewport" content="width=device
 // Host-injected accent tokens map to fixed enums only — never arbitrary CSS.
 // Values mirror the renderer document-domain tokens per palette x mode.
 export const REPORT_ACCENTS = {
-  sage: { light: { paper: '#fffefa', ink: '#263932', link: '#456654' }, dark: { paper: '#222b25', ink: '#e1e9e3', link: '#a6cba9' } },
-  slate: { light: { paper: '#fbfcfe', ink: '#263544', link: '#355f88' }, dark: { paper: '#222d3a', ink: '#e3eaf2', link: '#a4c7ed' } },
+  sage: { light: { paper: '#fffefa', ink: '#263932', link: '#456654', panel: '#edf2ed' }, dark: { paper: '#222b25', ink: '#e1e9e3', link: '#a6cba9', panel: '#303d34' } },
+  slate: { light: { paper: '#fbfcfe', ink: '#263544', link: '#355f88', panel: '#eaf0f7' }, dark: { paper: '#222d3a', ink: '#e3eaf2', link: '#a4c7ed', panel: '#303e50' } },
 };
 export const reportAccentCss = (palette, mode) => {
-  const safe = REPORT_ACCENTS[palette] ? palette : 'sage';
-  const set = REPORT_ACCENTS[safe][mode === 'dark' ? 'dark' : 'light'];
-  return `:root{--nozeli-paper:${set.paper};--nozeli-ink:${set.ink};--nozeli-link:${set.link}}`;
+  const tone = mode === 'dark' ? 'dark' : 'light';
+  const {paper, ink, link, panel} = REPORT_ACCENTS[palette === 'slate' ? 'slate' : 'sage'][tone];
+  // This is an Electron user stylesheet. Important declarations take priority
+  // over author styling (including inline styles); screen-only keeps print and
+  // exports independent. Leave SVG artwork and non-color formatting alone.
+  return `@media screen {
+    :root{color-scheme:${tone} !important;--nozeli-link:${link} !important}
+    html,body{background:${paper} !important}
+    :where(body,body *):not(:where(svg,svg *)){color:${ink} !important}
+    :where(body *):not(:where(svg,svg *)){background:transparent !important}
+    :is(th,pre,code,kbd,mark,blockquote,.report-conclusion,.warn,.ok):not(:where(svg,svg *)){background:${panel} !important}
+    :is(a,cite,.cite):not(:where(svg,svg *)),:is(a,cite,.cite) :not(:where(svg,svg *)){color:${link} !important}
+    a{text-decoration:underline !important}
+  }`;
 };
 export const REPORT_READER_STYLE = `/* Nozeli host baseline reading style; later author styles may override it. */
 /* nozeli-reader-baseline v4 */

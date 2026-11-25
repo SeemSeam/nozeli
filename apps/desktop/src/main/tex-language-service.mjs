@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import {spawnTool, stopTool} from './tool-process.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -45,7 +45,7 @@ export class TexLanguageService {
   }
   async launch(projectId) {
     const project = await this.host.requireProject(projectId), executable = await this.executable();
-    const child = spawn(executable, [], { cwd: project.root, stdio: ['pipe','pipe','pipe'], windowsHide: true });
+    const child = spawnTool(executable, [], { cwd: project.root, stdio: ['pipe','pipe','pipe'], windowsHide: true });
     child.stdin.on('error', () => {}); let log = '';
     child.stderr.on('data', bytes => { log = (log + bytes.toString()).slice(-65536); });
     const connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
@@ -66,7 +66,7 @@ export class TexLanguageService {
       if (initialized.capabilities?.positionEncoding && initialized.capabilities.positionEncoding !== 'utf-16') throw error('TexLab 返回了不支持的位置编码。');
       await connection.sendNotification('initialized',{}); await connection.sendNotification('workspace/didChangeConfiguration',{settings});
       session.ready=true; this.emit({projectId,type:'ready',cwd:project.root}); return session;
-    } catch (e) { child.kill(); connection.dispose(); throw e; }
+    } catch (e) { await stopTool(child); connection.dispose(); throw e; }
   }
   async document(session, relPath, text) {
     if (!supported.test(relPath || '') || typeof text !== 'string' || Buffer.byteLength(text)>8*1024*1024) throw error('无效 TeX/BibTeX 文档。','TEXLAB_DOCUMENT');
@@ -114,10 +114,21 @@ export class TexLanguageService {
   }
   sync(input) { return this.run(input); }
   request(input) { return this.run(input,input.action); }
-  async stopProject(projectId){const pending=this.sessions.get(projectId);if(!pending)return;const s=await pending;try{await request(s.connection,'shutdown',undefined,1000);await s.connection.sendNotification('exit');}catch{}s.connection.dispose();s.child.kill();await Promise.race([s.exited,new Promise(resolve=>{const t=setTimeout(()=>{s.child.kill('SIGKILL');resolve();},1000);t.unref();})]);this.sessions.delete(projectId);}
+  async stopSession(s) {
+    try { await request(s.connection,'shutdown',undefined,1000); await s.connection.sendNotification('exit'); } catch {}
+    s.connection.dispose();
+    if (process.platform === 'win32') return stopTool(s.child);
+    s.child.kill();
+    let timer;
+    try { await Promise.race([s.exited,new Promise(resolve=>{timer=setTimeout(()=>{s.child.kill('SIGKILL');resolve();},1000);timer.unref();})]); }
+    finally { clearTimeout(timer); }
+  }
+  async stopProject(projectId) { const pending=this.sessions.get(projectId); if(!pending)return; await this.stopSession(await pending); this.sessions.delete(projectId); }
   async stopAll() {
     this.stopping=true;
-    await Promise.allSettled([...this.sessions.values()].map(async pending=>{const s=await pending;try{await request(s.connection,'shutdown',undefined,1000);await s.connection.sendNotification('exit');}catch{}s.connection.dispose();s.child.kill();await Promise.race([s.exited,new Promise(resolve=>{const t=setTimeout(()=>{s.child.kill('SIGKILL');resolve();},1000);t.unref();})]);}));
+    const results = await Promise.allSettled([...this.sessions.values()].map(async pending => this.stopSession(await pending)));
+    const failed = results.find(result => result.status === 'rejected');
+    if (failed) { this.stopping=false; throw failed.reason; }
     this.sessions.clear();this.stopping=false;
   }
 }

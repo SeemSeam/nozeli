@@ -237,3 +237,12 @@ for(const control of [{ok:false,hostControl:true,error:{code:'HOST_BUDGET_PERSIS
  const result=await session.prompt('Inspect host status.',{job:{id:'fatal-control',target:'frontdesk',type:'front'}});
  assert.equal(result.completion,'host-control');assert.equal(result.hostControlError.code,control.error?.code??'HOST_CONTROL_UNCLASSIFIED');assert.equal(provider.requests.length,1);
 });
+
+test('PiSession accepts the saved read-only answer as successful host control',{timeout:90000},async t=>{
+ const provider=await serve(()=>({tool:'nozeli_manage',id:'readonly-host-control',args:{action:'read-only'}}));
+ const dirs=await prepare(provider.url);
+ const session=new PiSession({...dirs,role:'orchestrator',model:'local-fixture/scripted',piRuntime:{agentDir:dirs.agentDir},finishOnHostControl:true,nativeTools:['read'],tools:[{name:'nozeli_manage',description:'Settle a readonly intake',parameters:{type:'object',properties:{action:{type:'string'}},required:['action'],additionalProperties:false}}],onTool:async()=>({action:'read-only',saved:true,answer:'Verified fixture answer',at:'fixture-route-receipt'})});
+ t.after(async()=>{await session.stop();await provider.close();await fs.rm(dirs.root,{recursive:true,force:true});});await session.start();
+ const result=await session.prompt('Inspect host status.',{job:{id:'readonly-control',target:'orchestrator',type:'intake',context:{routingMode:'read-only'}}});
+ assert.equal(result.completion,'host-control');assert.equal(result.hostControlError,undefined);assert.equal(provider.requests.length,1);
+});

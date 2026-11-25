@@ -20,21 +20,27 @@ export function installFileTreeClicks(page, log = () => {}) {
   }
   page.click = async (selector, options) => {
     if (selector.startsWith('#file-tree ')) {
-      await page.waitForSelector(selector);
       log('opening '+selector);
       await reveal();
-      const path = await page.$eval(selector, node => node.dataset.path);
+      // Lazy navigation mounts children only after their ancestors expand.
+      // A quoted path selector already carries the path; waiting for the leaf
+      // before expanding its parent would deadlock an ordinary cold reopen.
+      const quoted=selector.match(/\[data-path=("(?:\\.|[^"])*")\]/);
+      if(!quoted)await page.waitForSelector(selector);
+      const path = quoted ? JSON.parse(quoted[1]) : await page.$eval(selector, node => node.dataset.path);
       if (path) {
         const parts=path.split('/');parts.pop();
         for(let depth=1;depth<=parts.length;depth++) {
           const parent='#file-tree button[data-path='+JSON.stringify(parts.slice(0,depth).join('/'))+']';
+          await page.waitForSelector(parent,{visible:true});
           if(await page.$eval(parent,node=>node.getAttribute('aria-expanded')==='false')) {
             await page.waitForSelector(parent,{visible:true});
-            await click(parent);
+            await page.locator(parent).click(options);
           }
         }
       }
       await page.waitForSelector(selector,{visible:true});
+      return page.locator(selector).click(options);
     }
     return click(selector,options);
   };

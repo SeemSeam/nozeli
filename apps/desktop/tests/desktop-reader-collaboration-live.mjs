@@ -295,8 +295,8 @@ async function sendTag(question, label, duringOutput) {
   const before = await state(), accepted = new Set(before.jobs.map(j => j.id));
   await fill(tag(discussionId) + ' .tag-editor', question);
   check(label + ': focused actual tag editor', await page.$eval(tag(discussionId) + ' .tag-editor', el => document.activeElement === el));
-  operations.push({layer: 'physical-keyboard', key: 'Control+Enter', question, at: Date.now()});
-  await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
+  operations.push({layer: 'physical-keyboard', key: 'Enter', question, at: Date.now()});
+  await page.keyboard.press('Enter');
   const job = await wait(async () => (await state()).jobs.find(j => !accepted.has(j.id)), label + ' exact job admission');
   const admittedState=await state();
   check(label+': explicit tag send preserves unrelated unsent main draft at admission',admittedState.drafts.frontdesk===before.drafts.frontdesk&&await page.$eval('#composer',el=>el.value)===before.drafts.frontdesk,{jobId:job.id,before:before.drafts.frontdesk,after:admittedState.drafts.frontdesk});

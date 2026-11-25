@@ -26,7 +26,7 @@ async function packageFixture(directory, version) {
   await fs.writeFile(path.join(directory, 'nozeli'), elf, {mode: 0o755});
 }
 function release(version) {
-  const suffix = process.platform === 'darwin' && process.arch === 'arm64' ? '-macos-arm64.zip' : '-linux-x64.tar.gz';
+  const suffix = process.platform === 'win32' ? '-windows-x64.zip' : process.platform === 'darwin' && process.arch === 'arm64' ? '-macos-arm64.zip' : '-linux-x64.tar.gz';
   return {tag_name: 'v' + version, assets: [{name: 'Nozeli-' + version + suffix, browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/archive', size: 100}, {name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/SeemSeam/nozeli/releases/download/v' + version + '/SHA256SUMS.txt', size: 100}]};
 }
 test('semantic ordering includes alpha and ignores draft/missing-asset releases and downgrades', () => {
@@ -43,7 +43,7 @@ test('checksum requires one exact filename and streaming download verifies bytes
   const file = path.join(root, 'download'); let progress;
   await downloadFile({response: new Response(data), file, expected: checksum, onProgress: value => { progress = value; }});
   assert.equal(progress.received, data.length);
-  await assert.rejects(downloadFile({response: new Response(data), file: file + '-bad', expected: '0'.repeat(64)}), /SHA256/);
+  await assert.rejects(downloadFile({response: new Response(data), file: file + '-bad', expected: '0'.repeat(64)}), process.platform==='win32'?{code:'FS_CANDIDATE_CONFLICT'}:/SHA256/);
   await assert.rejects(fs.access(file + '-bad'));
   await assert.rejects(downloadFile({response: new Response(data), file: file + '-large', expected: checksum, max: 2}), /limit/);
 });
@@ -61,9 +61,9 @@ test('archive staging validates native metadata and rejects root and escaping li
 });
 test('disabled startup makes no network requests; source explicit checks are check-only', async t => {
   const root = await temporary(t); let calls = 0;
-  const updater = new AutoUpdater({currentVersion: '1.0.0', appRoot: root, stateDir: path.join(root, 'state'), enabled: false, dependencies: {fetch: async () => { calls++; return new Response(JSON.stringify([release('1.0.1-alpha.1')])); }}});
+  const updater = new AutoUpdater({currentVersion: '1.0.0', appRoot: root, stateDir: path.join(root, 'state'), enabled: false, dependencies: {fetch: async () => { calls++; return new Response(JSON.stringify([release('1.0.1')])); }}});
   await updater.start(); assert.equal(calls, 0);
-  const status = await updater.check(); assert.equal(calls, 1); assert.equal(status.phase, 'unsupported'); assert.equal(status.availableVersion, '1.0.1-alpha.1');
+  const status = await updater.check(); assert.equal(calls, 1); assert.equal(status.phase, 'unsupported'); assert.equal(status.availableVersion, '1.0.1');
   updater.stop(); await updater.persist;
 });
 test('host readiness is mandatory and unsaved work never reaches shutdown', async t => {
@@ -116,7 +116,7 @@ test('annotated tags peel only bounded fixed repository API identities', async t
   updater.fetch = async () => new Response(JSON.stringify({ref: 'refs/tags/v1.0.1', object: {type: 'tag', sha: 'b'.repeat(40)}, sha: 'b'.repeat(40)}));
   await assert.rejects(updater.resolveTagCommit('v1.0.1'), /cyclic/);
 });
-test('checksum-valid version-correct archive with wrong release tag commit is rejected before promotion', async t => {
+test('checksum-valid version-correct archive with wrong release tag commit is rejected before promotion', {skip:process.platform!=='linux'&&'Linux managed tar fixture'}, async t => {
   const root = await temporary(t), installation = path.join(root, 'installation'), releases = path.join(installation, 'releases');
   await fs.mkdir(releases, {recursive: true});
   const old = path.join(releases, 'old'); await packageFixture(old, '1.0.0');
@@ -146,7 +146,7 @@ test('checksum-valid version-correct archive with wrong release tag commit is re
   assert.deepEqual(await fs.readdir(releases), ['old']);
   await updater.persist;
 });
-test('automatic checks quarantine rolled-back version, allow higher versions, and explicit checks retry', async t => {
+test('automatic checks quarantine rolled-back version, allow higher versions, and explicit checks retry', {skip:process.platform==='win32'&&'POSIX handoff fixture; Windows has its own installed quarantine journey'}, async t => {
   const root = await temporary(t), stateDir = path.join(root, 'state'); await fs.mkdir(stateDir);
   await atomicJson(path.join(stateDir, 'handoff.json'), {phase: 'rolled-back', version: '1.0.1'});
   let versions = [release('1.0.1')];
@@ -179,7 +179,7 @@ for (const damage of ['preferences', 'cache-directory']) test('updater startup c
   else assert.equal(await fs.readFile(stateDir, 'utf8'), 'not a writable updater directory');
   await updater.persist;
 });
-test('repeated checks revalidate and reuse identical staged version and tag commit while idle guard blocks', async t => {
+test('repeated checks revalidate and reuse identical staged version and tag commit while idle guard blocks', {skip:process.platform!=='linux'&&'Linux managed tar fixture'}, async t => {
   const root = await temporary(t), installation = path.join(root, 'installation'), releases = path.join(installation, 'releases');
   await fs.mkdir(releases, {recursive: true});
   const old = path.join(releases, 'old'); await packageFixture(old, '1.0.0');
@@ -213,4 +213,50 @@ test('repeated checks revalidate and reuse identical staged version and tag comm
   assert.equal((await updater.check()).phase, 'error');
   assert.equal(archives, 1);
   await updater.persist;
+});
+
+test('Windows archive admission can proceed while status storage is open for writing', {skip: process.platform !== 'win32' || process.arch !== 'x64'}, async t => {
+  const {ensureExperimentalPrivateDirectory} = await import('../src/platform/windows/experimental-directories.mjs');
+  const {openExperimentalPersistenceParent} = await import('../src/platform/windows/experimental-persistence.mjs');
+  const {zipDirectory} = await import('./fixtures/windows-update-live/windows-update-live-fixture.mjs');
+  const root = await temporary(t);
+  const installation = path.join(root, 'installation');
+  const stateDir = path.join(installation, 'profile', 'desktop', 'updates');
+  await ensureExperimentalPrivateDirectory(root, stateDir);
+  const fixture = path.join(root, 'fixture');
+  await fs.mkdir(path.join(fixture, 'empty'), {recursive: true});
+  const version = '1.0.1', label = 'Nozeli-' + version + '-windows-x64';
+  await fs.writeFile(path.join(fixture, 'WINDOWS-CANDIDATE.json'), JSON.stringify({
+    schema: 1, application: 'Nozeli', platform: 'win32', arch: 'arm64', kind: 'windows-manual-candidate',
+    automaticUpdater: 'native-windows-health-v1', version, entries: [{path: 'empty', type: 'directory'}],
+  }));
+  const bytes = await zipDirectory(fixture, {label});
+  const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
+  let statusParent;
+  const updater = new AutoUpdater({currentVersion: '1.0.0', appRoot: installation, stateDir, enabled: false,
+    onStatus(status) {
+      if (status.phase === 'staging') statusParent = openExperimentalPersistenceParent(stateDir, 'status.json');
+    },
+    dependencies: {fetch: async value => {
+      const url = String(value);
+      if (url.includes('/git/ref/tags/')) return Response.json({ref: 'refs/tags/v' + version, object: {type: 'commit', sha: 'a'.repeat(40)}});
+      if (url.endsWith('/SHA256SUMS.txt')) return new Response(checksum + '  ' + label + '.zip\n');
+      if (url.endsWith('/archive')) return new Response(bytes);
+      return Response.json([release(version)]);
+    }},
+  });
+  // Inject an already-admitted installation; exercise real fetching, Windows
+  // download/publication, status persistence and native ZIP admission.
+  updater.initialized = true;
+  updater.installation = {kind: 'windows', root: installation};
+  updater.state.supported = true;
+  updater.refreshWindowsRecovery = async () => {};
+  try {
+    const status = await updater.check();
+    assert.equal(status.phase, 'error');
+    assert.match(status.message, /Wrong Windows candidate identity\/architecture/);
+  } finally {
+    statusParent?.close();
+    await updater.persist;
+  }
 });

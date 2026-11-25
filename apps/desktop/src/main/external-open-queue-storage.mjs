@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
+import {createWindowsOpenQueueIO} from '../platform/windows/desktop-open-queue.mjs';
 
 export const digest=value=>createHash('sha256').update(value).digest('hex');
 export class OpenQueueError extends Error {
@@ -15,8 +16,10 @@ export const fail=(code,message,details)=>{throw new OpenQueueError(code,message
 export class OpenQueueStorage {
  constructor(host,{fault=async()=>{},maxBytes=2*1024*1024}={}){
   this.host=host;this.dir=path.join(host.userDataDir,'nozeli','external-open-v1');this.file=path.join(this.dir,'queue.json');this.fault=fault;this.maxBytes=maxBytes;
+  if(process.platform==='win32')this.native=createWindowsOpenQueueIO(host.userDataDir,{maxBytes,fault:stage=>this.fault(stage)});
  }
  async directories(){
+  if(this.native)return this.native.directories();
   const root=this.host.userDataDir;await fs.mkdir(root,{recursive:true,mode:0o700});
   if(await fs.realpath(root)!==root)fail('OPEN_QUEUE_UNSAFE','Profile path is not canonical.');
   let dir=root;
@@ -26,6 +29,7 @@ export class OpenQueueStorage {
   }
  }
  async read(ignoreTemp=null){
+  if(this.native)return this.native.read();
   await this.directories();let handle;
   try{
    const stat=await fs.lstat(this.file);
@@ -43,8 +47,9 @@ export class OpenQueueStorage {
    return {bytes:null,hash:null};
   }finally{await handle?.close();}
  }
- async sync(){
-  await this.read();const handle=await fs.open(this.file,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+ async sync(expectedHash){
+  if(this.native)return this.native.sync(expectedHash);
+  const current=await this.read();if(current.hash!==expectedHash)fail('OPEN_QUEUE_CHANGED','Queue changed before persistence retry.');const handle=await fs.open(this.file,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
   try{await this.fault('file-sync');await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}
   await this.syncDirectory();
  }
@@ -54,6 +59,7 @@ export class OpenQueueStorage {
   await platformPersistence.syncDirectory(this.dir);
  }
  async write(value,expectedHash,beforeRename=()=>{}){
+  if(this.native){const bytes=Buffer.from(JSON.stringify(value));if(bytes.length>this.maxBytes)fail('OPEN_QUEUE_FULL','Queue serialization exceeds capacity.');const before=await this.read();if(before.hash!==expectedHash)fail('OPEN_QUEUE_CHANGED','Queue changed externally; refusing overwrite.');return this.native.write(bytes,expectedHash,beforeRename);}
   platformPersistence.requireSupported();
   const bytes=Buffer.from(JSON.stringify(value));if(bytes.length>this.maxBytes)fail('OPEN_QUEUE_FULL','Queue serialization exceeds capacity.');
   await this.directories();const before=await this.read();if(before.hash!==expectedHash)fail('OPEN_QUEUE_CHANGED','Queue changed externally; refusing overwrite.');

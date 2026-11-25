@@ -189,14 +189,18 @@ test('backstage and maintenance events get scoped read-only board access without
  assert.equal(board.scopedReadonly,true);assert.equal(board.readOnly,true);assert.equal(board.board.total,1);
  const detail=await inspect(c,{workName:'@work:'+w.id});
  assert.equal(detail.workId,w.id);assert.equal(detail.scopedReadonly,true);
- await assert.rejects(inspect(c,{workName:'@conversation'}),error=>error.code==='INSPECT_SCOPE_READONLY');
- await assert.rejects(inspect(c,{workName:'@memory:rule'}),error=>error.code==='INSPECT_SCOPE_READONLY');
+ assert.equal((await inspect(c,{workName:'@conversation'})).readOnly,true);
+ assert.equal((await inspect(c,{workName:'@memory:rule'})).readOnly,true);
+ const rejected=await inspect(c,{workName:'@frontdesk-source:unbound'});
+ assert.equal(rejected.continueTurn,true);assert.equal(rejected.error.code,'INVALID_SELECTOR');
+ assert.equal((await c.maintenance.read()).bugs.length,0);
  await assert.rejects(manage(c,{action:'continue',workId:w.id,expectedRevision:0,text:'x'}),/management requires an intake/);
  await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{name:'X',brief:'B'},callId:randomUUID()}),/dispatch requires an intake/);
  assert.equal(c.store.state.works.length,1);assert.equal(c.store.find(w.id).status,'queued');
  c.current.set('orchestrator',{id:'maintenance-1',target:'orchestrator',type:'maintenance',status:'running',context:{bugId:'bug-1'}});
  const maintained=await inspect(c,{workName:'@state'});
  assert.equal(maintained.scopedReadonly,true);assert.equal(maintained.board.rows[0].workId,w.id);
+ await assert.rejects(inspect(c,{workName:'@conversation'}),{code:'INSPECT_SCOPE_READONLY'});
  c.current.delete('orchestrator');
 });
 
@@ -211,6 +215,29 @@ test('manage status returns the bounded board, never routes and stays repeatable
   assert.equal(c.store.state.jobs.find(j=>j.id===job.id).routing,undefined);
  }
  assert.equal(c.store.state.works.length,1);
+ c.current.delete('orchestrator');
+});
+
+test('read-only terminal route requires explicit host authority and is idempotent',async t=>{
+ const c=await fixture(t),answer={action:'read-only',text:'No Work has been created.'};
+ await intakeFor(c,'ordinary request');
+ await assert.rejects(manage(c,answer),{code:'INTAKE_READ_ONLY_NOT_AUTHORIZED'});
+ const {jobId}=await c.submitTask('Read-only status request',{requestKey:'explicit-read-only-test',context:{routingMode:'read-only'}});
+ const parent=c.store.state.jobs.find(j=>j.id===jobId);
+ c.current.set('orchestrator',parent);
+ await manage(c,{action:'clarify',text:'Which state should I read?'});
+ const question=c.store.state.todos.find(todo=>todo.sourceJobId===jobId&&todo.kind==='routing');
+ const child=await c.submitTask('Current project', {requestKey:'explicit-read-only-answer',context:{routingQuestionId:question.id}});
+ const childJob=c.store.state.jobs.find(j=>j.id===child.jobId);
+ assert.equal(childJob.context.routingMode,'read-only');
+ c.current.set('orchestrator',childJob);
+ await assert.rejects(c.onTool('orchestrator',{tool:'nozeli_dispatch',arguments:{brief:'must not dispatch'},callId:randomUUID()}),{code:'INTAKE_READ_ONLY'});
+ const first=await manage(c,answer);
+ assert.equal(first.action,'read-only');assert.equal(first.answer,answer.text);
+ assert.equal(first.saved,true,'PiSession classifies the committed receipt as successful host control');
+ assert.deepEqual(await manage(c,answer),first);
+ await assert.rejects(manage(c,{...answer,text:'different answer'}),{code:'INTENT_MISMATCH'});
+ assert.equal(c.store.state.works.length,0);
  c.current.delete('orchestrator');
 });
 
@@ -262,13 +289,12 @@ test('detail keeps long originals/inputs behind paged readRefs; scoped events co
  assert.equal(await reassemble(detail.requestReadRef),longRequest,'paged readRef returns the exact immutable original');
  assert.equal(await reassemble(input.briefReadRef),supplement,'paged input ref returns the exact supplement');
  c.current.delete('orchestrator');
- // A scoped backstage event pages refs issued for ITS scoped Work detail,
- // but never reaches intake-only selectors.
+ // Scoped backstage reads keep continuation references bound to this turn.
  c.current.set('orchestrator',{id:'backstage-2',target:'orchestrator',type:'backstage',status:'running',context:{backstageEventKey:'event-2'}});
  const scoped=await inspect(c,{workName:'@work:'+w.id});
  assert.ok(scoped.requestReadRef);
  assert.equal(await reassemble(scoped.requestReadRef),longRequest);
- await assert.rejects(inspect(c,{workName:'@conversation'}),error=>error.code==='INSPECT_SCOPE_READONLY');
+ assert.equal((await inspect(c,{workName:detail.requestReadRef})).error.code,'READ_REF_EXPIRED');
  c.current.delete('orchestrator');
 });
 

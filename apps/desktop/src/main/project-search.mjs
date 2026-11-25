@@ -138,7 +138,9 @@ export class ProjectSearchEngine {
       else if (!issueOverflow) { issueOverflow = true; issues.push({ message: '其他文件也未能完成搜索；问题数量超过 100 条。' }); }
     };
     const visible = rel => !hidden.some(p => rel === p || rel.startsWith(p + '/')) || view?.showHidden === true;
-    const args = ['--files', '--null', '--no-require-git', '--hidden', '--glob', '!**/node_modules/**'];
+    // rg prints platform separators (Windows: backslashes); force the
+    // portable separator so discovery feeds safeRel a portable rel path.
+    const args = ['--files', '--null', '--no-require-git', '--hidden', '--path-separator', '/', '--glob', '!**/node_modules/**'];
     for (const glob of globs(include)) args.push('--glob', glob);
     for (const glob of globs(exclude)) args.push('--glob', '!' + glob.replace(/^!/, ''));
     // Apply hard exclusions after user globs: they cannot be re-enabled.

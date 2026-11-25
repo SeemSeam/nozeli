@@ -7,7 +7,7 @@ import {setActionButton} from './ui-actions.mjs';
 export function mountWebDiscussion({call,identity,onError,isHidden=()=>false}) {
   const doc=document,panel=doc.createElement('div');panel.className='web-discussion';panel.setAttribute('role','group');panel.setAttribute('aria-label','网页讨论');
   const url=doc.createElement('p'),notice=doc.createElement('p'),history=doc.createElement('div'),input=doc.createElement('textarea'),actions=doc.createElement('footer');url.className='web-discussion-url';notice.className='web-discussion-notice';history.className='web-discussion-history';history.setAttribute('role','log');input.setAttribute('aria-label','网页讨论内容');input.maxLength=100000;
-  const send=doc.createElement('button'),task=doc.createElement('button');send.type=task.type='button';setActionButton(send,'send',{label:'发送讨论'});task.textContent='提交任务';actions.append(send,task);panel.append(url,notice,history,input,actions);
+  const send=doc.createElement('button'),task=doc.createElement('button');send.type=task.type='button';setActionButton(send,'send',{label:'发送讨论'});task.textContent='后台任务';actions.append(send,task);panel.append(url,notice,history,input,actions);
   let binding=null,thread=null,timer=0,queue=Promise.resolve(),busy=false,composing=false,retry=null,liveUrl='',held=false;
   const invoke=(bound,action,extra={})=>call('web.discussionAction',{...identity,...bound,action,...extra});
   const fail=error=>{notice.textContent=error.message;onError?.(error);};

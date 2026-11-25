@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import { documentCommands, formatEditor } from '../src/renderer/document-context-menu.mjs';
 const flatten=items=>items.flatMap(item=>[item,...flatten(item.children||[])]);
 const ids = surface => flatten(documentCommands(surface)).filter(x => x.id).map(x => x.id);
+test('TeX preview and refresh remain available without automatic compilation',()=>{
+ for(const visible of [false,true]){
+  const menu=flatten(documentCommands({kind:'text',relPath:'nested/main.tex',editable:true,preview:{kind:'tex',visible,linked:false}}));
+  assert(menu.some(x=>x.id==='texBuild'));
+  assert.equal(menu.find(x=>x.id==='preview-toggle').checked,visible);
+  assert.equal(menu.find(x=>x.id==='preview-refresh').label,'刷新预览');
+  assert(!menu.some(x=>x.id==='tex-auto'));
+ }
+ assert(!ids({kind:'text',preview:{kind:'markdown',visible:true}}).includes('preview-refresh'));
+});
 test('authorship commands apply to all supported text paths and Word, with the actual view state',()=>{
  for(const path of ['a.txt','a.md','a.tex','a.cc','a.py','a.json','a.docx'])for(const visible of [true,false]){
   const menu=flatten(documentCommands({kind:path.endsWith('docx')?'word':'text',relPath:path,canAuthorship:true,authorshipVisible:visible,canFind:!path.endsWith('docx')}));

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // The platform is host-owned, not inferred from a mutable browser user agent.
 if(typeof document!=='undefined'){
@@ -10,7 +10,7 @@ let flushHandler = null;
 // Flush-scoped writes: exactly the ops a lifecycle/barrier flush itself must
 // persist. They carry the active flush receipt id so the host can admit them
 // against the real pending receipt instead of blanket-exempting lifecycle.
-const flushScopedWrites = new Set(['workspace.displayView.write','workspace.recovery','workspace.settings','state.write','managed.draft', 'file.draft', 'file.save', 'file.retain', 'managed.review.instruction.save', 'managed.review.save']);
+const flushScopedWrites = new Set(['workspace.displayView.write','workspace.recovery','workspace.settings','state.write','managed.draft', 'file.draft', 'file.save', 'file.retain', 'managed.review.instruction.save', 'managed.review.save','workspace.reviewDiscussion.flush']);
 
 // Sandboxed Electron preloads cannot require local CommonJS modules.
 function createFlushQueue({ack,getHandler}) {
@@ -65,6 +65,12 @@ ipcRenderer.on('nozeli:lsp', (_event, payload) => { for (const handler of push.l
 ipcRenderer.on('nozeli:quit-confirm', () => { for (const handler of push['quit.confirm']) handler(); });
 
 contextBridge.exposeInMainWorld('nozeli', {
+  fileDrop(files){
+    if(!Array.isArray(files)||!files.length||files.length>1024)throw Error('拖入文件列表无效。');
+    const paths=files.map(file=>webUtils.getPathForFile(file));
+    if(paths.some(value=>!value))throw Error('仅支持本机文件拖入。');
+    return ipcRenderer.invoke('nozeli:file-drop',paths);
+  },
   platform: process.platform,
   invoke(op, payload) {
     const active = flushQueue.activeRequest();

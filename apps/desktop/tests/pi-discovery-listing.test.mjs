@@ -3,7 +3,10 @@
 // Run: node --test tests/pi-discovery-listing.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {collectServiceModels} from '../../../integrations/pi/src/bridge.mjs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
+const {collectServiceModels}=await import(pathToFileURL(path.join(integration,'src/bridge.mjs')));
 
 const listing=(pages,{failOn}={})=>{
   let calls=0;

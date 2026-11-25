@@ -4,6 +4,7 @@ import {readFileAvailability} from './file-availability.mjs';
 import {mountContextMenu} from './context-menu.mjs';
 import {setActionButton} from './ui-actions.mjs';
 import {mountProjectSearchView} from './project-search-view.mjs';
+import {findView,layoutGroups} from '../domain/workspace-layout.mjs';
 
 export const isProjectDocument = view => view?.kind === 'document' && (!view.documentSource || view.documentSource.type === 'project');
 
@@ -64,7 +65,7 @@ export function mountFileNavigator({invoke, projectId, open, revealHit, toast=()
       b.dataset.path=entry.relPath;b.dataset.hiddenRoot=String(entry.hiddenRoot===true);b.dataset.kind=entry.kind;b.draggable=true;b.setAttribute('role','treeitem');b.setAttribute('aria-level',String(depth+1));b.setAttribute('aria-selected',String(selected.has(entry.relPath)));b.title=entry.relPath;
       const arrow=document.createElement('span');arrow.className='tree-expander';arrow.setAttribute('aria-hidden','true');arrow.textContent=entry.kind==='dir'?(expanded.has(entry.relPath)?'▾':'▸'):'';const label=document.createElement('span');label.className='tree-label';label.textContent=entry.name;b.append(arrow,createFileIcon(entry.relPath,{directory:entry.kind==='dir',expanded:expanded.has(entry.relPath)}),label);
       if(entry.hidden){b.classList.add('tree-hidden-item');const badge=document.createElement('span');badge.className='tree-hidden-label';badge.textContent='已隐藏';b.append(badge);}
-      if(entry.kind==='dir'){b.classList.add('dir');b.setAttribute('aria-expanded',String(expanded.has(entry.relPath)));b.onclick=async()=>{if(entry.hiddenRoot){toast('隐藏文件夹不展开；请先恢复显示。');return;}if(expanded.has(entry.relPath)){expanded.delete(entry.relPath);persistExpanded();render();}else if(directories.has(entry.relPath)||await load(entry.relPath)){expanded.add(entry.relPath);watch(entry.relPath);persistExpanded();render();}};}else b.onclick=()=>open(entry.relPath);fragment.append(b);
+      if(entry.kind==='dir'){b.classList.add('dir');b.setAttribute('aria-expanded',String(expanded.has(entry.relPath)));b.onclick=async()=>{if(entry.hiddenRoot){toast('隐藏文件夹不展开；请先恢复显示。');return;}if(expanded.has(entry.relPath)){expanded.delete(entry.relPath);persistExpanded();render();}else if(directories.has(entry.relPath)||await load(entry.relPath)){expanded.add(entry.relPath);watch(entry.relPath);persistExpanded();render();}};}else b.onclick=()=>Promise.resolve(open(entry.relPath)).catch(error=>toast(error.message||'文件打开失败'));fragment.append(b);
     }
     canvas.replaceChildren(fragment);
     if(hadFocus){const node=focusedPath?rows().find(b=>b.dataset.path===focusedPath):tree.querySelector(`button[data-index="${activeIndex}"]`);node?.focus({preventScroll:true});}onRendered();
@@ -95,6 +96,19 @@ export function mountFileNavigator({invoke, projectId, open, revealHit, toast=()
       if(!current())throw Error('项目已切换或暂不可用，文件未打开。');
       if(!api){const result=await open(path);if(result?.ok===false)throw Error(result.error?.message||'文件打开失败');return true;}
       const existing=Object.values(api.snapshot()?.views||{}).find(v=>isProjectDocument(v)&&v.relPath===path&&!v.readOnly);
+      if(where.startsWith('group:')){
+        const layout=api.snapshot(),target=layoutGroups(layout).find(group=>group.id===where.slice(6));
+        if(!target)throw Error('工作区分区已变化，文件未打开。');
+        const present=target.views.map(id=>layout.views[id]).find(view=>isProjectDocument(view)&&view.relPath===path);
+        const retained=existing&&(target.historyViewIds??[]).map(id=>layout.views[id]).find(view=>
+          isProjectDocument(view)&&view.relPath===path&&(view.id===existing.id||view.sourceViewId===existing.id)&&!findView(layout,view.id));
+        if(present)await api.activate(present.id,target.id);
+        else if(retained)await api.activate(retained.id,target.id);
+        else if(existing&&findView(layout,existing.id))await api.command({type:'duplicate',viewId:existing.id,targetGroupId:target.id});
+        else if(existing)await api.activate(existing.id,target.id);
+        else await api.command({type:'open',groupId:target.id,view:{kind:'document',relPath:path,documentSource:{type:'project'}}});
+        return true;
+      }
       if(where==='current'){
         if(existing){
           await api.activate(existing.id,api.activeGroup?.());

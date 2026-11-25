@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
-import {selectFilesystemAdapter,FILESYSTEM_CAPABILITY} from '../../platform/shared/filesystem.mjs';
+import {selectFilesystemAdapter,FILESYSTEM_CAPABILITY,filesystemUnsupported} from '../../platform/shared/filesystem.mjs';
 
 const reject=(code,message)=>{throw Object.assign(new Error(message),{code});};
 export const TEXT_MAX_BYTES=32*1024*1024;
@@ -40,8 +40,27 @@ export function createFileStream({filesystem=defaultAdapter}={}){
  // Text/document APIs deliberately remain bounded; binary execution never uses it.
  const readSafeBytes=(root,rel,{maxBytes=TEXT_MAX_BYTES}={})=>withSafeFile(root,rel,async file=>{if(file.stat.size>BigInt(maxBytes))reject('TEXT_LIMIT','文档文本读取超过'+maxBytes+'字节：'+rel);const chunks=[];let size=0;for await(const chunk of file.stream()){size+=chunk.length;if(size>maxBytes)reject('TEXT_LIMIT','文档文本读取超过边界：'+rel);chunks.push(chunk);}if(BigInt(size)!==file.stat.size)reject('SOURCE_CHANGED','文件读取期间变化：'+rel);return {bytes:Buffer.concat(chunks,size),mode:file.mode};});
  const safeBytes=async(root,rel)=>(await readSafeBytes(root,rel))?.bytes??null;
- const openWriteParent=async(root,rel)=>{writablePath(rel);return filesystem.openWriteParent(root,rel);};
- return {adapter:filesystem,capability:FILESYSTEM_CAPABILITY,withSafeFile,inspectFile,readSafeBytes,safeBytes,openWriteParent};
+ const validateWritePath=rel=>{writablePath(rel);filesystem.validateWritePath?.(rel);return rel;};
+ const openWriteParent=async(root,rel)=>{validateWritePath(rel);return filesystem.openWriteParent(root,rel);};
+ const writeVersioned=async(root,rel,bytes,options)=>{
+  validateWritePath(rel);
+  if(filesystem.capabilities?.versionedWrite!==true||typeof filesystem.writeVersioned!=='function')
+   throw filesystemUnsupported(filesystem.platform,'writeVersioned','No qualified versioned publication operation');
+  return filesystem.writeVersioned(root,rel,bytes,options);
+ };
+ const writeVersionedStream=async(root,rel,source,options)=>{
+  validateWritePath(rel);
+  if(filesystem.capabilities?.versionedWriteStream!==true||typeof filesystem.writeVersionedStream!=='function')
+   throw filesystemUnsupported(filesystem.platform,'writeVersionedStream','No qualified streamed publication operation');
+  return filesystem.writeVersionedStream(root,rel,source,options);
+ };
+ const removeVersioned=async(root,rel,options)=>{
+  validateWritePath(rel);
+  if(filesystem.capabilities?.versionedRemove!==true||typeof filesystem.removeVersioned!=='function')
+   throw filesystemUnsupported(filesystem.platform,'removeVersioned','No qualified versioned deletion operation');
+  return filesystem.removeVersioned(root,rel,options);
+ };
+ return {adapter:filesystem,capability:FILESYSTEM_CAPABILITY,withSafeFile,inspectFile,readSafeBytes,safeBytes,openWriteParent,writeVersioned,writeVersionedStream,removeVersioned,validateWritePath};
 }
 const stream=createFileStream();
 export const withSafeFile=stream.withSafeFile;

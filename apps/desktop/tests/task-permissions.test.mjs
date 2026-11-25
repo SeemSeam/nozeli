@@ -103,6 +103,63 @@ test('sensitive effect: approval before zero effect; deny is durable and execute
   assert.equal(fx.calls.execute.length,0);
   assert.equal((await permissions.read(A.id)).requests.find(r=>r.id===requestId).status,'denied');
 });
+test('orchestrator permission wait queues one exact approval notice, never the original input',async t=>{
+  const fx=brokerFixture();
+  const {c,A,permissions}=await fixture(t,{broker:fx.broker});
+  const session=c.sessions.get('orchestrator'),inputs=[];
+  const originalText='fixture original intake text';
+  let requestId;
+  const command=()=>execTool(REAL,['--fixture-approval-notice'],A.rootDisplay,'synthetic authorization gate','admin');
+  const prototype=Object.getPrototypeOf(session),originalPrompt=prototype.prompt;
+  prototype.prompt=async function(text,{job}){
+    if(this.target!=='orchestrator'||job.type!=='intake')return originalPrompt.call(this,text,{job});
+    inputs.push({id:job.id,text});
+    if(job.context.routingQuestionId&&!job.context.effectSourceJobId){
+      await this.onTool({tool:'nozeli_dispatch',arguments:{name:'Approved fixture result'},callId:randomUUID()});
+      return {completion:'host-control',providerStatus:'completed',threadId:this.threadId};
+    }
+    const effect=await this.onTool(command());
+    if(!job.context.effectSourceJobId){
+      assert.equal(effect.error.code,'PERMISSION_REQUIRED');
+      requestId=effect.error.requestId;
+    }else{
+      assert.equal(effect.value?.executed,true,JSON.stringify(effect.error));
+      await this.onTool({tool:'nozeli_manage',arguments:{action:'clarify',text:'Confirm the requested result format.'},callId:randomUUID()});
+    }
+    return {completion:'host-control',providerStatus:'completed',threadId:this.threadId};
+  };
+  const {jobId}=await c.submitTask(originalText,{requestKey:'intake-permission-source',context:{userInput:{text:originalText}}});
+  const source=()=>c.store.state.jobs.find(row=>row.id===jobId);
+  await wait(()=>source().completion==='permission-awaiting'&&!c.running.has('orchestrator'));
+  assert.equal(source().errorCode,'PERMISSION_REQUIRED');assert.equal(source().restartRecovery,undefined);
+  assert.equal(source().intakePermissionWait.requestId,requestId);assert.equal(c.store.state.works.length,0);
+  assert.equal(fx.calls.execute.length,0);
+  const approval={requestId,expectedVersion:1,action:'approve-once',requestKey:'intake-ok:'+requestId};
+  const decision=await c.resolveEffectRequest(approval);
+  assert.equal(decision.continued,true);
+  await wait(()=>c.store.state.jobs.find(row=>row.id===decision.jobId)?.status==='completed'&&!c.running.has('orchestrator'));
+  assert.deepEqual(inputs.map(row=>row.id),[jobId,decision.jobId]);
+  assert.equal(inputs[0].text,originalText);assert.ok(!inputs[1].text.includes(originalText));
+  const child=c.store.state.jobs.find(row=>row.id===decision.jobId);
+  assert.deepEqual(c.intakeSource(child).sourceInputJobIds,[jobId,decision.jobId]);
+  assert.equal(c.intakeSource(child).request,originalText);assert.equal(child.routing.action,'clarify');
+  assert.equal((await permissions.read(A.id)).executions.filter(row=>row.status==='completed').length,1);
+  const duplicate=await c.resolveEffectRequest(approval);
+  assert.equal(duplicate.duplicate,true);assert.equal(duplicate.jobId,decision.jobId);
+  assert.equal(inputs.length,2);assert.equal(fx.calls.execute.length,1);
+  assert.equal(c.intakeReconcile(jobId,c.store.projectInstanceId).route.action,'clarify');
+  await assert.rejects(c.intakeWithdraw(jobId,c.store.projectInstanceId),{code:'INTAKE_WITHDRAWAL_BLOCKED'});
+  const question=c.store.state.todos.find(row=>row.sourceJobId===child.id&&row.kind==='routing');
+  const answer='Use a short table';
+  const answered=await c.submitTask(answer,{requestKey:'intake-permission-answer',context:{routingQuestionId:question.id}});
+  const answerJob=()=>c.store.state.jobs.find(job=>job.id===answered.jobId);
+  await wait(()=>['failed','completed'].includes(answerJob()?.status));
+  assert.equal(answerJob().status,'completed',answerJob().error);
+  assert.equal(answerJob().routing?.action,'dispatch',JSON.stringify({context:answerJob().context,inputs,question}));
+  const work=c.store.state.works.find(work=>work.name==='Approved fixture result');
+  assert.equal(work.request,`${originalText}\n用户澄清回答：\n${answer}`);
+  assert.deepEqual(work.sourceInputJobIds,[jobId,decision.jobId,inputs[2].id]);
+});
 test('approve-once executes exactly once through the broker with the frozen effect',async t=>{
   const fx=brokerFixture();
   const {c,A,openTurn,runApproved,permissions}=await fixture(t,{broker:fx.broker});

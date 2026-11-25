@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {managedExecutionSummary} from '../src/main/storage-recovery.mjs';
 
+for(const source of ['work','job','peer'])test(`explicit ${source} reconciliation hold does not wake startup`,t=>{
+ const work={id:'work',status:'running'},job={id:'job',target:'orchestrator',status:'queued',context:{boundWorkId:'work'}},jobs=[job];
+ if(source==='work')work.recoveryRequiresExplicitInput=true;
+ if(source==='job')job.recoveryRequiresExplicitInput=true;
+ if(source==='peer')jobs.push({id:'original',target:job.target,context:{boundWorkId:work.id},status:'interrupted',recoveryRequiresExplicitInput:true});
+ assert.equal(managedExecutionSummary(fixture(t,{works:[work],jobs})).pending,false);
+});
+
 function fixture(t,{works=[],jobs=[]}={}){
  const db=new DatabaseSync(':memory:');t.after(()=>db.close());db.exec('CREATE TABLE records(collection TEXT,id TEXT,value TEXT,PRIMARY KEY(collection,id))');
  const put=db.prepare('INSERT INTO records VALUES(?,?,?)');for(const w of works)put.run('managed_works',w.id,JSON.stringify(w));for(const j of jobs)put.run('managed_jobs',j.id,JSON.stringify(j));return db;

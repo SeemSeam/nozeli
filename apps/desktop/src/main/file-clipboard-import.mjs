@@ -65,7 +65,8 @@ async function recoveryGuard(host,project,rel,source){
 }
 export function importClipboardFiles(ops,items,{projectId,target=''}){
   const task=ops.pending.then(async()=>{
-    requireCapability('safe-file-io');requireCapability('durable-persistence');
+    const native=process.platform==='win32'&&ops.io.recoverableTransfer;
+    if(!native){requireCapability('safe-file-io');requireCapability('durable-persistence');}
     const registered=await ops.host.storage.list();
     const sources=registered.filter(project=>!project.removed&&items.some(item=>inside(item.source,project.root)));
     const ids=[...new Set([projectId,...sources.map(project=>project.id)])].sort();
@@ -80,6 +81,11 @@ export function importClipboardFiles(ops,items,{projectId,target=''}){
           if(inside(dest,item.source))fail('不能将文件夹放入自身或子目录。');
           const stat=await noLinks(item.source);if(!sameFileIdentity(item.identity,fileIdentity(stat)))fail('源文件已变化，请重新复制。');
           if(path.resolve(item.source).split(path.sep).some(part=>part==='.nozeli'||part==='.git'))fail('不能复制项目运行元数据。');
+          if(native){
+            const {assertTreeCopySaved}=await import('./file-clipboard-export.mjs');
+            const saved=async()=>{for(const source of sources)if(inside(item.source,source.root)){const current=await ops.host.requireProject(source.id),rel=path.relative(current.root,item.source).split(path.sep).join('/');if(!rel)fail('不能复制包含项目元数据的项目根目录。');if(current.id!==project.id)await ops.assertTreeAdmission(current.id);await assertTreeCopySaved(ops,current,[rel]);}};
+            await saved();const result=await ops.importClipboardEntry(project,item,relPath,{beforeCommit:saved});results.push({name:item.name,ok:true,...result});continue;
+          }
           await ops.assertTransferable(item.source,stat);
           await recoveryGuard(ops.host,project,relPath,false);
           for(const source of sources)if(inside(item.source,source.root)){
@@ -88,11 +94,12 @@ export function importClipboardFiles(ops,items,{projectId,target=''}){
           }
           await copyNode(item.source,dest,created,item.identity,parentIdentity);
           results.push({name:item.name,ok:true,relPath});
-        }catch(error){const retained=await rollback(created),message=error.code==='EEXIST'?'目标已存在，未覆盖，请先重命名。':error.message;results.push({name:item.name,ok:false,error:message+(retained?'；目标含并发修改或未清理内容，已保留，请检查。':'' )});}
+        }catch(error){const retained=native?Boolean(error.committed||error.commitUnknown||error.details?.transfer?.stagingName):await rollback(created),message=error.code==='EEXIST'?'目标已存在，未覆盖，请先重命名。':error.message;results.push({name:item.name,ok:false,error:message+(retained?'；目标含并发修改或未清理内容，已保留，请检查。':'' ),...(native?{code:error.code,committed:!!error.committed,commitUnknown:!!error.commitUnknown,details:error.details}:{} )});if(native)break;}
       }
+      if(native)for(const item of items.slice(results.length))results.push({name:item.name,ok:false,error:'前一项未完成，本项尚未执行。',code:'TREE_BATCH_NOT_ATTEMPTED'});
       return {items:results,files:results.filter(item=>item.ok).map(item=>item.relPath)};
     };
-    const locked=ids.reduceRight((work,id)=>()=>ops.host.storage.withProjectOperation(id,()=>ops.host.projectLock(id)(work)),execute);
+    const locked=ids.reduceRight((work,id)=>()=>ops.host.storage.withProjectOperation(id,()=>ops.host.projectLock(id)(work)),native?()=>ops.host.metaLock(execute):execute);
     return locked();
   });
   ops.pending=task.catch(()=>{});return ops.host.track(task);

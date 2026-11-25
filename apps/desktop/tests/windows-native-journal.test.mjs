@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {ensureExperimentalPrivateDirectory} from '../src/platform/windows/experimental-directories.mjs';
+import {openExperimentalPersistenceParent} from '../src/platform/windows/experimental-persistence.mjs';
+const native={skip:process.platform!=='win32'||process.arch!=='x64'};
+test('journal original writer excludes contenders and preserves append/rewrite CAS',native,async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'native-journal-')),dir=path.join(root,'private');
+ await ensureExperimentalPrivateDirectory(root,dir);
+ const parent=openExperimentalPersistenceParent(root,'private/session.jsonl');let journal;
+ t.after(async()=>{journal?.close();parent.close();await fs.rm(root,{recursive:true,force:true});});
+ journal=parent.openPrivateJournal('session.jsonl',true);const identity=journal.stat().identity;
+ const first=Buffer.from('{"text":"中文 😀"}\n');journal.append(first,0n);journal.sync();
+ assert(journal.readAt(0,first.length).equals(first));assert.equal(journal.stat().identity,identity);
+ await assert.rejects(fs.writeFile(path.join(dir,'session.jsonl'),'external winner'));
+ await assert.rejects(fs.rename(path.join(dir,'session.jsonl'),path.join(dir,'replaced')));
+ assert.throws(()=>journal.append(Buffer.from('late'),0),{code:'FS_JOURNAL_SIZE_MISMATCH'});
+ assert(journal.readAt(0,first.length).equals(first));
+ assert.throws(()=>journal.rewrite(Buffer.from('wrong'),Buffer.alloc(32)),{code:'FS_JOURNAL_DIGEST_MISMATCH'});
+ const next=Buffer.from('{"replacement":true}\n');journal.rewrite(next,createHash('sha256').update(first).digest());journal.sync();
+ assert(journal.readAt(0,next.length).equals(next));assert.equal(journal.stat().size,BigInt(next.length));
+ journal.close();journal=parent.openPrivateJournal('session.jsonl',false);assert.equal(journal.stat().identity,identity);
+ journal.append(Buffer.from('{}\n'),next.length);journal.sync();journal.close();journal=null;
+ assert((await fs.readFile(path.join(dir,'session.jsonl'))).equals(Buffer.concat([next,Buffer.from('{}\n')])));
+});

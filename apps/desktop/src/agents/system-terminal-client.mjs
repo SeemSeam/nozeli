@@ -1,10 +1,17 @@
 import fs from 'node:fs/promises';
 import {createRequire} from 'node:module';
+import {readWindowsTerminalTicket} from '../platform/windows/system-terminal-ticket.mjs';
 const {WebSocket}=createRequire(import.meta.url)('ws');
 export async function run(){
- const ticket=process.argv[process.argv.indexOf('--ticket')+1];if(!ticket||!process.stdin.isTTY||!process.stdout.isTTY)throw Error('请通过 Nozeli 在系统终端中打开此客户端。');
- const stat=await fs.lstat(ticket);if(!stat.isFile()||stat.isSymbolicLink()||(process.platform!=='win32'&&((stat.mode&0o077)!==0||stat.uid!==process.getuid())))throw Error('无效终端票据权限');
- const {url,token}=JSON.parse(await fs.readFile(ticket,'utf8'));if(!/^ws:\/\/127\.0\.0\.1:\d+$/.test(url)||typeof token!=='string')throw Error('无效附着票据');
+ const index=process.argv.indexOf('--ticket'),ticket=index<0?null:process.argv[index+1];
+ if(!ticket||!process.stdin.isTTY||!process.stdout.isTTY)throw Error('请通过 Nozeli 在系统终端中打开此客户端。');
+ let payload;
+ if(process.platform==='win32')payload=readWindowsTerminalTicket(ticket);
+ else{
+  const stat=await fs.lstat(ticket);if(!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||stat.uid!==process.getuid())throw Error('无效终端票据权限');
+  payload=JSON.parse(await fs.readFile(ticket,'utf8'));
+ }
+ const {url,token}=payload;if(!/^ws:\/\/127\.0\.0\.1:\d+$/.test(url)||typeof token!=='string')throw Error('无效附着票据');
  const socket=new WebSocket(url,{headers:{Authorization:`Bearer ${token}`},maxPayload:2*1024*1024});
  const send=value=>{if(socket.readyState===1)socket.send(JSON.stringify(value));};
  const input=data=>{const text=String(data);for(let i=0;i<text.length;){let end=Math.min(i+8000,text.length);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;send({type:'input',data:text.slice(i,end)});i=end;}};

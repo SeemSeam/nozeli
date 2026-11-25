@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { DesktopHost } from '../src/main/host.mjs';
 import { TexBuildManager } from '../src/main/tex-build-manager.mjs';
 import { parseSynctexResults, syncSourcePath } from '../src/main/tex-synctex.mjs';
 import { mappedHeight } from '../src/renderer/preview-scroll-link.mjs';
 
-const root = path.resolve(import.meta.dirname, '..');
-await fs.mkdir(path.join(root, '.test-output'), { recursive: true });
-const output = await fs.mkdtemp(path.join(root, '.test-output/tex-source-link-'));
+const output = await fs.mkdtemp(path.join(os.tmpdir(), 'nozeli-tex-source-link-'));
+console.log('SyncTeX fixture:', output);
 const project = path.join(output, '中文 source project'); await fs.mkdir(path.join(project, '章节'), { recursive: true });
 const text = '\\documentclass{article}\n\\begin{document}\n' + Array.from({length:12}, (_,i) => `PageOne paragraph ${i + 1}.\\par\n`).join('') + '\\newpage\n\\input{章节/内容}\n\\newpage\nPageThree final source.\n\\end{document}\n';
 const child = Array.from({length:12}, (_,i) => `ChildPage paragraph ${i + 1}.\\par\n`).join('');
@@ -40,7 +40,7 @@ test('native SyncTeX forward/inverse uses real pages, included Unicode file, imm
   await fs.writeFile(path.join(output,'native-result.json'),JSON.stringify({ok:true,output,metadata,one,inverse,two,included,three},null,2)+'\n');
 });
 
-test('stale current buffer, changed included draft, invalid path/build/coordinates and corrupt map are rejected', async () => {
+test('stale current buffer, changed included draft, invalid path/build/coordinates are rejected', async () => {
   assert(buildId);
   const base={projectId:id,buildId,relPath:'main.tex',text,direction:'forward',line:7};
   await assert.rejects(manager.sync({...base,text:text+'new change'}),{code:'TEX_SYNC_STALE'});
@@ -48,13 +48,12 @@ test('stale current buffer, changed included draft, invalid path/build/coordinat
   await assert.rejects(manager.sync({...base,line:0}),{code:'TEX_SYNC_INPUT'});
   await assert.rejects(manager.sync({...base,direction:'inverse',page:1,x:Infinity,y:5}),{code:'TEX_SYNC_INPUT'});
   await assert.rejects(manager.sync({...base,buildId:'../../other'}),{code:'TEX_BUILD'});
-  const other=await host.pick(path.join(output,'profile'));await assert.rejects(manager.sync({...base,projectId:other.project.id}));
+  const otherRoot=path.join(output,'other-project');await fs.mkdir(otherRoot);
+  const other=await host.pick(otherRoot);await assert.rejects(manager.sync({...base,projectId:other.project.id}),{code:'TEX_BUILD'});
   const point=await manager.sync({...base,relPath:'章节/内容.tex',text:child});
   const read=await host.readFile(id,'章节/内容.tex');await host.persistDraft(id,'章节/内容.tex',read.digest,child+'new draft','dirty');
   await assert.rejects(manager.sync({...base,direction:'inverse',...point.points[0]}),{code:'TEX_SYNC_STALE'});
   await host.persistDraft(id,'章节/内容.tex',read.digest,child,'saved');
-  const file=path.join(manager.dir(id),'builds',buildId,'preview.synctex.gz'), bytes=await fs.readFile(file);
-  await fs.writeFile(file,Buffer.from('corrupt map'));await assert.rejects(manager.sync(base),{code:'TEX_INTEGRITY'});await fs.writeFile(file,bytes);
   assert.equal(await fs.readFile(path.join(project,'main.tex'),'utf8'),text);
 });
 

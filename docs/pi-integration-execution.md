@@ -643,4 +643,3 @@ provider／预算／无能力技术故障只本地分类与去重，不产生 ma
 - 原项目直到最终报告页脚明确接受才改变；接受后文件与 `HEAD:progress.txt` 字节精确一致、真实 merge commit、`ended/accept/closure.complete`、执行目录清理。
 
 71 项定向 attention／权限回归全部通过，失败／跳过／取消均 0；新安装两组原始报告与截图分别保留，权限对话及暂停控制截图已查看。前期驱动把 host projection 当用户正文、误把合法 backstage 当重复派工、缺失请求计数 helper、旧 CDP guest 的无界探测超时均不计通过，按实际 job／工作面身份修正，不修改安装字节伪造运行结果。原生 `method=approve` 也改为对话卡片并保留原生回答协议，但本轮安装场景实际覆盖宿主 effect 权限，不冒称已实测所有原生提供方批准事件。模型响应为确定性 loopback；真实权限、进程、命令、文件、Git 与持久化走生产实现。未运行真实 root 操作、付费模型或 Windows/macOS，也不宣称完整默认套件通过。
-

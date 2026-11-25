@@ -15,6 +15,17 @@ import pathModule from 'node:path';
 const KEY='managed:task-permissions';
 export const EFFECT_TTL_MS=30*60*1000;
 
+// Reconciliation is a read, not a grant refresh or ledger migration. Expose
+// only bounded identities and statuses tied to this exact original job.
+export async function readIntakeEffectReceipts(storage,projectId,jobId){
+ const ledger=await storage.getLocal(projectId,KEY);
+ const requests=(ledger?.requests??[]).filter(row=>row.sourceJobId===jobId),requestIds=new Set(requests.map(row=>row.id));
+ const grants=(ledger?.grants??[]).filter(row=>row.sourceJobId===jobId||requestIds.has(row.requestId)),grantIds=new Set(grants.map(row=>row.id));
+ const executions=(ledger?.executions??[]).filter(row=>requestIds.has(row.requestId)||grantIds.has(row.grantId));
+ const summarize=rows=>rows.slice(-16).map(({id,status})=>({id,status}));
+ return {requests:summarize(requests),grants:summarize(grants),executions:summarize(executions),more:[requests,grants,executions].some(rows=>rows.length>16)};
+}
+
 // Canonical frozen-effect JSON: recursively key-sorted, no whitespace, arrays
 // preserved as arrays — the SINGLE shared canon (brokers must import this
 // module's computeEffectHash, never reimplement it). The hash covers the full

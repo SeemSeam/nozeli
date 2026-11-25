@@ -150,6 +150,7 @@ test('source filtering retains offline UI and native icons but excludes private 
   const included = relative => applicationSourceIncluded(source, path.join(source, ...relative.split('/')));
   for (const name of ['dist/renderer/start-page/feature.png', 'dist/renderer/nozeli-small-icon.png', 'dist/renderer/ppt-vendor/assets/font.woff2', 'assets/brand/nozeli-paired-tabs-icon.png', 'assets/guided-demo/manifest.json', 'runtime/node/bin/node']) assert.equal(included(name), true, name);
   for (const name of ['assets/start-page/feature.png', 'assets/brand/nozeli-small-icon.png', 'runtime/omp/runtime.json', 'src/.ccb/secret', 'assets/.nozeli/user-data']) assert.equal(included(name), false, name);
+  for (const name of ['src/local-skill-imports.json', 'dist/store-skills.json.tmp', 'assets/ui.sqlite-wal']) assert.throws(() => included(name), /Local Store data/);
 });
 
 test('real Linux proc command line protects a node-hosted release', {skip: process.platform !== 'linux'}, async t => {

@@ -1,20 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import {assertRecoverySourceStopped as linuxAssert} from '../src/main/project-recovery-owner.mjs';
-import * as linuxRecoveryOwner from '../src/platform/linux/recovery-owner.mjs';
+import {assertRecoverySourceStopped as assertPlatformRecoverySourceStopped} from '../src/main/project-recovery-owner.mjs';
+import {assertRecoverySourceStopped as assertLinuxRecoverySourceStopped} from '../src/platform/linux/recovery-owner.mjs';
 
-// The wrapper's capability selector picks the host platform's adapter, so on
-// macOS these /proc fixtures would never reach the Linux algorithm under test.
-// Inject the linux selection explicitly (the same shape selectCapability
-// returns on Linux) instead of mocking the selector.
-const assertRecoverySourceStopped=root=>linuxAssert(root,{selection:{state:'available',platform:'linux',implementation:linuxRecoveryOwner}});
+const fixtureUid=1000;
+// Exercise the Linux algorithm over synthetic /proc on every host. The shared
+// entry still selects the actual platform and refuses unsupported Windows.
+const assertRecoverySourceStopped=root=>assertLinuxRecoverySourceStopped(root,{uid:fixtureUid});
 
 // Synthetic /proc reads only: no live account, project or process is changed.
-function probe(t,{args=['/usr/lib/systemd/systemd','--user'],cmdError,exeError='EACCES',exe='/fixture/nozeli',changed=false,stoppedAfterExe=false,parentArgs=['/usr/lib/systemd/systemd','--user'],parentChanged=false,parentUid=process.getuid(),parentExe='/fixture/nozeli',parentExeError,fdError='EACCES'}={}){
+function probe(t,{args=['/usr/lib/systemd/systemd','--user'],cmdError,exeError='EACCES',exe='/fixture/nozeli',changed=false,stoppedAfterExe=false,parentArgs=['/usr/lib/systemd/systemd','--user'],parentChanged=false,parentUid=fixtureUid,parentExe='/fixture/nozeli',parentExeError,fdError='EACCES'}={}){
  const pid=process.pid+1000000,parent=pid+1;let stamps=0,parentStamps=0,exeReads=0,fdReads=0;
  t.mock.method(fs,'readdir',async directory=>{if(directory==='/proc')return [String(pid)];assert.equal(directory,`/proc/${pid}/fd`);fdReads++;if(fdError)throw Object.assign(Error('synthetic inaccessible fd directory'),{code:fdError});return [];});
- t.mock.method(fs,'stat',async file=>{assert(['/proc/'+pid,'/proc/'+parent].includes(file));return {uid:file==='/proc/'+parent?parentUid:process.getuid()};});
+ t.mock.method(fs,'stat',async file=>{assert(['/proc/'+pid,'/proc/'+parent].includes(file));return {uid:file==='/proc/'+parent?parentUid:fixtureUid};});
  t.mock.method(fs,'readlink',async file=>{
   if(file==='/proc/self/exe')return '/fixture/nozeli';
   if(file===`/proc/${parent}/exe`){if(parentExeError)throw Object.assign(Error('synthetic inaccessible parent executable'),{code:parentExeError});return parentExe;}
@@ -59,7 +58,7 @@ const fixedServices=[
  ['SSH agent',['/usr/bin/ssh-agent','-D']],
  ['KDE policy agent',['/usr/lib/x86_64-linux-gnu/libexec/polkit-kde-authentication-agent-1']],
  ['KDE power service',['/usr/lib/x86_64-linux-gnu/libexec/org_kde_powerdevil']],
- ['Wayland compositor',['/usr/bin/kwin_wayland','--wayland-fd','7','--socket','wayland-0','--xwayland-fd','8','--xwayland-fd','9','--xwayland-display',':0','--xwayland-xauthority',`/run/user/${process.getuid()}/xauth_fixture`,'--xwayland']],
+ ['Wayland compositor',['/usr/bin/kwin_wayland','--wayland-fd','7','--socket','wayland-0','--xwayland-fd','8','--xwayland-fd','9','--xwayland-display',':0','--xwayland-xauthority',`/run/user/${fixtureUid}/xauth_fixture`,'--xwayland']],
  ['system manager PAM child',['(sd-pam)']],
 ];
 for(const [name,args] of fixedServices){
@@ -68,7 +67,17 @@ for(const [name,args] of fixedServices){
 }
 test('PAM process with a non-systemd parent remains fail-closed',async t=>{probe(t,{args:['(sd-pam)'],parentArgs:['/fixture/nozeli']});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});});
 test('PAM process with a changed parent identity remains fail-closed',async t=>{probe(t,{args:['(sd-pam)'],parentChanged:true});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});});
-test('PAM process with a different uid parent remains fail-closed',async t=>{probe(t,{args:['(sd-pam)'],parentUid:process.getuid()+1});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});});
+test('PAM process with a different uid parent remains fail-closed',async t=>{probe(t,{args:['(sd-pam)'],parentUid:fixtureUid+1});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});});
+
+test('invalid Linux user identity refuses before any process reads',async t=>{
+ t.mock.method(fs,'readlink',async()=>{throw Error('must not probe without a valid uid');});
+ for(const uid of [null,-1,NaN,1.5,Number.MAX_SAFE_INTEGER+1])await assert.rejects(assertLinuxRecoverySourceStopped('/synthetic/project',{uid}),{code:'RECOVERY_OWNER_UNVERIFIED'});
+});
+
+test('shared Windows recovery entry refuses before any Linux process reads',{skip:process.platform!=='win32'},async t=>{
+ t.mock.method(fs,'readlink',async()=>{throw Error('must not probe Linux processes on Windows');});
+ await assert.rejects(assertPlatformRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED',platform:'windows'});
+});
 test('compositor with an arbitrary authority path remains fail-closed',async t=>{const args=[...fixedServices[3][1]];args[12]='/tmp/user-project';probe(t,{args});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});});
 
 test('a related main without catalog handles never guesses the default profile',async t=>{const p=probe(t,{args:['/fixture/nozeli'],exeError:null,fdError:null});await assert.rejects(assertRecoverySourceStopped('/synthetic/project'),{code:'RECOVERY_OWNER_UNVERIFIED'});assert.equal(p.fdReads(),1);});
@@ -90,7 +99,7 @@ test('setuid sandbox zygote helper requires same-package executable parent',asyn
 for(const [name,options] of [
  ['different executable parent',{parentExe:'/other/nozeli'}],
  ['unreadable unknown parent',{parentExeError:'EACCES'}],
- ['different uid parent',{parentUid:process.getuid()+1}],
+ ['different uid parent',{parentUid:fixtureUid+1}],
  ['changed parent incarnation',{parentChanged:true}],
  ['changed child incarnation',{changed:true}],
  ['unknown child type',{args:['/fixture/nozeli','--type=unknown']}],
@@ -112,7 +121,7 @@ test('EACCES followed by a kernel-confirmed zombie is stopped, not an unknown li
 for(const changed of [false,true])test('non-dumpable renderer through non-dumpable zygote '+(changed?'rejects changed main identity':'reaches verified main identity'),async t=>{
  const renderer=process.pid+1000000,zygote=renderer+1,main=renderer+2,exe='/fixture/nozeli';let mainStamps=0;
  t.mock.method(fs,'readdir',async directory=>{assert.equal(directory,'/proc');return [String(renderer)];});
- t.mock.method(fs,'stat',async file=>{assert([renderer,zygote,main].some(pid=>file===`/proc/${pid}`));return {uid:process.getuid()};});
+ t.mock.method(fs,'stat',async file=>{assert([renderer,zygote,main].some(pid=>file===`/proc/${pid}`));return {uid:fixtureUid};});
  t.mock.method(fs,'readlink',async file=>{
   if(file==='/proc/self/exe'||file===`/proc/${main}/exe`)return exe;
   assert([renderer,zygote].some(pid=>file===`/proc/${pid}/exe`));throw Object.assign(Error('non-dumpable Chromium child'),{code:'EACCES'});

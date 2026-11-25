@@ -5,11 +5,15 @@ import { validateFileLabel } from '../domain/file-label.mjs';
 import { FileTags } from '../domain/file-tags.mjs';
 import { FileChanges } from '../domain/file-changes.mjs';
 import {requireCapability} from '../platform/platform-capabilities.mjs';
+import {createFileTreeIO} from './file-tree-io.mjs';
+import {assertTreeCopySaved} from './file-clipboard-export.mjs';
+import {capturePptTreePlan} from './ppt-tree-recovery.mjs';
 
 const fail = (message) => { throw new Error(message); };
 const exists = async p => { try { await fs.lstat(p); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
 const inside = (rel, parent) => rel === parent || rel.startsWith(parent + '/');
 const key = rel => createHash('sha256').update(rel).digest('hex');
+const projectBinding = p => key(JSON.stringify([p.id,p.instanceId,p.root,p.identity,p.metadataIdentity]));
 const validClosedPath = p => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !p.includes('\\') && p.split('/').every(c => c && c !== '.' && c !== '..');
 const validViewPath = p => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !/[\\:\x00-\x1f]/.test(p) && p.split('/').every(c => c && c !== '.' && c !== '..' && !c.startsWith('.') && c !== 'node_modules');
 const validateViewPaths = (paths, message, valid = validViewPath) => {
@@ -25,13 +29,13 @@ export function treeViewValue(record) {
   return { closed, hidden, expanded, showHidden: record?.showHidden ?? false };
 }
 export class FileTreeOps {
-  constructor(host, { trash }) { this.host = host; this.trash = trash; this.pending = Promise.resolve(); }
-  run(input) {
+  constructor(host, { trash, io=createFileTreeIO(host) }) { this.host = host; this.trash = trash; this.io=io; this.pending = Promise.resolve(); }
+  run(input, surfaceContext={}) {
     // Cross-project operations hold both project locks, acquired in a stable
     // order so they can never deadlock against single-project callers.
     const cross = typeof input?.sourceProjectId === 'string' && input.sourceProjectId && input.sourceProjectId !== input.projectId;
     const locks = cross ? [input.projectId, input.sourceProjectId].sort() : [input.projectId];
-    const held = locks.reduceRight((work, id) => () => this.host.projectLock(id)(work), () => this.perform(input));
+    const held = locks.reduceRight((work, id) => () => this.host.projectLock(id)(work), () => this.io.recoverableTransfer ? this.host.metaLock(()=>this.perform(input,surfaceContext)) : this.perform(input,surfaceContext));
     const task = this.pending.then(held);
     this.pending = task.catch(() => {});
     return this.host.track(task);
@@ -93,7 +97,7 @@ export class FileTreeOps {
     return current;
   }
   validName(name) {
-    if (typeof name !== 'string' || !name.trim() || name.startsWith('.') || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('请输入有效的文件名，不含路径分隔符或系统保留名称。');
+    if (typeof name !== 'string' || !name.trim() || name.length>255 || name.startsWith('.') || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('请输入有效的文件名，不含路径分隔符或系统保留名称。');
     return name;
   }
   // Reject nested links and independent project metadata before moving or
@@ -106,13 +110,13 @@ export class FileTreeOps {
     } };
     if (stat.isDirectory()) await walk(src);
   }
-  async perform({ projectId, action, sourceProjectId, source = '', target = '', name }) {
-    requireCapability('safe-file-io');requireCapability('durable-persistence');
+  async perform({ projectId, action, sourceProjectId, source = '', target = '', name }, surfaceContext={}) {
+    this.io.requireAction(action,{cross:Boolean(sourceProjectId&&sourceProjectId!==projectId)});
     if (sourceProjectId !== undefined && (typeof sourceProjectId !== 'string' || !sourceProjectId)) fail('跨项目源项目无效。');
     const project = await this.host.requireProject(projectId);
     if (sourceProjectId && sourceProjectId !== projectId) {
       if (action !== 'copy' && action !== 'cut') fail('跨项目仅支持复制或剪切。');
-      return this.performCross({ project, projectId, sourceProjectId, action, source, target });
+      return this.performCross({ project, projectId, sourceProjectId, action, source, target },surfaceContext);
     }
     const store = new FileTags({ storage: this.host.storage, projectId, root: project.root });
     const changes = new FileChanges({ storage: this.host.storage, projectId, root: project.root }), allChanges=await changes.all();
@@ -121,9 +125,9 @@ export class FileTreeOps {
       const destination = path.join(dir, this.validName(name));
       const rel = [target, name].filter(Boolean).join('/');
       if ((await store.all()).some(s => inside(s.file.relPath, rel)) || allChanges.some(s=>inside(s.relPath,rel))) fail('该名称保留有标签或修改历史恢复资料，请使用其他名称或先恢复原文件。');
-      if (action === 'createFolder') await fs.mkdir(destination);
-      else { const handle = await fs.open(destination, 'wx'); await handle.close(); }
-      return { relPath: [target, name].filter(Boolean).join('/') };
+      if(this.io.recoverableCreation)return this.createEntry(project,{projectId,action,rel});
+      await this.io.createEntry(project,rel,{kind:action==='createFolder'?'directory':'file'});
+      return { relPath: rel };
     }
     const src = await this.locate(project, source);
     const stat = await fs.lstat(src);
@@ -134,6 +138,8 @@ export class FileTreeOps {
       return { removed: source };
     }
     if (!['copy', 'cut', 'rename'].includes(action)) fail('不支持的文件操作。');
+    this.io.requireTransferKind?.(stat);
+    if(this.io.recoverableTransfer&&action==='copy')await assertTreeCopySaved(this,project,[source]);
     const dir = action === 'rename' ? path.posix.dirname(source).replace(/^\.$/, '') : target;
     const parent = await this.locate(project, dir, true);
     let base = action === 'rename' ? this.validName(name) : path.basename(src);
@@ -174,6 +180,13 @@ export class FileTreeOps {
       const copy = action === 'copy';
       const value = { ...old, file: { ...old.file, relPath: rel, fileId: copy ? randomUUID() : old.file.fileId }, tags: old.tags.map(t => ({ ...t, relPath: rel, id: copy ? randomUUID() : t.id, ...(copy && t.projection ? { projection: { ...t.projection, removed: true, requestId: null, messageId: null } } : {}) })) };
       store.validate(value, rel); nextTags.push({id:key(rel),value});
+    }
+    if(this.io.recoverableTransfer){
+      if(action!=='copy')for(const {id,value}of provenanceRows)if(inside(id,source))nextProvenance.push({id:destination+id.slice(source.length),value:{...value,relPath:destination+id.slice(source.length)}});
+      const moved=id=>action!=='copy'&&inside(id,source);
+      return this.transferEntry(project,{projectId,action,source,destination,
+        expectedCollections:{file_tags:tagRows.map(({id,value})=>({id,value})),file_changes:changeRows.map(({id,value})=>({id,value})),provenance:provenanceRows.map(({id,value})=>({id,value}))},
+        collections:{file_tags:nextTags.filter(row=>!moved(row.value.file.relPath)),file_changes:nextChanges.filter(row=>!moved(row.value.relPath)),provenance:nextProvenance.filter(row=>!moved(row.id))}},surfaceContext);
     }
     try {
       if (action !== 'copy') {
@@ -219,15 +232,182 @@ export class FileTreeOps {
     }
     return { relPath: destination, ...(action !== 'copy' ? { from: source } : {}) };
   }
+  async assertTreeAdmission(projectId){
+    const storage=this.host.storage;
+    if(this.io.recoverableCrossTransfer){
+      const cross=await storage.pendingCrossTreeTransfer(projectId);
+      if(cross)throw Object.assign(Error('项目有待核对的跨项目文件操作，两个项目的现场均已保留。'),{code:'TREE_RECOVERY_REQUIRED',details:{operationId:cross.value.operationId,sourceProjectId:cross.value.sourceProjectId,projectId:cross.value.projectId,phase:cross.value.phase}});
+    }
+    const pending=await storage.recoveryPage(projectId,{prefixes:['tree-operation:'],pendingOnly:true,limit:1,maxBytes:8192,purpose:'tree-mutation-admission'});
+    if(pending.entries.length){const row=pending.entries[0];throw Object.assign(Error('项目有待核对的文件操作，已保留现场，请先检查恢复记录。'),{code:'TREE_RECOVERY_REQUIRED',details:{operationId:row.value.operationId,destination:row.value.destination,phase:row.value.phase}});}
+  }
+  async transferEntry(project,{projectId,action,source,destination,expectedCollections,collections},surfaceContext={}){
+    const storage=this.host.storage;await this.assertTreeAdmission(projectId);
+    const drafts=[];
+    if(action!=='copy')for await(const row of storage.recoveryRecords(projectId,{prefixes:['draft:']})){
+      if(!row.value?.relPath||!inside(row.value.relPath,source))continue;
+      const rel=destination+row.value.relPath.slice(source.length),next='draft:'+key(rel);
+      const prior=await storage.readRecoveryRecord(projectId,next);
+      if(prior?.value)fail('目标位置保留有草稿，请使用其他名称。');
+      drafts.push({id:row.id,revision:row.revision,value:row.value,next,nextRevision:prior?.revision??0,nextValue:{...row.value,relPath:rel}});
+    }
+    const pptDrafts=await capturePptTreePlan(storage,projectId,source,destination,action);
+    const operationId=randomUUID(),journal='tree-operation:'+operationId;
+    let record={schema:1,kind:'record',sameProject:true,projectBinding:projectBinding(project),transfer:true,projectId,operationId,action,source,relPath:source,destination,phase:'intent',createdAt:new Date().toISOString(),metadata:{before:expectedCollections,after:collections},drafts,...(pptDrafts.length?{pptDrafts}:{}),...(surfaceContext.descriptors?.length?{surfaceRecovery:surfaceContext.descriptors}:{})},effect,revision=0;
+    const write=async value=>{const result=await storage.putRecovery(projectId,journal,value,{expectedRevision:revision});revision=result.revision;};
+    if(Buffer.byteLength(JSON.stringify(record))>8*1024*1024)throw Object.assign(Error('文件操作恢复资料超过 8 MiB，原文件未修改。'),{code:'TREE_RECOVERY_LIMIT'});
+    await write(record);
+    try{
+      await surfaceContext.beforeTreeEffect?.(record);
+      effect=await this.io.transferEntry(project,source,destination,{action,operationId,onPrepared:async facts=>{
+        const prepared={...record,phase:'prepared',effect:facts};
+        if(Buffer.byteLength(JSON.stringify(prepared))>8*1024*1024)throw Object.assign(Error('文件操作恢复资料超过 8 MiB，已保留当前现场。'),{code:'TREE_RECOVERY_LIMIT'});
+        record=prepared;await write(record);
+      },onPublished:async facts=>{
+        effect=facts;record={...record,phase:'published',effect};await write(record);
+        // Sources remain pinned until the checked metadata/draft commit joins.
+        // Any failure retains both plans; public names are never rolled back.
+        await storage.replaceProjectCollections(projectId,collections,{expectedCollections});
+        record={...record,phase:'metadata-committed'};await write(record);
+        record={...record,phase:'complete'};
+        const result=await storage.putRecoveryRecords(projectId,[...[...drafts,...pptDrafts].flatMap(draft=>[
+          {id:draft.next,value:draft.nextValue,expectedRevision:draft.nextRevision},
+          {id:draft.id,value:null,expectedRevision:draft.revision},
+        ]),{id:journal,value:record,expectedRevision:revision}]);
+        revision=result.revisions.find(row=>row.id===journal).revision;
+      }});
+      return {relPath:destination,...(action!=='copy'?{from:source}:{}),operationId,transfer:effect};
+    }catch(error){
+      const facts=effect??error.treeTransfer??record.effect;
+      const published=Boolean(facts?.published||error.committed),unknown=Boolean(error.commitUnknown||error.code==='STORAGE_RESULT_UNKNOWN');
+      // A stage cleanup failure also needs human reconciliation; never claim
+      // an orphan was removed solely because no public destination appeared.
+      const retained={...record,phase:published||unknown||facts?.retainedStage||error.cleanupErrors?.length?'needs-attention':'refused',effect:facts??null,error:{code:error.code??'TREE_TRANSFER_FAILED',message:error.message,committed:published,commitUnknown:unknown}};
+      try{await write(retained);}catch(journalError){error.journalError={code:journalError.code,message:journalError.message};}
+      if(published){error.committed=true;error.durability='uncertain';}
+      error.details={...error.details,operationId,source,destination,recoveryKey:journal,transfer:facts??null,...(published?{committed:true,durability:'uncertain'}:{}),...(unknown?{commitUnknown:true}:{})};throw error;
+    }
+  }
+  async createEntry(project,{projectId,action,rel}){
+    const storage=this.host.storage;await this.assertTreeAdmission(projectId);
+    const operationId=randomUUID(),journal='tree-operation:'+operationId;
+    let record={schema:1,kind:'record',sameProject:true,projectBinding:projectBinding(project),creation:true,projectId,operationId,action,relPath:rel,destination:rel,phase:'intent',createdAt:new Date().toISOString()},effect,revision=0;
+    const write=async value=>{const result=await storage.putRecovery(projectId,journal,value,{expectedRevision:revision});revision=result.revision;};
+    // An acknowledged intent always precedes a public namespace effect.
+    await write(record);
+    try{
+      effect=await this.io.createEntry(project,rel,{kind:action==='createFolder'?'directory':'file',operationId,onPrepared:async facts=>{
+        record={...record,phase:'allocated',effect:facts};await write(record);
+      }});
+      record={...record,phase:'complete',effect};await write(record);
+      return {relPath:rel,operationId,creation:effect};
+    }catch(error){
+      const facts=effect??error.treeCreation??record.effect;
+      const published=Boolean(facts?.published||error.committed),unknown=Boolean(error.commitUnknown||error.code==='STORAGE_RESULT_UNKNOWN');
+      const retained={...record,phase:published||unknown?'needs-attention':'refused',effect:facts??null,error:{code:error.code??'TREE_CREATE_FAILED',message:error.message,committed:published,commitUnknown:unknown}};
+      try{await write(retained);}catch(journalError){error.journalError={code:journalError.code,message:journalError.message};}
+      if(published){error.committed=true;error.durability='uncertain';}
+      error.details={...error.details,operationId,destination:rel,recoveryKey:journal,creation:facts??null,...(published?{committed:true,durability:'uncertain'}:{}),...(unknown?{commitUnknown:true}:{})};
+      throw error;
+    }
+  }
   // Cross-project copy/cut: the payload's projectId is the destination and
   // sourceProjectId the origin. Destination entries always get a fresh
   // identity: no tags, change ledgers, provenance, drafts or other source
   // session material is copied or referenced across projects.
-  async performCross({ project, projectId, sourceProjectId, action, source, target }) {
-    requireCapability('safe-file-io');requireCapability('durable-persistence');
+  async assertCrossDestination(project,destination){
+    const storage=this.host.storage,id=project.id;
+    if((await new FileTags({storage,projectId:id,root:project.root}).all()).some(row=>inside(row.file.relPath,destination)))fail('目标位置保留有标签恢复资料，请使用其他名称。');
+    if((await new FileChanges({storage,projectId:id,root:project.root}).all()).some(row=>inside(row.relPath,destination)))fail('目标位置保留有修改历史，请使用其他名称。');
+    if((await storage.listProject(id,'provenance')).some(row=>inside(row.id,destination)))fail('目标位置保留有来源恢复资料，请使用其他名称。');
+    for await(const row of storage.recoveryRecords(id,{prefixes:['draft:','workspace:'],relPaths:[destination]}))if(row.value?.relPath&&inside(row.value.relPath,destination))fail('目标位置保留有草稿或工作面恢复资料，请先恢复或使用其他名称。');
+  }
+  async importClipboardEntry(project,item,destination,{beforeCommit=async()=>{}}={}){
+    if(process.platform!=='win32'||!this.io.recoverableTransfer)throw Object.assign(Error('Native clipboard import unavailable'),{code:'TREE_IMPORT_UNSUPPORTED'});
+    const storage=this.host.storage,projectId=project.id;await this.assertTreeAdmission(projectId);await this.assertCrossDestination(project,destination);
+    const {openWindowsClipboardSource}=await import('../platform/windows/clipboard-source.mjs');
+    const operationId=randomUUID(),journal='tree-operation:'+operationId,record={schema:1,kind:'record',transfer:true,clipboardImport:true,operationId,projectId,action:'copy',source:item.source,sourceIdentity:item.nativeIdentity,sourceVersion:item.identity,destination,relPath:destination,phase:'intent',createdAt:new Date().toISOString(),metadataPolicy:'fresh-target; source-unchanged'},sourceProject={root:path.dirname(item.source),id:null};
+    let revision=0,effect,lease;
+    const write=async(phase,extra={})=>{const value={...record,phase,effect:effect??null,...extra};if(Buffer.byteLength(JSON.stringify(value))>8*1024*1024)throw Object.assign(Error('复制恢复计划超过 8 MiB，已保留现场。'),{code:'TREE_RECOVERY_LIMIT'});const result=await storage.putRecovery(projectId,journal,value,{expectedRevision:revision});revision=result.revision;};
+    try{
+      await write('intent');lease=await openWindowsClipboardSource(item.source,item);
+      effect=await this.io.transferEntry(project,lease.relative,destination,{sourceProject,sourceLease:lease,action:'copy',operationId,
+        onPrepared:async facts=>{effect=facts;await write('prepared');},
+        beforeCommit:async()=>{await lease.verify();storage.assertActive(projectId);await beforeCommit();await this.assertCrossDestination(project,destination);},
+        onPublished:async facts=>{effect=facts;await write('published');await this.assertCrossDestination(project,destination);await write('complete');}});
+      return {relPath:destination,operationId,transfer:effect};
+    }catch(error){
+      effect=error.treeTransfer??effect;const published=Boolean(effect?.published||error.committed),unknown=Boolean(error.commitUnknown||error.code==='STORAGE_RESULT_UNKNOWN'),attention=published||unknown||effect?.retainedStage||effect?.stagingName||error.cleanupErrors?.length;
+      try{await write(attention?'needs-attention':'refused',{error:{code:error.code??'TREE_IMPORT_FAILED',message:String(error.message).slice(0,2000),committed:published,commitUnknown:unknown}});}catch(failure){
+        error.journalError={code:failure.code,message:failure.message};
+        // A lost final acknowledgement can leave the winner already complete.
+        // Keep that CAS winner intact and reserve an independent uncertainty
+        // receipt so cold admission cannot silently release this host's hold.
+        const hold='tree-operation:'+randomUUID();try{await storage.putRecovery(projectId,hold,{schema:1,kind:'record',clipboardImport:true,operationId,relatedRecoveryKey:journal,projectId,destination,relPath:destination,phase:'needs-attention',published,commitUnknown:unknown,retainedAt:new Date().toISOString()},{expectedRevision:0});error.uncertaintyRecoveryKey=hold;}catch(holdError){error.uncertaintyJournalError={code:holdError.code,message:holdError.message};}
+      }
+      if(published){error.committed=true;error.durability='uncertain';}error.details={...error.details,operationId,recoveryKey:journal,projectId,destination,transfer:effect??null};throw error;
+    }finally{lease?.close();}
+  }
+  async transferCrossEntry({project,sourceProject,projectId,sourceProjectId,action,source,destination},surfaceContext={}){
+    const storage=this.host.storage;
+    await this.assertTreeAdmission(sourceProjectId);await this.assertTreeAdmission(projectId);
+    await assertTreeCopySaved(this,sourceProject,[source]);await this.assertCrossDestination(project,destination);
+    const operationId=randomUUID(),journal='tree-operation:'+operationId,createdAt=new Date().toISOString();
+    const revisions=new Map([[sourceProjectId,0],[projectId,0]]);let globalRevision=0,effect,globalWritten=false;
+    const base={schema:1,kind:'record',transfer:true,crossTransfer:true,operationId,action,source,sourceProjectId,destination,destinationProjectId:projectId,createdAt,
+      sourceBinding:{instanceId:sourceProject.instanceId,identity:sourceProject.identity},destinationBinding:{instanceId:project.instanceId,identity:project.identity},
+      metadataPolicy:'fresh-destination-document-identities; source-metadata-and-recovery-retained',sourceDisposition:action==='cut'?'same-volume-native-move':'unchanged',
+      ...(surfaceContext.descriptors?.length?{surfaceRecovery:surfaceContext.descriptors}:{})};
+    let phase='intent';
+    const writePair=async(next,extra={})=>{
+      phase=next;
+      for(const id of [sourceProjectId,projectId]){
+        const value={...base,projectId:id,role:id===sourceProjectId?'source':'destination',relPath:id===sourceProjectId?source:destination,phase:next,effect:effect??null,...extra};
+        if(Buffer.byteLength(JSON.stringify(value))>8*1024*1024)throw Object.assign(Error('跨项目操作恢复资料超过 8 MiB，已保留现场。'),{code:'TREE_RECOVERY_LIMIT'});
+        const result=await storage.putRecovery(id,journal,value,{expectedRevision:revisions.get(id)});revisions.set(id,result.revision);
+      }
+    };
+    const writeGlobal=async(next,settled=false,extra={})=>{
+      const value={schema:1,kind:'record',crossTransfer:true,operationId,projectId,sourceProjectId,createdAt,action,source:source.slice(0,128),destination:destination.slice(0,128),phase:next,settled,
+        sourceInstanceId:sourceProject.instanceId,destinationInstanceId:project.instanceId,sourceIdentity:effect?.sourceIdentity??null,identity:effect?.identity??null,digest:effect?.digest??null,
+        published:effect?.published===true,sourceReceipt:next==='complete'?'acknowledged':null,destinationReceipt:next==='complete'?'acknowledged':null,...extra};
+      const result=await storage.putCrossTreeTransfer(journal,value,{expectedRevision:globalRevision});globalRevision=result.revision;globalWritten=true;
+    };
+    try{
+      // No effect starts until both local receipts and the common guard exist.
+      await writePair('intent');await writeGlobal('intent');
+      await surfaceContext.beforeCrossEffect?.(base);
+      effect=await this.io.transferEntry(project,source,destination,{sourceProject,action,operationId,
+        onPrepared:async facts=>{effect=facts;await writePair('prepared');await writeGlobal('prepared');},
+        beforeCommit:async()=>{storage.assertActive(sourceProjectId);storage.assertActive(projectId);await assertTreeCopySaved(this,sourceProject,[source]);await this.assertCrossDestination(project,destination);},
+        onPublished:async facts=>{
+          effect=facts;await writeGlobal('published');await writePair('published');
+          await this.assertCrossDestination(project,destination);
+          // Neither project's annotations, drafts or history are rewritten.
+          // The registry commits only after both scopes acknowledge the facts.
+          await writePair('acknowledged');await writeGlobal('complete',true);await writePair('complete');
+        }});
+      return {relPath:destination,sourceProjectId,operationId,transfer:effect,...(action==='cut'?{sourceFrom:source,moved:true}:{})};
+    }catch(error){
+      effect=error.treeTransfer??effect;const published=Boolean(effect?.published||error.committed),unknown=Boolean(error.commitUnknown||error.code==='STORAGE_RESULT_UNKNOWN');
+      const attention=published||unknown||effect?.retainedStage||error.cleanupErrors?.length;
+      const errorFacts={code:error.code??'TREE_TRANSFER_FAILED',message:String(error.message).slice(0,2000),committed:published,commitUnknown:unknown},journalErrors=[];
+      if(attention)try{await writeGlobal('needs-attention',false,{error:errorFacts});}catch(failure){journalErrors.push({scope:'catalog',code:failure.code,message:failure.message});}
+      try{await writePair(attention?'needs-attention':'refused',{error:errorFacts});}catch(failure){journalErrors.push({scope:'paired-receipts',code:failure.code,message:failure.message});}
+      if(!attention||journalErrors.length)try{await writeGlobal(journalErrors.length?'needs-attention':'refused',!journalErrors.length,{error:errorFacts});}catch(failure){journalErrors.push({scope:'catalog-final',code:failure.code,message:failure.message});}
+      if(journalErrors.length)error.journalErrors=journalErrors;
+      if(published){error.committed=true;error.durability='uncertain';}
+      error.details={...error.details,operationId,recoveryKey:journal,projectId,sourceProjectId,source,destination,phase,registryWritten:globalWritten,transfer:effect??null,
+        ...(published?{committed:true,durability:'uncertain',sourceRemoved:action==='cut'}:{}),...(unknown?{commitUnknown:true}:{})};
+      throw error;
+    }
+  }
+  async performCross({ project, projectId, sourceProjectId, action, source, target },surfaceContext={}) {
+    if(!this.io.recoverableCrossTransfer){requireCapability('safe-file-io');requireCapability('durable-persistence');}
     const sourceProject = await this.host.requireProject(sourceProjectId);
     const src = await this.locate(sourceProject, source);
     const stat = await fs.lstat(src);
+    this.io.requireTransferKind?.(stat);
     await this.assertTransferable(src, stat);
     const parent = await this.locate(project, target, true);
     const base = path.basename(src);
@@ -247,6 +427,7 @@ export class FileTreeOps {
     // refuse instead of snapshotting stale bytes.
     for await (const { id, value } of this.host.storage.recoveryRecords(sourceProjectId,{prefixes:['draft:']}))
       if (id.startsWith('draft:') && value?.relPath && inside(value.relPath, source) && value.status !== 'saved') fail('源文件存在未保存的草稿，请先打开并保存后再跨项目操作。');
+    if(this.io.recoverableCrossTransfer)return this.transferCrossEntry({project,sourceProject,projectId,sourceProjectId,action,source,destination},surfaceContext);
     let destinationCreated = false, sourceRemoved = false, copyComplete = false;
     try {
       // Reserve the destination, then fill it; exclusive flags keep another

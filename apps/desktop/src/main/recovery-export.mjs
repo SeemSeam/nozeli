@@ -1,10 +1,8 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import {randomUUID,createHash} from 'node:crypto';
-import {platformPersistence} from '../platform/shared/persistence.mjs';
+import {createHash} from 'node:crypto';
+import {createRecoveryExportIO} from './recovery-export-io.mjs';
 
 const changed=()=>Object.assign(Error('恢复记录或目标目录已变化；未发布导出文件，原始资料仍保留。'),{code:'RECOVERY_EXPORT_CHANGED'});
-const same=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
 export function recoveryExportName(id){return 'nozeli-recovery-'+String(id).replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,100)+'.json';}
 export function recoveryReference(value,{reference,receiptId}){
   let item;
@@ -14,35 +12,33 @@ export function recoveryReference(value,{reference,receiptId}){
   if(!item||! /^[a-f0-9]{64}$/.test(item.digest??''))throw Object.assign(Error('保留材料不属于所选恢复记录。'),{code:'RECOVERY_REFERENCE_DENIED'});
   return item;
 }
-export async function exportNativeChunks({dialog,scope,defaultName,readChunk,expectedTotal,validateChunk=()=>{},finalize=async()=>{}}){
-  platformPersistence.requireSupported();
+export async function exportNativeChunks({dialog,scope,defaultName,readChunk,expectedTotal,validateChunk=()=>{},finalize=async()=>{},io=createRecoveryExportIO()}){
+  io.requireSupported();
   if(!Number.isSafeInteger(expectedTotal)||expectedTotal<0)throw changed();
   const generation=scope.generation;
   const alive=()=>!scope.dead&&scope.generation===generation;
   const choice=await dialog.showSaveDialog(scope.win,{title:'导出完整原始记录（不会覆盖已有文件）',defaultPath:defaultName});
   if(choice.canceled||!choice.filePath)return {cancelled:true};
   if(!alive())throw changed();
-  const target=path.resolve(choice.filePath),directory=path.dirname(target),parent=await fs.lstat(directory);
-  if(!parent.isDirectory()||parent.isSymbolicLink()||await fs.realpath(directory)!==directory)throw changed();
-  const temporary=path.join(directory,'.nozeli-recovery-'+randomUUID()+'.tmp');let output,owned;
+  let output;
   try{
-    output=await fs.open(temporary,'wx',0o600);owned=await output.stat();let offset=0;
+    output=await io.open(path.resolve(choice.filePath));let offset=0;
     while(offset<expectedTotal){
       const chunk=await readChunk(offset),bytes=Buffer.from(chunk.bytes);
       if(!alive()||chunk.offset!==offset||chunk.total!==expectedTotal||chunk.nextOffset!==offset+bytes.length||!bytes.length||bytes.length>64*1024)throw changed();
       await validateChunk(chunk,offset);
-      let written=0;while(written<bytes.length){const result=await output.write(bytes,written,bytes.length-written,null);if(!result.bytesWritten)throw changed();written+=result.bytesWritten;}
+      await output.write(bytes);
       offset=chunk.nextOffset;
     }
-    await finalize({total:expectedTotal,scope});await platformPersistence.syncFileHandle(output);await output.close();output=null;
-    const current=await fs.lstat(directory);
-    if(!same(parent,current)||current.isSymbolicLink()||await fs.realpath(directory)!==directory||!alive())throw changed();
-    await fs.link(temporary,target);
-    try{await platformPersistence.syncDirectory(directory);}catch(error){error.committed=true;error.durability='uncertain';throw error;}
-    return {exported:true,byteLength:expectedTotal};
+    await finalize({total:expectedTotal,scope});await output.sync();
+    if(!alive())throw changed();
+    const facts=await output.publish({validate:()=>{if(!alive())throw changed();}});
+    return {exported:true,byteLength:expectedTotal,...facts};
+  }catch(error){
+    if(error.committed||error.commitUnknown)error.details={...error.details,...(error.committed?{committed:true,durability:error.durability??'uncertain'}:{}),...(error.commitUnknown?{commitUnknown:error.commitUnknown}:{})};
+    throw error;
   }finally{
     await output?.close();
-    if(owned){const stat=await fs.lstat(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});if(stat&&same(owned,stat))await fs.unlink(temporary);}
   }
 }
 export async function exportRecoveryRecord({storage,dialog,scope,projectId,id,revision,version,reference,receiptId}){

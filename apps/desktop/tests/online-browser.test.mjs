@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import path from 'node:path';
 import {OnlineBrowserManager} from '../src/main/online-browser.mjs';
 import {normalizeWebUrl, webTitle} from '../src/domain/web-url.mjs';
 import {WorkspaceNative} from '../src/main/workspace-native.mjs';
@@ -175,7 +176,7 @@ test('owned website downloads use native Save As without implicit filesystem wri
     item.setSavePath = () => assert.fail('must require the native Save As dialog');
     ses.emit('will-download',{preventDefault() { prevented = true; }},item,wc);
     assert.equal(prevented,false);
-    assert.deepEqual(options,{title:'下载网站文件',defaultPath:'/user/downloads/report_.txt',properties:['showOverwriteConfirmation']});
+    assert.deepEqual(options,{title:'下载网站文件',defaultPath:path.join(h.manager.downloadDirectory,'report_.txt'),properties:['showOverwriteConfirmation']});
     item.emit('done',{},state);
     assert.equal(h.events.at(-1).value.download,state === 'interrupted' ? 'error' : state);
   }

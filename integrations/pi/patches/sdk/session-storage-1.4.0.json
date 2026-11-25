@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "package": "@earendil-works/pi-coding-agent",
+  "version": "1.4.0",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "dist/core/session-manager.js",
+      "upstreamSha256": "046b6a1109ac3f0ed893bb85bf0648709362fa926a5da75761216cf2fcf9d926",
+      "sha256": "ba047b0725c8cf1bb283ea6a88390a3c31708a2a340dc5154e37dc44f68d3646",
+      "replacements": [
+        {
+          "before": "    persist;\n    flushed = false;",
+          "after": "    persist;\n    storage;\n    flushed = false;"
+        },
+        {
+          "before": "/** Exported for testing */\nexport function loadEntriesFromFile(filePath) {\n    const resolvedFilePath = normalizePath(filePath);\n    if (!existsSync(resolvedFilePath))\n        return [];",
+          "after": "function parseStoredSessionEntries(filePath, content, storage) {\n    const entries = parseSessionEntries(content);\n    if (entries.length === 0)\n        return entries;\n    const header = entries[0];\n    if (header.type !== \"session\" || typeof header.id !== \"string\") {\n        return [];\n    }\n    if (content && !content.endsWith(\"\\n\"))\n        storage.append(filePath, \"\\n\");\n    return entries;\n}\n/** Exported for testing */\nexport function loadEntriesFromFile(filePath, storage) {\n    const resolvedFilePath = normalizePath(filePath);\n    if (storage) {\n        const content = storage.read(resolvedFilePath);\n        return content === undefined ? [] : parseStoredSessionEntries(resolvedFilePath, content, storage);\n    }\n    if (!existsSync(resolvedFilePath))\n        return [];"
+        },
+        {
+          "before": "    constructor(cwd, sessionDir, sessionFile, persist, newSessionOptions, preloadedFileEntries) {\n        this.cwd = resolvePath(cwd);\n        this.sessionDir = normalizePath(sessionDir);\n        this.persist = persist;\n        if (persist && this.sessionDir && !existsSync(this.sessionDir)) {\n            mkdirSync(this.sessionDir, { recursive: true });\n        }",
+          "after": "    constructor(cwd, sessionDir, sessionFile, persist, newSessionOptions, preloadedFileEntries, storage) {\n        if (storage && (typeof storage.read !== \"function\" || typeof storage.write !== \"function\" || typeof storage.append !== \"function\")) {\n            throw new TypeError(\"Session persistence storage requires read, write and append functions\");\n        }\n        this.cwd = resolvePath(cwd);\n        this.sessionDir = normalizePath(sessionDir);\n        this.persist = persist;\n        this.storage = storage;\n        if (persist && !storage && this.sessionDir && !existsSync(this.sessionDir)) {\n            mkdirSync(this.sessionDir, { recursive: true });\n        }"
+        },
+        {
+          "before": "    _setSessionFile(sessionFile, preloadedFileEntries) {\n        this.sessionFile = resolvePath(sessionFile);\n        if (existsSync(this.sessionFile)) {\n            const entries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);\n            // If file was empty, initialize it with a valid session header. If it was\n            // non-empty but did not parse as a pi session, fail without modifying it.\n            if (entries.length === 0) {\n                const explicitPath = this.sessionFile;\n                if (statSync(explicitPath).size > 0) {\n                    throw new Error(`Session file is not a valid ${APP_NAME} session: ${explicitPath}`);\n                }",
+          "after": "    _setSessionFile(sessionFile, preloadedFileEntries) {\n        this.sessionFile = resolvePath(sessionFile);\n        const storedContent = this.storage?.read(this.sessionFile);\n        if (this.storage ? storedContent !== undefined : existsSync(this.sessionFile)) {\n            const entries = preloadedFileEntries ??\n                (this.storage\n                    ? parseStoredSessionEntries(this.sessionFile, storedContent, this.storage)\n                    : loadEntriesFromFile(this.sessionFile));\n            // If file was empty, initialize it with a valid session header. If it was\n            // non-empty but did not parse as a pi session, fail without modifying it.\n            if (entries.length === 0) {\n                const explicitPath = this.sessionFile;\n                if (this.storage ? storedContent.length > 0 : statSync(explicitPath).size > 0) {\n                    throw new Error(`Session file is not a valid ${APP_NAME} session: ${explicitPath}`);\n                }"
+        },
+        {
+          "before": "    _rewriteFile() {\n        if (!this.persist || !this.sessionFile)\n            return;\n        const fd = openSync(this.sessionFile, \"w\");",
+          "after": "    _rewriteFile() {\n        if (!this.persist || !this.sessionFile)\n            return;\n        if (this.storage) {\n            this.storage.write(this.sessionFile, this.fileEntries.map((entry) => `${JSON.stringify(entry)}\\n`).join(\"\"), { createOnly: false });\n            return;\n        }\n        const fd = openSync(this.sessionFile, \"w\");"
+        },
+        {
+          "before": "        if (!this.flushed) {\n            if (!this._hasConversation())\n                return;\n            const fd = openSync(this.sessionFile, \"wx\");\n            try {\n                for (const e of this.fileEntries) {\n                    writeFileSync(fd, `${JSON.stringify(e)}\\n`);\n                }\n            }\n            finally {\n                closeSync(fd);\n            }\n            this.flushed = true;\n        }\n        else {\n            appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\\n`);\n        }",
+          "after": "        if (!this.flushed) {\n            if (!this._hasConversation())\n                return;\n            if (this.storage) {\n                this.storage.write(this.sessionFile, this.fileEntries.map((e) => `${JSON.stringify(e)}\\n`).join(\"\"), { createOnly: true });\n                this.flushed = true;\n                return;\n            }\n            const fd = openSync(this.sessionFile, \"wx\");\n            try {\n                for (const e of this.fileEntries) {\n                    writeFileSync(fd, `${JSON.stringify(e)}\\n`);\n                }\n            }\n            finally {\n                closeSync(fd);\n            }\n            this.flushed = true;\n        }\n        else if (this.storage) {\n            this.storage.append(this.sessionFile, `${JSON.stringify(entry)}\\n`);\n        }\n        else {\n            appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\\n`);\n        }"
+        },
+        {
+          "before": "    isPersisted() {\n        return this.persist;\n    }",
+          "after": "    isPersisted() {\n        return this.persist;\n    }\n    /** Host-injected persistence storage backing this instance, if any. */\n    getPersistence() {\n        return this.storage;\n    }"
+        },
+        {
+          "before": "    static create(cwd, sessionDir, options) {\n        const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);\n        return new SessionManager(cwd, dir, undefined, true, options);\n    }",
+          "after": "    static create(cwd, sessionDir, options, storage) {\n        const dir = sessionDir ? normalizePath(sessionDir) : (storage ? getDefaultSessionDirPath(cwd) : getDefaultSessionDir(cwd));\n        return new SessionManager(cwd, dir, undefined, true, options, undefined, storage);\n    }"
+        },
+        {
+          "before": "    static open(path, sessionDir, cwdOverride) {\n        const resolvedPath = resolvePath(path);\n        let header = null;\n        let preloadedFileEntries;\n        if (cwdOverride === undefined && existsSync(resolvedPath)) {",
+          "after": "    static open(path, sessionDir, cwdOverride, storage) {\n        const resolvedPath = resolvePath(path);\n        let header = null;\n        let preloadedFileEntries;\n        if (storage) {\n            preloadedFileEntries = loadEntriesFromFile(resolvedPath, storage);\n            const firstEntry = preloadedFileEntries[0];\n            header = firstEntry?.type === \"session\" ? firstEntry : null;\n        }\n        else if (cwdOverride === undefined && existsSync(resolvedPath)) {"
+        },
+        {
+          "before": "        return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);",
+          "after": "        return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries, storage);"
+        },
+        {
+          "before": "    static forkFrom(sourcePath, targetCwd, sessionDir, options) {\n        const resolvedSourcePath = resolvePath(sourcePath);\n        const resolvedTargetCwd = resolvePath(targetCwd);\n        const sourceEntries = loadEntriesFromFile(resolvedSourcePath);",
+          "after": "    static forkFrom(sourcePath, targetCwd, sessionDir, options, storage) {\n        const resolvedSourcePath = resolvePath(sourcePath);\n        const resolvedTargetCwd = resolvePath(targetCwd);\n        const sourceEntries = loadEntriesFromFile(resolvedSourcePath, storage);"
+        },
+        {
+          "before": "        const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);\n        if (!existsSync(dir)) {\n            mkdirSync(dir, { recursive: true });\n        }",
+          "after": "        const dir = sessionDir ? normalizePath(sessionDir) : (storage ? getDefaultSessionDirPath(resolvedTargetCwd) : getDefaultSessionDir(resolvedTargetCwd));\n        if (!storage && !existsSync(dir)) {\n            mkdirSync(dir, { recursive: true });\n        }"
+        },
+        {
+          "before": "        writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\\n`, { flag: \"wx\" });\n        // Copy all non-header entries from source\n        for (const entry of sourceEntries) {\n            if (entry.type !== \"session\") {\n                appendFileSync(newSessionFile, `${JSON.stringify(entry)}\\n`);\n            }\n        }\n        return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);",
+          "after": "        if (storage) {\n            storage.write(newSessionFile, [`${JSON.stringify(newHeader)}\\n`, ...sourceEntries.filter((entry) => entry.type !== \"session\").map((entry) => `${JSON.stringify(entry)}\\n`)].join(\"\"), { createOnly: true });\n        }\n        else {\n            writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\\n`, { flag: \"wx\" });\n            // Copy all non-header entries from source\n            for (const entry of sourceEntries) {\n                if (entry.type !== \"session\") {\n                    appendFileSync(newSessionFile, `${JSON.stringify(entry)}\\n`);\n                }\n            }\n        }\n        return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true, undefined, undefined, storage);"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/session-manager.d.ts",
+      "upstreamSha256": "2288b69c82272311dc877da61ff2057bb04df49038ddef7eef6c8753c09f5313",
+      "sha256": "0619ecb7022c6fceb506a45caf481aa0b12e6333c838707bbd0812214b93da5a",
+      "replacements": [
+        {
+          "before": "/** Exported for testing */\nexport declare function loadEntriesFromFile(filePath: string): FileEntry[];",
+          "after": "/**\n * Host-owned persistence for session JSONL files. When a SessionManager is\n * created with it, every session-file read, create, rewrite and append goes\n * through this storage instead of the filesystem. The file paths stay\n * unchanged: they remain the keys the storage resolves.\n */\nexport interface SessionPersistenceStorage {\n    /** Full file content, or undefined when the file does not exist. */\n    read(file: string): string | undefined;\n    /** Write the full file content. createOnly mirrors exclusive creation (\"wx\"); otherwise rewrite in place. */\n    write(file: string, content: string, options: { createOnly: boolean }): void;\n    /** Append content at the end of the file. */\n    append(file: string, content: string): void;\n}\n/** Exported for testing */\nexport declare function loadEntriesFromFile(filePath: string, storage?: SessionPersistenceStorage): FileEntry[];"
+        },
+        {
+          "before": "    private persist;\n    private flushed;",
+          "after": "    private persist;\n    private storage;\n    private flushed;"
+        },
+        {
+          "before": "    isPersisted(): boolean;",
+          "after": "    isPersisted(): boolean;\n    /** Host-injected persistence storage backing this instance, if any. */\n    getPersistence(): SessionPersistenceStorage | undefined;"
+        },
+        {
+          "before": "    static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager;",
+          "after": "    static create(cwd: string, sessionDir?: string, options?: NewSessionOptions, storage?: SessionPersistenceStorage): SessionManager;"
+        },
+        {
+          "before": "    static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager;",
+          "after": "    static open(path: string, sessionDir?: string, cwdOverride?: string, storage?: SessionPersistenceStorage): SessionManager;"
+        },
+        {
+          "before": "    static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager;",
+          "after": "    static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string, options?: NewSessionOptions, storage?: SessionPersistenceStorage): SessionManager;"
+        }
+      ]
+    },
+    {
+      "path": "dist/core/agent-session-runtime.js",
+      "upstreamSha256": "928b6528bb17d26273af8f7023a4f98e5f440d5896a4280d060b9b3e1f9a6882",
+      "sha256": "bf2cd9f9095ee1809c82383a6f1fff2e7332fc034d048401c00f701cc83f8aad",
+      "replacements": [
+        {
+          "before": "        const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);",
+          "after": "        const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride, this.session.sessionManager.getPersistence());"
+        },
+        {
+          "before": "        const sessionManager = this.session.sessionManager.isPersisted()\n            ? SessionManager.create(this.cwd, sessionDir)\n            : SessionManager.inMemory(this.cwd);",
+          "after": "        const sessionManager = this.session.sessionManager.isPersisted()\n            ? SessionManager.create(this.cwd, sessionDir, undefined, this.session.sessionManager.getPersistence())\n            : SessionManager.inMemory(this.cwd);"
+        },
+        {
+          "before": "            if (!targetLeafId) {\n                const sessionManager = SessionManager.create(this.cwd, sessionDir);",
+          "after": "            if (!targetLeafId) {\n                const sessionManager = SessionManager.create(this.cwd, sessionDir, undefined, this.session.sessionManager.getPersistence());"
+        },
+        {
+          "before": "            if (!existsSync(currentSessionFile)) {\n                throw new Error(\"This session has not been saved yet. Send a message before cloning or forking it.\");\n            }\n            const sessionManager = SessionManager.open(currentSessionFile, sessionDir);",
+          "after": "            const forkPersistence = this.session.sessionManager.getPersistence();\n            if (forkPersistence ? forkPersistence.read(currentSessionFile) === undefined : !existsSync(currentSessionFile)) {\n                throw new Error(\"This session has not been saved yet. Send a message before cloning or forking it.\");\n            }\n            const sessionManager = SessionManager.open(currentSessionFile, sessionDir, undefined, forkPersistence);"
+        }
+      ]
+    }
+  ]
+}

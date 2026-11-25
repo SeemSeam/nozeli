@@ -14,17 +14,33 @@ async function fixture(t) {
   return root;
 }
 
-test('assertBundledExecutable rejects links, specials and missing assets with the caller violation', async t => {
+test('assertBundledExecutable rejects non-files and missing assets with the caller violation', async t => {
   const root = await fixture(t);
   const real = path.join(root, 'node');
-  const link = path.join(root, 'node-link');
   await fs.writeFile(real, '#!/bin/sh\n', { mode: 0o755 });
-  await fs.symlink(real, link);
   const violation = file => Object.assign(new Error('private asset broken: ' + file), { code: 'ASSET_BROKEN' });
   await assert.equal(await assertBundledExecutable(real, { violation }), real);
-  await assert.rejects(assertBundledExecutable(link, { violation }), error => error.code === 'ASSET_BROKEN' && error.message.endsWith('node-link'));
   await assert.rejects(assertBundledExecutable(path.join(root, 'absent'), { violation }), error => error.code === 'ASSET_BROKEN');
   await assert.rejects(assertBundledExecutable(root, { violation }), error => error.code === 'ASSET_BROKEN');
+});
+
+test('assertBundledExecutable rejects file symlinks when the host permits creating them', async t => {
+  const root = await fixture(t), real = path.join(root, 'node'), link = path.join(root, 'node-link');
+  await fs.writeFile(real, 'synthetic executable', { mode: 0o755 });
+  try { await fs.symlink(real, link, 'file'); }
+  catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('Windows file-symlink creation requires a privilege unavailable to this ordinary-user test; junction coverage is separate');
+    throw error;
+  }
+  await assert.rejects(assertBundledExecutable(link), /missing or not a regular file/);
+});
+
+test('assertBundledExecutable rejects a native Windows junction without elevated privileges', { skip: process.platform !== 'win32' }, async t => {
+  const root = await fixture(t), target = path.join(root, 'target'), link = path.join(root, 'junction');
+  await fs.mkdir(target);
+  await fs.symlink(target, link, 'junction');
+  assert.equal((await fs.lstat(link)).isSymbolicLink(), true);
+  await assert.rejects(assertBundledExecutable(link), /missing or not a regular file/);
 });
 
 test('assertBundledExecutable follow mode surfaces transport errors and keeps relocatable semantics', async t => {
@@ -37,15 +53,17 @@ test('assertBundledExecutable follow mode surfaces transport errors and keeps re
   await assert.rejects(assertBundledExecutable(root, { follow: true, violation }), error => error.message === 'Bundled Git executable is not a file: ' + root);
 });
 
-test('executable access follows the per-platform rule: F_OK on Windows, X_OK elsewhere', async t => {
+test('executable access exercises the host permission model without emulating POSIX on Windows', async t => {
   const root = await fixture(t);
   const file = path.join(root, 'tool');
   await fs.writeFile(file, 'x', { mode: 0o644 });
-  await assertExecutableAccess(file, { platform: 'win32' });
-  await assert.rejects(assertExecutableAccess(file, { platform: 'linux' }), error => error.code === 'EACCES');
-  await fs.chmod(file, 0o755);
-  await assertExecutableAccess(file, { platform: 'linux' });
-  await assertExecutableAccess(file, { platform: 'darwin' });
+  if (process.platform === 'win32') await assertExecutableAccess(file);
+  else {
+    await assert.rejects(assertExecutableAccess(file), error => error.code === 'EACCES');
+    await fs.chmod(file, 0o755);
+    await assertExecutableAccess(file);
+  }
+  await assert.rejects(assertExecutableAccess(path.join(root, 'absent')), error => error.code === 'ENOENT');
 });
 
 test('bundled executable naming is per-platform and manifest-declared names win', () => {

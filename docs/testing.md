@@ -1,3 +1,51 @@
+
+## 2026-11-18 Windows 本地整合验证（限定通过，未公开发布）
+
+隔离集成树 `/var/tmp/nozeli-windows-beta8-local-20261118`：保留本机 dirty 管理助手开发和 VM 原源码；旧 main 六个独有提交经逐项静态比较确认已由 beta8 包含／替代，先合发行基线，再三方合入 VM 完整导出。没有远端推送或公开发布。
+
+- `node integrations/pi/build.mjs`：实际 SDK storage patch 与 Pi bundle 构建通过，重新生成最终源码／产物 manifest。
+- `node tools/build-renderer.mjs`（apps/desktop）：构建通过；发现重复 macOS script key，后续已删除重复入口。
+- 定向共享回归首轮：272 tests，260 pass／6 fail／6 skip。五项 TeX 真实工具链场景失败，本机缺 latexmk／xelatex／pdflatex，包含等待 compiler 启动超时，不据此宣称真实编译通过。另一个失败是 Windows libuv 长 home 断言错误用于 Linux；已改为跨平台真实 homedir 语义、保留 Windows ENOBUFS 回归。
+- 修正后 SDK patch＋TeX manual/persist/watcher 四文件：70/70，通过、零跳过。首轮原件 `artifact://511`，后轮 `artifact://521`；重叠计数不累计为全新总数。
+- release checker fixtures：0 failures；Node runtime／CI plan 36 tests，29 pass／7 explicit platform skips，原件 `artifact://525`。只运行本地 fixture remote，不访问或推送产品远端。
+- Linux X11 实际 Electron：`NOZELI_OZONE=x11 node tests/desktop-ci-smoke.mjs`，5 项通过，原生编辑与磁盘保存、保留期快速项目切换、正常关闭及冷恢复零模型重放；两次 exit0，errors=[]。原件 `/tmp/nozeli-ci-smoke/smoke-FrZEOU/report.json`，实际编辑截图已查看。不是 Windows/macOS 运行证明。
+- 仓库 metadata/link 检查 0 failures；发行 prepare 0 technical failures；六项人工分发义务保持 pending。首次断链和历史版本匹配错误已修；集成树补齐原有 ignored PPTist upstream 来源归档，不修改许可证或审计签收。
+- 追加 Controller／review lifecycle／adoption history／execution-copy／progress／ProviderSettings／Mac updater 纯逻辑七文件：121 tests，119 pass／2 Windows-only skips／0 fail；原件 `artifact://536`。包含实际 Git 采用、外部赢家、暂存保护、冷开决定与名额保留；Mac updater 逻辑不是本轮 Mac 实机证明。
+
+Windows 最终运行输入固定 `95d14e594169fd9799b46f3ce12a1cc1562ec768`，真实 Windows x64 从干净源码新编原生文件／进程组件、Pi、PPTist与renderer，`package-windows-release.mjs` exit0。原生工具链 Node22.23.4／node-gyp12.4.0／Python3.12.10／VS2022 17.14／MSVC14.44／SDK26100，保留 Spectre、CFG、SDL。首次 CRLF patch／esbuild cwd 导致 manifest drift 已由本提交修复；Windows 重建 manifest 与 Linux 同为 `cac26d8cf41638d9d7e1b8816f2f30517377d94182d8b50789f8ad045a7c0fa4`，构建后源码干净、锁文件未改。
+
+最终 ZIP：`C:/NozeliValidation/release-95d14e5-20261118/Nozeli-0.1.0-beta.8-windows-x64.zip`，415749370 bytes，SHA256 `71d6271a26dbf875266d84012c4c64336df59e54ff1a969bf608464138553bf1`。独立解压核对21943文件，missing／extras／digest mismatch均0；10 native产物、35 native输入来源绑定同提交；校验清单全匹配，实际包内Node/Electron加载原生桥及Git2.53.0.windows.4运行通过。
+
+实际解压 Nozeli.exe 的可见 GUI 7 项通过：原生Markdown、Unicode选区／本地批注零派工、真实输入Ctrl+S精确磁盘保存、正常关闭、外部赢家冲突不覆盖、重启原草稿／锚点／冻结材料保持、最后关闭保留冲突；两次exit0、errors=[]。不是物理IME／多屏。GUI原件 `C:/NozeliValidation/evidence/fixed-gui/report.json`。
+
+同一最终解压包限定原生业务／安全14/14、零跳过：bundled Node与Electron各3项默认托管入口（前台交接／主控派工／Worker修改／人工候选审阅／显式接受／真实Git／完整归档与quota释放／正常冷开零重放／未知旧host拒绝）；短生命周期Job／普通嵌套目录ACL3项；实际SQLite CAS外部赢家和丢回执UNKNOWN2项；catalog修订／ACL drift／postcommit custody拒绝3项。全部exit0，无付费模型，业务Provider仅确定性回环HTTP。原件 `C:/NozeliValidation/evidence`，Linux侧脱敏完整回执 `/home/bfly/VirtualMachines/nozeli-win11-x64/project-migration/merged-windows-final-proof-95d14e5.json`。
+
+首故障（shell路径引用、离线cache缺包、N盘ENOSPC、跨平台manifest drift）均保留，未靠旧产物或放宽干净门通过。只在C盘新验证目录分配，未删除N盘现场、改日常安装／真实profile、重放旧任务或改productionReady/goalComplete。macOS本轮未运行；完整W0–W5、签名／SmartScreen、自动更新、断电及物理设备资格仍不声明通过。
+
+## Linux 本地启动器：输入法环境
+
+本机启用 `linux-ime-local-01`，从缺少 IME 变量的环境启动，确认新版 X11「选择项目」可见。启动器在 `exec` 前补齐桌面会话的 Fcitx 三项变量，显式值（包括空值）不被覆盖。Worker 输入框的合成 IME Enter 不误发送回归通过；隔离实包的前台对话未打开，X11 文件筛选尝试也未观察到真实组合事件或汉字落字，不能据此签收 Fcitx 端到端输入。原安装 `append-discussion-ingress-local-01` 可回退。
+
+## 项目前台工作记忆
+
+**可操作 Demo（Linux，已安装 Nozeli）**：在 `apps/desktop` 运行 `node tests/desktop-frontdesk-work-memory-live.mjs --demo`。它打开隔离的「离线批注 · 工作记忆 Demo」项目并定位到继承弹窗。勾选两条来源 → 开始整理 → 刷新列表 → 修改摘要 → 确认采纳；关闭弹窗后发送预填问题，前台通过工作记忆工具读回采纳结果。两条日志均为合成示例（项目内 CCB 布局的 Codex 决定、独立 OMP 待办），使用本地脚本模型，不读取日常配置或真实日志。退出 Demo 主窗口会清理隔离数据。`--demo-check` 自动走完同一流程，并在冷重开后核对读回的摘要。
+`--demo-check` 已在 Linux X11 的 `current/nozeli` 通过：合并两条示例、编辑采纳、冷重开后读回编辑文字，Work 为 0。
+
+**斜杠技能 Demo（Linux 源码）**：在 `apps/desktop` 先运行 `npm run build:renderer`，再运行 `node tests/desktop-frontdesk-work-memory-live.mjs --demo --demo-source`。`/` 或 `/skills` 列出在当前前台可用的技能及简述。选择 `继承工作记忆` 打开原来源选择器；其他技能填入命令，由用户另行发送。`--demo-check --demo-source` 验证描述、键盘选择、不自动发送、显式技能交付以及采纳后的冷重开读回。源码 Demo 复用本机安装的私有 Pi 运行时，仍使用独立配置与本地脚本模型。
+
+Linux X11 源码端到端通过：列表含五项简述；显式发送后本地模型收到项目分析技能正文；斜杠打开继承弹窗不调用模型且保留草稿，采纳后冷重开读回已审阅摘要，Work 为 0。未替换日常安装。
+
+新版「继承工作记忆」已在 Linux X11 安装包 `frontdesk-memory-redesign-local-01` 验证并激活。`node tests/desktop-frontdesk-work-memory-live.mjs --demo-check --demo-slash` 验证斜杠入口、两步切换、无匹配筛选、两条来源整理、核对覆盖范围后的摘要编辑/采纳及冷重开读回。用的是合成日志和回环脚本模型；原安装保留为 `previous`。
+
+- Linux x64：四种来源冻结适配器与项目前台隔离、草案／采纳、去重、冷重开读取的定向回归共 78 项通过。
+- 桌面验收入口：`NOZELI_TEST_OMP=/absolute/path/to/omp node tests/desktop-frontdesk-work-memory-live.mjs`。用真实独立 OMP 18.20.0、Nozeli 版本库的隔离文件快照及回环脚本模型；不上传会话，不代表远端模型理解能力或既有日常项目迁移。Codex、Claude Code 和独立 Pi 仅验证了适配器夹具；macOS 和 Windows 未验证。
+- 候选包 `frontdesk-memory-local-2026-11-18T03-05-21-688Z`（Linux X11）端到端通过：实际菜单审阅并修改摘要，确认没有增加模型请求或作业；正常退出并重开同一项目后，保留草稿及 Frontdesk 原线程，新的前台回合读到用户编辑的摘要与同一 digest 的 OMP 冻结证据。无 Work，源日志及 README 哈希不变。测试目录：`/tmp/nozeli-memory-live-BrmALP`。
+- 本地安装后以 `current/nozeli` 和独立配置再次跑通同一流程（`/tmp/nozeli-memory-live-fSKbzu`）；回执包含 `reviewed-summary`、`frozen-omp-evidence`，Work 数量为 0。安装器保留 `2026-11-17T14-19-27-427Z` 为 `previous`。未向日常项目写入测试记忆。
+- 会话选择版：Linux x64 定向回归 90 项通过。测试入口另支持 `NOZELI_TEST_MEMORY_PROJECT` 和 `NOZELI_TEST_MEMORY_IDS`（两个逗号分隔的会话 ID）。真实日志验收需在私有挂载命名空间内提供同一 canonical `cwd` 的可写隔离项目，并只读挂载原 `sessions` 目录；这是测试隔离手段，不是产品依赖。不要用日常配置执行测试采纳。
+- Linux X11 候选 `frontdesk-memory-local-2026-11-18T03-44-39-081Z`：真实独立 OMP 测试会话通过原有单来源整理、审阅采纳和冷重开读取；回执 `reviewed-summary`、`frozen-omp-evidence`，Work 为 0。这不是既有 CCB 日志或真实模型理解的验收。
+- Linux X11 候选 `frontdesk-memory-local-2026-11-18T03-51-17-533Z`：从真实项目的 CCB 只读日志中选取 Frontdesk Codex 和 Reviewer OMP 各一条，分别冻结 7 和 14 条文本记录。列表默认勾选最新可选项；手选两条后，独立整理回合只暴露工作记忆工具。用户审阅编辑、确认采纳未增加模型请求或作业，冷重开后同一 Frontdesk 线程读回摘要与两份来源，未发草稿保留，Work 为 0，两个原日志 SHA-256 不变。该候选在草稿准入修正后另通过 64 项受影响回归；脚本模型只验证协议，不验证真实模型理解。
+- Linux X11 安装后以 `current/nozeli` 和独立配置再次通过同一真实 CCB 双来源流程，回执 `reviewed-summary`、`first-real-source`、`second-real-source`，组合证据 digest `fbd127ae4a6fdcd4cef0f496890e50b94f2850554f3bee9ae2b0dcdb993d90b7` 与候选验收一致。原日志哈希不变，Work 为 0，日常配置未采纳历史；`previous` 保留 `frontdesk-memory-local-2026-11-18T03-05-21-688Z`。Windows、macOS 均未实测。
+
 ## Beta4发布整合（2026-11-12，授权公开预发行；精确提交CI／包验收待完成）
 
 - 用户明确要求将目前所有修改整理发布，并在重新披露六项未签收分发义务及Mac ad-hoc／未公证后选择授权公开beta.4预发行；不沿用Beta3例外，不标stable/latest，不替换日常安装。机器人PR #29／28／25／24／22／6已按授权关闭并保留分支及讨论，人工#15未动；关闭不等同合入依赖或安全签收。
@@ -95,6 +143,31 @@
 - Linux 实测限定；回环发行包不等于公网全量更新签收。不写用户项目／日常安装，不清理个人更新缓存，不移动已发布 tag。现有 0775 安装尚未收紧权限且运行旧代码，不能宣称用户日常更新已恢复。macOS／Windows 自动安装仍不支持。
 
 # 测试套件与运行边界
+
+2026-11-11 Windows v50：原owner home目录身份/ACL及父链在首次resume前交给helper，真实host退出后仍保持并约束cold journal/归档；修复伪造home重连在拒绝前的接收HANDLE清理，重复拒绝回归通过。完整恢复材料生命周期、归档协调、资源释放及默认入口仍未完成，见[本批记录](windows-alpha6-home-custody.md)。下文为历史。
+
+2026-11-10 Windows v49：原inspection持久归档完整观察到的owner home、原helper三路stdio和账本；完整集合CAS intent/ready、独立摘要复核、并发赢家/丢回复UNKNOWN，原home/helper保留。正常归档后实际Controller启动和warm停止通过。原home全生命周期custody、完整恢复闭包、归档协调、资源释放及默认入口仍未完成；实际矩阵/包见[本批记录](windows-alpha6-cold-evidence-archive.md)。下文为历史。
+
+2026-11-10 Windows v48：两次真实host死亡后第三共享Controller接管并启动两个resident；完整跨代原helper/launch-set/stdio/source与历史回执核验，旧retired Worker行及revision、paused/候选/草稿保持且零旧输入重放。源码/独立解压Node各8模式、Electron各3，详细实际矩阵与新包见[本批记录](windows-alpha6-repeat-cold.md)。旧资源释放、pending/default入口、完整W0–W5仍未完成；beta.1 main尚未整合。下文为历史阶段。
+
+2026-11-10 Windows 单次冷接管：原受限anchor完整custody连续转移，一次性原inspection token和完整集合CAS接续精确原退休代次；共享Controller核对旧provider、竞争只一赢家并启动两个新resident，旧Worker interrupted／review／草稿保留且零旧输入重放。第二轮cold、资源释放、pending协调、默认入口与完整W0–W5仍未完成。原生文件／进程及renderer实编，新独立包与实际矩阵见[本批记录](windows-alpha6-cold-handoff.md)。远端main已推进beta.1增量，当前包仍固定alpha.6＋PR27。下文为历史阶段。
+
+2026-11-10 Windows 原 host/owner 记录冷退休：精确 business hold 与原 anchor 领取后，同一 SQLite 事务比较五个完整集合，单调增加 host/owner 修订并保留原 generation 历史。退休后由原 inspection 内部绑定读入口继续核对原 journal；并发变化与提交后丢回复保留 UNKNOWN、不重试。记录退休已资格化，实际资源释放、新代接续、默认 ManagedProjects 与 W0–W5 仍未完成。当前包、实际矩阵和下一代设计见[本批记录](windows-alpha6-cold-retirement.md)。
+
+2026-11-10 Windows 原 anchor 冷领取：协议v9／launch-set v2由原helper跨连接单向仲裁，只复制原文件对象的受限不可继承HANDLE，保留原写共享排他。managed入口先业务hold再复核原checkpoint／source／完整owner／kernel／journal／tool／business／pending；后检查变化或丢回复保留UNKNOWN、不重试。原host/owner未退休，新代与默认执行未开放，W0–W5仍未完成。当前包和实际矩阵见[本批记录](windows-alpha6-cold-anchor.md)。
+
+2026-11-10 Windows 原中断业务待核对处置：显式原生custody／业务回执核验后原子中断精确Worker job，保留review／候选／草稿；共享重启、调度准入、激活与启动扫描尊重恢复门。同值修订赢家及提交后checkpoint／pending变化拒绝或UNKNOWN、不重试。仅限定无pending处置，owner退休／下一代／默认ManagedProjects与W0–W5完整资格仍未完成。当前包和真实测试范围见[本批记录](windows-alpha6-business-hold.md)。
+
+2026-11-10 Windows 工具处理持久记录：显式 registered launch 在调用前先登记原工具身份，处理返回后持久精确结果，再向原 Pi 回复。冷检查区分未返回与已返回未送达，检查点前后复核 SQLite 原记录，缺行／并发赢家／UNKNOWN 不重放。正常文档修改和成果发布关联既有业务回执；业务 pending／projection／owner 冷接管与默认执行仍未完成。见 [本批记录](windows-alpha6-tool-custody.md)。
+
+2026-11-10 Windows 强杀journal前缀：Pi启动／prompt／flush返回原生同步快照；宿主退出后核对原File ID与已确认前缀，保留未知尾部。工具效果已发生但未回复仍unresolved、不重放，文件／快照篡改拒绝。源码／解压Node与Electron各52项、cold各15项、Worker各2项，GUI各6项通过；业务冷接管与默认入口仍未完成。当前包见[本批记录](windows-alpha6-abrupt-journal.md)。
+
+2026-11-10 Windows 原始请求／journal 冷核验：原始stdin、Pi返回、原生journal和输入摘要逐项匹配；缺回复保留execution-unknown，工具回复不等于业务完成。显式journal检查点在SQLite CAS前后复核metadata／journal，提交后变化保留UNKNOWN与外部赢家。源码／解压Node及Electron完整定向各47项、cold各15项、Worker各2项，GUI各6项通过；业务冷接管和默认入口仍未开放。当前包与边界见[本批记录](windows-alpha6-journal-reconciliation.md)。
+2026-11-10 Windows 原生启动集合：每次启动意图先记入原生追加历史，supervisor保留只读mapping；原宿主退出后逐项核验完整历史、Job和原stdin/out/err。删除owner行／未完成意图／替代身份的真实回归均拒绝确认。仅原项目host lease的完整集合与进程停稳取得本批证据，业务冷接管和默认ManagedProjects仍未开放；当前包与实际结果见[本批记录](windows-alpha6-launch-set.md)。
+
+2026-11-09 Windows 冷恢复前置：原生 helper 现保留已观察且退出的后代 HANDLE，新冷连接可取得受限原实体；当前已登记 Job 的原流／来源检查点复用本机 CAS／UNKNOWN。完整宿主启动集合、任务接管与默认入口仍未完成；实际验证与当前包见[本批记录](windows-alpha6-cold-checkpoint.md)。
+
+2026-11-09 Windows managed 分离目录接入：已验证原登记存储逐路径原生宿主／来源、跨根执行证据、隔离 Git 长 ref，以及真实 Controller／Pi／Git 的编辑、明确审阅接受、归档和 warm reopen。生产默认选择与冷恢复仍未开放；当前验证包、实际计数和路径 unsupported 边界见[本批记录](windows-alpha6-managed-roots.md)。
 
 本页定义仓库的确定性测试入口、各套件的分类边界与前置条件。命令均在 `apps/desktop` 下执行；套件清单的唯一来源是 [`apps/desktop/tools/test-suites.mjs`](../apps/desktop/tools/test-suites.mjs) 中的显式文件列表（无 shell 通配、无目录扫描），列出成员可用：
 
@@ -220,14 +293,43 @@ Reviewer 本轮读取完整记录、查看十图并静态审查相关代码，�
 | integration | `npm run test:integration` | 真实临时文件／Git／存储与显式隔离安全回归；无GUI、无模型提供方 | 系统git；Linux需bubblewrap及可用user namespaces |
 | smoke | `npm run test:smoke` | 轻量 CI 冒烟（`tests/desktop-ci-smoke.mjs`）：真实 Electron 无模型启动→空工作台→注册合成项目→浏览文件→原生编辑→正常关闭→冷重启留存 | 先 `npm run build:renderer`（Electron 随 `npm ci` 安装） |
 | live（显式选择加入） | `NOZELI_TEST_LIVE=1 npm run test:live` | 私有Pi owner＋回环脚本HTTP、真实文件/Git；包含真实Electron维修展示／接受流程，无付费模型 | 先 `npm run build:pi` 与 `npm run build:renderer`；Git、统一预检所需bubblewrap、真实图形会话或Xvfb |
+
+Windows native component and product suites remain separately scoped below.
 | toolchain（可选工具） | `npm run test:toolchain` | 实际TeX编译、SyncTeX正反向定位与TexLab | 系统latexmk/xelatex/pdftotext/synctex/texlab；缺失明确失败，不静默跳过 |
 | default | `npm test` | unit + integration 顺序执行 | 同上两者 |
+| windows-native（组件资格） | `npm run test:windows-native` | 同一 W1 实验 Node-API 二进制在 Node 与 Electron Node 模式运行同一组读取、独占写入暂存、无覆盖发布、共享锁、reparse 拒绝与资源释放测试 | 真实 Windows x64；固定 Node 22.23.4 执行 `npm run build:windows-native`；已安装锁定 Electron 44.9.1。双宿主日志、运行时和摘要默认存于 `.test-output/ci/windows-native-hosts/`，可用 `NOZELI_TEST_EVIDENCE_ROOT` 指定证据目录 |
 
 `npm test` 是安全默认：只运行不依赖预编译私有 Agent 运行时／PPTist、不依赖显示器的部分。
+
+`windows-native` 另含实验性 TxF 条件替换：过期摘要、两个事务竞争、外部写入/改名/删除/硬链接、回滚、活宿主 GC、自然/强制进程退出和真实 KTM 超时。最新增加 11 项 ACL 场景，共 9 读取 + 14 暂存 + 14 替换 + 11 权限。ACL 测试通过系统 Windows PowerShell 的 .NET 接口检查合成文件，产品不依赖 PowerShell；只申请 owner/group/access，不请求审核特权。真实超时每宿主约 31 秒，完整入口约 70 秒；这是组件资格，不等于生产 W1 或 GUI 验收。TxF 缺失或事务拒绝会明确失败，不跳过或改用普通覆盖。
+
+同入口新增 10 项固定目录 flush/持久化接入原型场景，共 58 项。覆盖真实父目录句柄 flush、目录改名保护、缺失/reparse 拒绝、新建与条件替换、私有权限、发布后实际关闭屏障句柄的错误及已提交内容保留。该故障是句柄失效，不能计作磁盘 I/O 故障。原型只报告屏障完成，生产 persistence 继续明确拒绝。
+
+再新增 `windows-native-read-consumer.test.mjs` 的 10 项共享读取/Git 场景，此切片完整套件为 68 项。实际 HANDLE 提供 stat/绝对偏移读取，经显式注入运行共享有界文档读取和流式 Git 捕获；覆盖并发游标、缺失/不安全条目、消费失败/提前结束释放、读取后硬链接变化、SHA-1/SHA-256 对象、33 MiB 二进制、已知对象去重、摘要不符和传输故障。此切片源码与组件 ZIP 解压后的 Node/Electron 均各 68/68。组件随包携带固定 Node、原生模块、所需共享源码及 dugite/Git 全部运行文件；Electron 仍取锁定开发依赖，完整应用 W5 未验收。Windows reader 仍 supported=false；同步原生 I/O、tracked 可执行 mode、完整 Work 生命周期/接受/回滚及生产持久化未放行。
+
+当前再增加 `windows-native-snapshot.test.mjs` 两项真实 `ExecutionWorkspace.snapshot` 场景，完整套件为 70 项，源码/组件 ZIP 解压后的 Node 与 Electron 各 70/70，无失败/跳过。验证磁盘改动、已暂存/未暂存、新建、删除、排除条目生成独立 Git tree/commit，并保留原 refs、用户 index 与磁盘内容；硬链接及默认 unsupported adapter 拒绝后仅清理自有临时索引。组件包含该方法的固定共享源码/运行依赖闭包并逐文件校验摘要。此为输入捕获方法资格；完整 Work prepare/恢复、依赖供给、接受/回滚仍未跑通。
 
 冷启动本地收尾回归：`node --test --test-name-pattern='normal startup repairs confirmed local closure' tests/managed-post-install-recovery.test.mjs` 使用真实项目/Git、子进程持有并释放的私有 index lock 和生产 `ManagedProjects.resumeUnfinishedProjects({hostOnly:true})` 启动入口。未配置 AI 或私有运行时不可用时，应用仍调度已确认接受／丢弃的宿主收尾；不初始化模型／进程资源，不启动居民或 Worker，不激活排队业务。状态与报告读取本身不触发恢复；原确认绑定、维修事件和提交去重仍由既有闭包流程核验。此确定性回归不替代实际安装二进制的正常退出／冷启动 GUI 验收。
 
 ## 分类边界
+
+`windows-native-versioned-write.test.mjs` 再增加 14 项流式 CAS/共享审校写入场景，该切片完整组件为 84 项，源码与 ZIP 解压后的 Node/Electron 均各 84/84，无失败/跳过。覆盖 33 MiB 基线与候选、流式状态与输入边界、实际 owner/group/DACL、生产者失败/取消/摘要不符回滚、独立竞争、实际 `applyReviewedFiles`、整计划漂移/路径预检、发布后句柄屏障失效与外部赢家、活候选宿主退出。首轮 13/14 是测试误比较 AUTO_INHERITED SDDL 记账字段；改为逐项比较 owner/group/protection/ACE 后通过，保留原日志。
+
+最新 `windows-native-install.test.mjs` 增加 17 项版本化删除/Git 单文件安装与反向回滚场景，完整组件为 101 项，源码/ZIP 中文空格目录解压后的 Node 与 Electron 均各 101/101，无失败/跳过，归档摘要匹配。覆盖同 HANDLE 删除提交/回滚/锁/宿主退出/receiver、硬链接/reparse/readonly 拒绝、基线/取消/已提交屏障故障、changed/new/deleted Unicode 文件、33 MiB、SHA-1/SHA-256、损坏对象、惰性/提前消费清理、并发赢家、幂等和原 index/refs/draft 保留。首次 13/14 的失败是误写 reparse 错误码预期，原日志保留，修正后定向 17/17。缺失方法、100755 与缺少父目录均明确拒绝。完整接受/index/ref/账本恢复和整组回滚仍未验收；生产 selector 不启用。证据根 `D:/nozeli-test/20261101-windows-native` 下的 `W1/install-hosts/`、`W1/install-component-roundtrip/`。共享门控单独为 29 项：15 pass、0 fail、14 平台前置 skip；不代签 Linux/macOS。
+
+后续 `windows-native-database.test.mjs` 增加 12 项私有 SQLite lease/共享 worker 场景，该切片完整组件 113 项，源码与 ZIP 中文空格目录解压的 Node/Electron 各 113/113，无失败/跳过。覆盖真实提交/重开/receipt/revision/集合 CAS、热日志恢复、独立进程 rename/delete、硬链接/ACL/sidecar 拒绝、原 schema 字节保留、锁超时/UNKNOWN 栅栏和实际 worker 退出释放。首轮 9/10 的属性句柄删除保护缺陷已修正为数据读取访问；原失败日志保留。证据 `W1/database-hosts-final/`、`W1/database-component-roundtrip-final/`。共享门控仍 15 pass/14 skip；共享 `storage-worker-safety` 原始 34 项为 27 pass/7 fail，六项依赖禁用的项目初始化，一项假定可 unlink 已打开数据库。明确正向选择的相关 27 项通过，新增受控 worker UNKNOWN 回复测试只证明封闭/等待逻辑。生产初始化、恶意 sidecar/security 竞态、WAL、断电及完整业务恢复仍未验收。
+
+`windows-native-directories.test.mjs` 增加 12 项私有目录链/真实 ProjectStorage 目录数据库和离线存储场景，该切片完整组件 125 项；源码/ZIP 中文空格目录解压的 Node/Electron 均各 125/125，无失败/跳过。覆盖父 JS lease 关闭后保留祖先句柄、身份/ACL、独立改名拒绝、Unicode 目录、完整路径预检、宽权限/文件/junction 冲突、真实关闭句柄屏障失败后的身份保留/重试、取消及两个独立进程并发。真实 `ready()` 冷开保留 lifecycle hold，local/recovery SQLite 值冷开保留；离线测试明确预置合成 catalog binding，不能代签 register。登记仍在项目效果前报 PERSISTENCE_UNSUPPORTED。证据 `W1/directories-hosts-final/`、`W1/directories-component-roundtrip-final/`；重跑共享门控为 15 pass/14 skip，相关存储安全 27/27（`W1/shared-filesystem-gate-directories.tap`、`W1/shared-storage-worker-directories.tap`）。目录 move/remove/copy、恢复对象、恶意权限竞态、命名空间/断电和完整业务恢复继续待验收。
+
+`windows-native-directory-move.test.mjs` 增加 14 项按预期 File ID 的私有目录无覆盖移动场景；该切片源码/ZIP 中文空格目录解压的 Node/Electron 均各 139/139，无失败/跳过。覆盖同/跨父目录、祖先与源 pin、ACL 漂移、错误身份/源替换、既存及独立晚到赢家、两个真实进程发布竞争、取消、提交前后宿主退出、实际关闭目录及两侧父屏障句柄的失败和 committed 身份事实。移动后真实 SQLite worker 冷开读回草稿与 receipt。首轮 13/14 的 fixture 在独占 move lease 未关闭时重开源，被共享规则拒绝；修正关闭顺序，原日志保留。证据 `W1/directory-move-hosts-final/`、`W1/directory-move-component-roundtrip-final/`；共享门控沿用上批日志。仅核验目录根移动；递归内容核验/同步、复制/删除、真实项目初始化和生产持久化仍待完成。
+
+此前 `windows-native-private-tree.test.mjs` 增加 20 项私有树清单/屏障/发布复核场景，该切片源码及 ZIP 中文空格目录解压 Node/Electron 均各 159/159，无失败/跳过。覆盖 420 项跨页枚举、33 MiB 内容、名字/ID/ACL 清单、严格句柄锁、实际 SQLite 停稳及移动后 receipt 冷开、宽权限/硬链接/junction/readonly 拒绝、预算、读者、取消、真实屏障句柄关闭、独立目标竞争、发布前后退出和释放窗口的内容/成员/ACL 变化。NTFS 在严格后代句柄仍开放时拒绝目录 rename（5）；保持根句柄，释放后代再发布并重开复核，变化保留 committed/uncertain，不能当作原子冻结整树。证据 `W1/private-tree-hosts-final/`、`W1/private-tree-component-roundtrip-final/`、`W1/private-tree-probe.log`、`W1/private-tree-release-probe.log`。共享门控重跑 15 pass/14 skip，相关存储安全 27/27（`W1/shared-filesystem-gate-private-tree.tap`、`W1/shared-storage-worker-private-tree.tap`）；完整共享文件原有七项失败仍保留。复制/删除、生产初始化、完整业务与 namespace/断电资格仍未完成。
+
+
+上一批同一私有树文件再增加 20 项复制/删除场景，共 40 项；完整源码/ZIP 解压 Node、Electron 各 179/179，零失败/跳过。真实验证独占根/子目录创建、33 MiB 流式复制/块间取消、SQLite 草稿/receipt 副本冷开、独立赢家/新成员保留、清单绑定 DELETE HANDLE 的逐项删除、部分进度/冷开新清单恢复、读者栅栏、真实关闭句柄屏障失败及宿主退出。单字符文件名暴露 native rename buffer 小于结构体完整长度，已修复文件/目录并回归；初始五项失败日志 `W1/tree-mutation-first.tap` 保留。最新证据 `W1/tree-mutation-hosts-final-v2/`、`W1/tree-mutation-component-roundtrip-final-v2/`；共享门控重跑 15 pass/14 平台 skip，相关存储安全 27/27。复制不克隆任意元数据，删除非整树原子事务，部分失败必须保留已知身份/进度并禁止直接重放。实际项目初始化、完整业务恢复与 namespace/断电资格继续未完成。
+
+
+最新 `windows-native-project-storage.test.mjs` 增加 22 项共享首次登记/检查点恢复场景，完整组件源码/ZIP 解压 Node、Electron 各 201/201，零失败/跳过。显式双选项使用真实公开项目根 pin、完整 ID、私有元数据/SQLite、排他分配检查点、候选清单和无覆盖发布；核验项目/本机/恢复草稿与回执冷开、六阶段恢复、部分/无 marker 现场保留、晚到赢家、已发布目录替换、权限/link 漂移、真实关闭父句柄和真实宿主退出。受控 closed=false 只证明关闭栅栏，不证明 native UNKNOWN。默认/root-only 初始化继续拒绝，外来来源真实返回 RECOVERY_OWNER_UNVERIFIED，未伪造停稳证明。证据 `W1/project-init-hosts-first/`、`W1/project-init-component-roundtrip-first/`；共享门控重跑 15 pass/14 平台 skip，选中安全 27/27，完整安全当前复跑 27 pass/7 fail。MaterialStore、来源复制全路径、完整 Work、多步事务、namespace/断电和整应用继续未完成；Linux/macOS 未运行。
 
 - **unit**：成员以 `tools/test-suites.mjs` 显式清单为准；按实际导入与行为划入——不起被测子进程、不写真实项目文件、不驱动 Git、不加载 Electron。个别文件只读源码，因此不宣称无任何 fs 访问。出现真实写入／子进程／Git 即归 integration；`update-lifecycle.test.mjs` 验证未保存编辑／排队任务阻止更新及冻结释放。
 - **integration**：真实临时仓库、shadow版本、存储切换和宿主文件读写；成员清单以runner为准，Git身份由测试或产品层明确提供。TeX编译、语言服务和SyncTeX真实工具测试归入独立`toolchain`套件，不能因为开发机恰有工具就当作普通CI依赖；此前误将`tex-source-link.test.mjs`归入默认集，现已按实际外部依赖更正，测试本身完整保留。
@@ -241,10 +343,10 @@ Reviewer 本轮读取完整记录、查看十图并静态审查相关代码，�
 ## 前置条件（含 CI）
 
 - **Node ≥ 22**（`node:test`、`node:sqlite`）；开发机与 CI 一致使用 22.x。
-- **`npm ci`**（在 `apps/desktop`）：安装依赖并经 postinstall `electron-rebuild -f -w node-pty` 重建原生模块。unit/integration **不需要**预构建私有 OMP（`build:omp`）或 PPTist（`build:pptist`）。
+- **`npm ci`**（在 `apps/desktop`）：安装依赖并经 postinstall `electron-rebuild -f -w node-pty` 重建原生模块。unit/integration **不需要**预构建私有 Pi（`build:pi`）或 PPTist（`build:pptist`）。
 - **integration**：系统git，以及Linux上的bubblewrap与可用用户命名空间；此套件含真实隔离边界回归，缺少工具明确失败，不暗中略过该文件。
-- **smoke**：先 `npm run build:renderer`（检查 `dist/renderer/app.js`）。发布级冒烟按发布流程再加 `build:pptist`、`build:omp` 后运行。
-- **live**：`NOZELI_TEST_LIVE=1` 显式选择加入；`runtime/omp/omp` 存在（`npm run build:omp`）；`bwrap`（如 `apt install bubblewrap`）与 `git` 在 PATH。
+- **smoke**：先构建 `build:pptist`、`build:renderer`（检查 `dist/renderer/app.js`）。涉及 Pi 的发布级冒烟另先完成 `build:pi`。
+- **live**：`NOZELI_TEST_LIVE=1` 显式选择加入；先完成 `npm run build:pi`；当前 preflight 要求 `bwrap` 与 `git` 在 PATH，不能作为 Windows native live 入口。
 - Ubuntu 24.04 + Node 22 的 CI 示例：
   - 常规任务：`cd apps/desktop && npm ci && npm test`（或分别 `npm run test:unit`、`npm run test:integration`）。
   - 构建+冒烟任务：`npm ci && npm run build:pptist && npm run build:pi && npm run build:renderer && xvfb-run -a npm run test:smoke`。
@@ -257,6 +359,14 @@ GitHub Ubuntu临时runner限制无特权用户命名空间：workflow为隔离�
 `node --test` 套件默认以 `--test-concurrency=2` 运行（可用 `NOZELI_TEST_CONCURRENCY` 覆盖），避免 CI 上百文件同时 fork 与 SQLite 争用；并发数本身不影响集合内容。
 
 Runner 为每个套件创建独立 HOME/XDG 配置目录，禁用用户/系统 Git 配置和交互认证，并从子进程环境移除凭据、认证代理及模型工具配置变量。报告只上传 TAP、脱敏日志、合成截图与 smoke 摘要，不上传 profile、数据库或会话目录。此隔离不等于 OS 沙箱，专项脚本若绕过 runner 仍须遵循自身准入。
+
+### Windows 本机基线（2026-11-01）
+
+`release/alpha.4` 的 Windows x64 结果详见 [交接记录](platform-phase2-handoff.md#windows-首轮实施记录2026-11-01)：unit 首轮 511 项，498 pass / 12 fail / 1 skip；修正提权 fixture 后的 integration 1,534 项，461 pass / 1,023 fail / 50 skip，其中 922 项失败码为 `PERSISTENCE_UNSUPPORTED`。smoke 在合成项目注册时拒绝，未进入 GUI。默认套件不代表 Windows 已支持，不能将失败或跳过折算为 native 通过。
+
+`privilege-broker.test.mjs` 中依赖 pkexec stub / POSIX Python 的提权用例只在 Linux 执行；fixture 在其他主机预先拒绝，避免落入真实 Windows UAC 或 macOS 认证 UI。其余普通用户与纯参数行为仍执行；当前 Windows 该文件 19 项中 8 pass / 4 fail / 7 skip。Windows 提权资格需要另行授权后的真实原生场景，不能由这些跳过替代。
+
+平台定向测试新增 `platform-probe.test.mjs`，验证本机探针真实状态与 `--no-isolation` 语义；`package-node-runtime.test.mjs` 用合成 ZIP 验证摘要、架构、目标保留、路径逃逸、symlink 和缺失可执行文件，Windows ZIP 行为只在真实 Windows 执行。六个平台测试文件 47 项为 30 pass / 0 fail / 17 skip；Node 打包文件 10 项全部通过。固定官方 node.exe 的组件包解压运行与真实 Win32 原语诊断是独立证据，均不等于整应用资格。Linux 打包路径本轮未在 Linux 重跑。
 
 默认集若因临时文件系统配额出现 `EDQUOT`／系统错误 `-122` 或伴随的 SQLite I/O 错误，应保留失败日志，在仓库外有足够空间的专用临时目录设置 `TMPDIR` 后重新执行完整集合；不延长存储期限、删除测试或吞掉 I/O 错误。TeX 专项另须让已安装工具链可被 PATH 找到；离线 Tectonic 还需要其已有资源缓存，不能把缺工具／缺缓存算产品通过。
 
@@ -308,7 +418,6 @@ NOZELI_TEST_LIVE=1 NOZELI_OZONE=x11 npm run test:agent-control:live
 后续用户已明确授权安装，并要求按设计修改目标做系统测试：实际用户级 release 为 `2026-11-02T04-46-05-777Z`，previous 保留 `2026-11-01T04-39-18-355Z`。安装宿主重跑 115/115，124 个安装模块加载路径与 SHA 留痕；另完成六组真实安装流程，含文件保存／冷启动和真实 TCP 断线。§11 的 17 项设计目标按确定性宿主与真实原生／GUI 层分别映射，见[安装与系统测试记录 §14](manual-task-control-repair-design.md#14-用户授权安装与按设计目标系统测试)。总报告 `/tmp/nozeli-installed-system-a35a177a7e/system-report.json`。原日常进程未强退，正常退出旧版并重开后才加载新 current；测试未打开日常业务 profile 或使用个人账号。上段「未安装」仅指先前源码验收阶段。
 
 Liuhuaiyu 实际模型联测发现旧发布契约同时暴露 `html`／`text`，实际模型会给 result 补上 `text:""`，导致严格校验拒绝。曾尝试同回合返回纠错：合成烟测通过，但真实模型仍反复生成相同空字段，已停止对应 QA owner 并撤回此方案，不能用合成通过代替真实账号通过。最终 `nozeli_publish` 只接受 **`{kind,content,files}`**：`content` 是唯一必填正文，result 为完整静态 HTML、problem 为 Markdown；旧 html/text 参数、额外字段及空正文均拒绝，不做自动参数重试或输入重放。Worker 指令及全部有效测试调用同步迁移，历史线程工具摘要保护保留。另修复任务菜单漏传 `'discard'` 的接线错误，真实 Electron 回归已覆盖菜单确认、持久决定、完整收尾后释放配额及不重放原 Worker。最终真实项目复测与安装版本以专项记录为准。
-
 ## Node 与 Electron 的 ABI 区分
 
 postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖基于 node-addon-api（N-API），二进制在 Node 与 Electron 间 ABI 稳定，因此纯 Node 的 live 测试仍可直接加载。runner 在 live 前实际探测 `node -e "require('node-pty')"`：一旦某次重建产出仅 Electron ABI 的二进制，立即给出明确前置说明（重装依赖），而不是让测试逐个崩溃或被裁剪。依赖 Electron GUI 的 `desktop-*` 测试不属于任何纯 Node 套件。
@@ -342,6 +451,324 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 ## 结果与覆盖表述
 
 - 通过/失败数目一律以 `node --test`（或冒烟脚本 report.json + 退出码）实际输出为准。runner 会把子进程**原始输出**原样落盘为 CI 工件：`apps/desktop/.test-output/ci/{suite}.tap`（node --test 套件的真实 TAP 流）与 `apps/desktop/.test-output/ci/smoke.log`（冒烟脚本真实合并输出），runner 自身不汇总、不复述计数。
+
+### Windows 共享材料对象库续批（2026-11-02）
+
+新增 22 项 native/shared 材料对象用例，完整源码/ZIP 解压 Node、Electron 均 223/223，零失败/跳过。证据 `W1/material-hosts-final/`、`W1/material-component-roundtrip-final/`，native `fa279a98d2deae3aa7e16c3184d1a6c33566b5c8b794b0648415267b980aeed2`。构建入口 `npm run build:windows-native` 退出 0；源码入口 `node tests/windows-native-hosts.mjs`，宿主/命令/源码摘要见收据。
+
+验证固定只读 HANDLE、多读者/发布者、独立进程赢家、33 MiB 流式材料、真实写入/删除/改名拒绝、readonly、ACL 漂移/硬链接/junction/损坏保留、发布后关闭句柄和真实宿主退出。共享 ProjectStorage 对象/离线恢复/提升可冷开。默认生产登记与外来来源仍拒绝。
+
+当前共享 `material-store.test.mjs`、`platform-capabilities.test.mjs`、`platform-filesystem.test.mjs`、`platform-persistence.test.mjs` 共 38 项：23 pass/15 skip/0 fail；包含旧 symlink 的 Windows skip，新原生危险路径已有等价实测。存储安全完整重跑 34 项仍 27 pass/7 fail；独立按名称选择的 27 项通过。日志 `W1/shared-material-gates-final.tap`、`W1/shared-storage-worker-material-full.tap`、`W1/shared-storage-worker-material.tap`。首轮材料测试 16 pass/1 fail 的 SQLite 未关闭改名 fixture 错误已修正，原日志保留。
+
+组件只证明显式本地 NTFS 操作；W1、完整 Work/多步事务/namespace/断电、W2/W3 和 W4/W5 整应用均未放行。同步 native 块带 yield，pending 对象不自动回收；Linux/macOS 未运行。
+
+## Windows 共享 Work 组件续批（2026-11-02，历史 244 项）
+
+在 `experimentalWindowsRoot` 与实验 filesystem 的显式注入下，现复用共享 `ExecutionWorkspace`，完成真实 Git worktree 准备、输入冻结、候选发布、SQLite 报告回执、类型化合入授权核对、接受/放弃、文件与 index/ref 更新、清理以及显式冷恢复。新 `execution-workspace-io.mjs` 只抽出平台文件效果，默认路线保留原共享逻辑；生产 selector 未启用。测试使用真实 ProjectStorage 登记、SQLite 与随包 Git，以及最小合成 store，**没有经过完整 Workspace.open、Controller、业务决定账本或实际 Worker 进程**，回调 `isActive` 不能证明 W2 停稳/归属。
+
+Windows 文件效果提供私有 manifest 读取/CAS、固定源 HANDLE 的排他证据复制、完整卷号/128 位执行目录身份及 Git 锁身份。Git 元数据父目录保留实际 ACL，不修复为私有；仅自有锁文件要求受保护 user-only 策略。锁的完整 File ID 在创建 HANDLE 释放前写入 intent，恢复同时核对 ID 与 token；复制 token 不能接管替换锁。index/ref 使用已批准摘要和锁内版本 CAS，保留独立赢家、用户 staged/磁盘/恢复草稿。
+
+提交后屏障失败/未知结果保留 candidate、实际字节、全部自有锁与 recovery-held 事实，只由显式冷 `finish` 重核版本后继续。真实宿主分别在 locks-held、files-installed、ref-published 退出后可冷恢复同一 commit。额外竞争测试揭示：已安装文件的冷恢复若未取得全部锁，原异常分支会尝试回滚；已修正为直接保留现场并拒绝。修复前日志 `W1/work-lock-recovery-before.tap` 为 1 fail，修复后 `W1/work-lock-recovery-after.tap` 为 1 pass。未提供任何依赖/准备资源声明的冻结输入可返回真实空供给报告；声明了 payload 的项目仍拒绝 `DEPENDENCY_PLATFORM`，未伪造可用模块。
+
+新增 `windows-native-work-lifecycle.test.mjs` **21 项**，完整组件源码及中文空格 ZIP 解压后的 Node 22.23.4 / Electron 44.9.1 Node 模式均各 **244/244**，无失败、跳过或取消。native SHA-256 `24c50e7a9acf52fd77328621c676dc71020efaf0287bc232e3ef55a9ad342eda`；构建退出 0，日志 `W1/build-windows-native-work-first.log`、收据 `W1/build-windows-native-work.json`。当前证据 `W1/work-hosts-final-v2/native-filesystem-hosts-validation.json`、`W1/work-component-roundtrip-final/component-roundtrip.json`，包括实际运行命令、宿主与源码摘要。早期 243 项双宿主通过是补充恢复竞争用例前的历史结果。共享材料/能力/文件/持久化重跑共 38 项：23 pass/15 平台 skip/0 fail，日志 `W1/shared-work-gates-final.tap`；存储安全沿用材料批的 27 pass/7 fail（完整文件）与定向 27/27，本轮未重跑，不外推为当前完整产品通过。
+
+范围继续限定显式入口、本机 NTFS、现有父目录与 100644。普通回调/检查点故障与真实宿主退出、关闭父 HANDLE 的提交后故障分别标识；后者不是磁盘 I/O、断电或原生 UNKNOWN 注入。Git 清理仍是完整 ID/候选核查后的共享 `git worktree remove --force`，没有新增整树原子 HANDLE 删除合同；恶意清理窗口竞争未验收。依赖/准备资源复制、hooks 接受、legacy 迁移、扩展 Git 布局、路径/mode/安全元数据、TxF 产品可用性政策、完整 namespace/断电仍未资格化。
+
+下一批优先接 `WorkChanges` 私有 archive intent/manifest 与完整业务报告/决定账本（当前仍调用全局 unsupported persistence），再补依赖/准备资源原生复制及三个多步事务；W2 原生 incarnation/Job/来源停稳证明是完整 Worker 与外来恢复链的依赖，之后才进入 W3 能力决定、W4 真实 Electron/Pi 工作面与 W5 整应用便携包/干净环境。W1/W2/W3 仍 unsupported，W4/W5 not-run，managedExecution.ready=false。
+
+## Windows WorkChanges 与共享业务账本续批（2026-11-02，当前）
+
+新增 `windows-native-work-changes.test.mjs` 20 项，已注册到 `windows-native-hosts.mjs`，完整源码/中文空格 ZIP 解压 Node、Electron 均各 264/264，无失败/跳过/取消。固定入口 `node tests/windows-native-hosts.mjs`；证据 `W1/work-changes-hosts-final/`、`W1/work-changes-component-roundtrip-final/`。原生产物及 C++ 未变，复用真实上一批构建，当前源码闭包摘要随包核对。共享门控重跑 23 pass/15 skip/0 fail，`W1/shared-work-changes-gates-final.tap`；完整存储安全 27 pass/7 fail 和定向 27/27 仍为材料批历史，未重跑。
+
+17 项归档测试涵盖实际 Git/SQLite、SHA1/SHA256、33 MiB、源 GC/缓存丢失、三处宿主退出、ACL/完整 ID/损坏/引用拒绝、精确 HANDLE 删除及真实删除后屏障故障。3 项业务测试调用实际 Workspace/SessionIndex 状态机与 SQLite，核对 HTML 报告/归档/用户接受授权、冷组件重载合入、集合 CAS 外部赢家、草稿和显式 inspection-only 恢复；没有 Workspace.open/Controller/实际 Worker/停稳证明。只读 pack 仍依赖 Git core.fsync=all 的写入器合同，原生树仅证明目录屏障，明确不算原生文件 flush。详细限制见交接最新章节；失败的早期原始日志保留，W1/W2/W3 unsupported，W4/W5 not-run。
+
+## Windows W2 进程身份首批（2026-11-02，当前）
+
+新增独立 `native/windows-process` Node-API 组件和显式 `experimental-process-identity.mjs`。只读、非继承 HANDLE 固定进程对象，保存精确 100 ns FILETIME 字符串，以同一 HANDLE 的 signaled 状态观察该进程退出；真实退出码 259 与 STILL_ACTIVE 已区分。无法打开的 PID 明确报错，不推断整树退出；结果始终 `treeExitVerified=false`。不 spawn/终止/取得 owner/释放预算或 writer，共享 selector 不变。
+
+实际重建 `W2/build-process-identity-final.log`，回执 `W2/build-process-identity.json`；native SHA-256 `aa5c1a6ad10831768038aa9b554f61530eafb441b08ad70004831ed42a5ec125`。独立组件源码及中文空格 ZIP 解包的固定 Node 22.23.4、Electron 44.9.1 Node 模式各 13/13，零失败/跳过/取消，证据 `W2/process-identity-roundtrip-final-v2/process-component-roundtrip.json`。测试含真实正常退出、退出码 259、两个 incarnation、无关哨兵，以及 leader 退出而显式 detached 后代仍运行；后代由合成 stop 文件自行退出。第一包 Node 13/13、Electron 12/13 的原夹具后代也已退出，失败原件保留，不能视作 Electron 全树回收证明。改为 detached/无管道依赖/文件握手后四组通过。
+
+设计与后续顺序见 [Windows 进程决策记录](windows-process-design.md)：下一批验证执行前 Job 纳管、generation/请求登记、后代继承/脱离/嵌套和宿主崩溃/真实整树停稳，再接共享 owner/冷恢复及 Workspace.open/Controller。创建时间/路径字符串不能代替冷恢复或镜像信任证明。该包使用锁定开发 Electron，仍非整应用。W1 文件桥与 264 项源码/解包资格均未改变；W1/W2/W3 unsupported，W4/W5 not-run，managedExecution.ready=false。
+
+从 `apps/desktop` 使用固定开发 Node：`node tools/build-windows-process.mjs`，再运行 `node tools/qualify-windows-process-component.mjs --output <新的绝对证据目录>`。这是独立四组组件入口，不并入默认 unit/integration 或 W1 windows-native 套件，避免跨平台跳过或混合计数。
+
+## Windows W2 创建前 Job 纳管续批（2026-11-02，历史批次）
+
+新增原生 `createSuspendedProcessJob` 与显式 `experimental-process-job.mjs`。`CreateProcessW` 用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时关联私有未命名 Job，并保持主线程挂起，避免先 spawn 再 Assign 的窗口；不支持/嵌套/权限失败明确拒绝。Job HANDLE 不继承，配置 KILL_ON_JOB_CLOSE，不允许 breakaway。显式本地绝对 executable/cwd、CRT argv 和独立 Unicode 环境块，不回落 shell 或继承宿主环境；尚无 stdio/JSONL 产品接口。
+
+resume 只可一次，取消调用实际 TerminateJobObject；请求终止不是退出确认。query 固定当前成员的完整进程创建身份/HANDLE，终止前再次捕获；只有 leader signaled、Job ActiveProcesses=0、全部已观察成员 HANDLE signaled 才报本地 jobEmptyObserved。close 在未满足时拒绝并保留 HANDLE，超时同样保留事实；异常/GC 只请求内核回收，不冒充业务 stopped。短暂未观察成员会令 allProcessIncarnationsObserved=false，因此不能据此签署全域 owner/冷恢复/资源释放资格。
+
+新增 19 项 Job 场景；连同 13 项身份测试，实际源码与中文空格 ZIP 解包的 Node 22.23.4 / Electron 44.9.1 Node 模式均各 **32/32**，无失败/跳过/取消。真实验证挂起不执行、取消、重复 resume 拒绝、超时保留、Unicode/空字符串/引号/尾反斜线/元字符 argv 与显式环境、未继承合成 secret、中文 executable 路径、无关 Job 哨兵、leader 退出后 detached 后代仍活、原生 CREATE_BREAKAWAY_FROM_JOB 返回 5 且逃逸命令零执行、原生嵌套 Job 及外层终止，以及宿主正常退出/强制结束后 leader 和 detached 后代实际退出、resume 前宿主强退零执行。后代创建时间与 Job 观察成员逐项对应，不按进程名回收。原生 helper 只属于合成测试，不是产品运行时。
+
+证据 `W2/process-job-roundtrip-final/process-component-roundtrip.json`；实际重建 `W2/build-job-final.log` / `W2/build-process-job.json`，native `6649909b1582023f7fddbe79494016e46b882472c8c397a986faf33fa7cdde15`。组件含固定 Node、许可、源码/测试/helper/二进制与逐文件摘要；Electron 明确使用锁定开发宿主，仍非整应用包。首次 `W2/process-job-first.tap` 为 8/10：发现 accounting 归零但已观察后代 HANDLE 尚未 signaled，改为保留并等待成员 HANDLE；另一项错误比较了动态系统辅助进程计数。`process-job-second.tap` 10/10；第三轮 15/17 两项错误期待 ChildProcess.kill 的数字退出码，修正为实际 `[null,SIGTERM]`，第四轮 19/19。失败原件保留。
+
+共享能力/拒绝门定向两文件 19 项：17 pass/2 Linux skip/0 fail，`W2/shared-process-job-selected.tap`。较宽四文件重跑 `W2/shared-process-job-gates.tap` 31 项：19 pass/10 fail/2 skip，失败为既有 Linux /proc mock 在 Windows 调用 getuid，W0 原日志已有相同问题；两项 Pi 测试在 Windows 提前 return，其 pass 不作为原生回收证据。没有把较宽回归称为全通过。
+
+W1 文件桥与 264 项源码/解包闭包未改；原始 13 项身份批为历史，当前使用 32 项合并资格。生产 verified-process-ownership / recovery-source-ownership、W1/W2/W3 仍 unsupported，W4/W5 not-run，managedExecution.ready=false。完整 generation/请求登记与 resume 屏障、stdin/stdout JSONL、Pi/Worker、Workspace.open/Controller、冷恢复/外来来源、所有进程消费点仍待推进；瞬态未观察成员、恶意同用户句柄复制、不可读/持续变化成员及创建后结果发布失败路径未资格化。Job 也不提供隔离。
+
+## Windows W2 stdio 与共享 JSONL 续批（2026-11-02，历史批次）
+
+新增 `process-stdio.inc` 和显式 `experimental-process-transport.mjs`。三个命名管道对均由创建者在创建子进程前连接；protected 当前用户 SID DACL、256 位随机名字、FIRST_PIPE_INSTANCE、REJECT_REMOTE_CLIENTS，实际核对 client/server PID。父端 overlapped，子端标准同步 HANDLE；仅 stdin/stdout/stderr 三个子端进入 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`，Job/事件/父端不得继承。仍使用创建时 Job 原子关联与 CREATE_SUSPENDED；旧四参数不带管道入口保留。
+
+Node Readable/Writable 使用 64 KiB chunk/highWaterMark 和 2 ms 轮询，遵守读背压、串行处理部分写入。取消先 CancelIoEx，再收取完成结果，内核完成前保留 OVERLAPPED/事件/缓冲区；写入失败只记录已确认字节与 transferUnconfirmed，不自动重放。leader exit、Job empty、stdout/stderr EOF 分别观察；显式 close 要求本地 Job empty，但会丢弃未读输出，产品接入必须先排空并分别判断协议/进程事实。轮询规模和性能尚未做广域资格验证。
+
+共享 `jsonl-reader.mjs` 按原始字节处理任意 UTF-8 分块、LF/CRLF，帧上限 64 MiB；严格拒绝无换行超限、非法 UTF-8/JSON、非对象、空帧、截断 EOF/断连与 handler 故障，一次失败后栅栏后续消息。PiSession.start 改用此 reader，业务 receiveFrame/request 与 admission 继续共享。15 项纯 reader 测试已加入 unit 显式清单。真实原生管道用例调用 PiSession.request/receiveFrame 校验关联，但没有调用 PiSession.start，也没有启动真实 Pi SDK/模型或证明完整 owner 生命周期；Pi owner 自身的入站 reader 仍待接入。
+
+新增 20 项真实 transport 场景，包括 Unicode/空输入/EOF、4 MiB 精确二进制回环、双路各 2 MiB 输出与事件循环进展、读背压、leader 退出后原生后代继续写 tail、pending read/write 终止、阻塞输入取消、实际 EPIPE、分块协议/错误帧，以及宿主正常退出和强退时仍挂起 I/O 的子进程回收。实际重建 `W2/build-stdio-final.log` / `W2/build-process-transport.json`；当前 native SHA-256 `74f881c77491437975dd45418de34a0578b9e82b11a1c3a32112343a210469a2`。身份 13 + Job 19 + transport 20，源码及中文空格 ZIP 解包后的 Node 22.23.4 / Electron 44.9.1 Node 模式均各 **52/52**，无失败/跳过/取消；逐文件源码、ZIP CRC、解包与执行后摘要核对通过。当前证据 `W2/process-transport-roundtrip-final/process-component-roundtrip.json`；此前 13/32 项记录为历史批次。组件使用锁定开发 Electron 宿主，仍非整应用包。
+
+开发日志 `W2/process-transport-first.tap` 保留 11/12：原 Node 后代夹具未按预期继承输出，改为原生标准 HANDLE 继承夹具后仍要求 leader 后 tail 完整到达，第二轮 12/12、第三轮 18/18，新增宿主退出后最终四组各 52/52。共享四文件定向 `W2/shared-transport-final.tap` 为 39 项：37 pass/2 Linux skip/0 fail；不是完整 unit/Linux 回归。上一 Job 批较宽共享回归 19 pass/10 fail/2 skip 的 getuid 平台失败仍保留，本轮未重跑该组。W1 264 项资格闭包和文件桥摘要再次核对未变；未重跑 W1 或历史存储安全全组。
+
+下一步在现有共享 PiSession/Controller/Workspace/Budget 上实现 owner generation 与请求/登记绑定，以及 prepare → durable registration → resume 闸门；不能把 transport 包装成 verified ChildProcess 就放行。现有 onSpawn 在启动后执行，而且 Controller 重新读取 stamp，须先补可验证的平台身份契约。停机须分别等待树、管道、native drain 和业务持久化回执。冷恢复需要重新证明监督租约/项目数据库实体与来源，不能从旧 PID/字符串或未命名 Job 猜测停稳。恶意同用户管道/句柄/访问竞争、未观察瞬态成员、创建后发布失败及断电域仍未资格化。W1/W2/W3 unsupported，W4/W5 not-run，managedExecution.ready=false，生产能力矩阵未变绿。
+
+## Windows W2 共享登记后放行续批（2026-11-02，历史批次）
+
+新增共享 `prepared-owner-launch.mjs`、本机 `owner-launch-registry.mjs`，并提供 PiSession.prepareRegisteredOwner 显式组件入口。复用现有会话 epoch/ownerId、原生 transport 与 SQLite worker 的 revision CAS/操作回执/原生数据库 lease：先持久 intent，再同步取得挂起 child/身份并安装共享监听，持久 prepared incarnation 登记确认后，再次核对会话代次、target/current guard 和同一 HANDLE 身份，最后唯一 resume。登记表位于本机 ui.sqlite 的专用 managed_owner_launches collection，不写入可移植项目集合，也不把 providers 普通缓存当并发 CAS。
+
+任一 owner 换代、停止、登记失败/丢回调、实例变更或回执后 lifecycle seal 均拒绝放行；实际 resume 返回丢失也不允许重试。输入在未放行/协议失败/启动失败后被栅栏。共享 AgentProcessBudget 观察 prepared，并在存在 launchAttempt 时拒绝走 never-spawned 释放分支；PiSession.stop 在此未完全资格化的组件路径只请求本地终止并保留登记/额度，仍返回 PI_EXIT_UNCONFIRMED，不将局部 Job empty 冒充完整 confirmationComplete。本机注册器尚无删除、采纳或自动重放接口。
+
+18 项新增真实组件测试覆盖：挂起阶段 marker 零执行、真实 SQLite intent/prepared 回执后执行和 Pi 请求关联、本机单 target CAS 赢家、独立进程写入的新赢家保留、generation/target 换代、等待实际登记回执时取消、intent/prepared 两个实际提交点受控丢回调、失败创建、重复启动、实际 resume 后受控丢结果、伪造 receipt/非法身份拒绝、共享协议错误回收、受控实例漂移/实际提交后的 lifecycle seal，以及宿主正常/强退后冷登记保留和零执行。宿主退出场景保留 parent 已打开的实际 leader HANDLE 并观察退出；不外推冷整树来源证明。
+
+实际进程桥重建 `W2/build-owner-launch-final.log` / `W2/build-owner-launch.json`，当前 native SHA-256 `bede2043f695d373dffdb3661d0f96466e940c85ec6cc6c9161668344d6c0d58`。身份 13 + Job 19 + transport 20 + 登记放行 18，源码与中文空格 ZIP 解包的 Node 22.23.4 / Electron 44.9.1 Node 模式均各 **70/70**，无失败/跳过/取消。证据 `W2/owner-launch-roundtrip-final-v2/process-component-roundtrip.json`。解包包同时包含固定 Node/许可、未变的 W1 文件桥、模块/worker 依赖闭包、package-lock 与实际锁定 @lezer 依赖包/许可；ZIP CRC、执行前后源码/解包摘要均通过。仍使用锁定开发 Electron 宿主，不是整应用包。
+
+共享四文件定向 `W2/shared-owner-launch-final.tap`：39 项，37 pass/2 Linux skip/0 fail；既有预算 unknown-native-exit 单项 `W2/shared-owner-budget-selected.tap`：1/1，不声明整个预算/Controller 或 Linux 套件通过。W1 264 项源码闭包与原 native 摘要再次核对未变，本轮未重跑 W1全组。首轮 owner-launch-first.tap 为 13/15，两个夹具错误期待字面量反斜线 n，修正为实际换行后 second 15/15；扩展场景后首包源码 Node/Electron 各69/69，解包因遗漏 @lezer/html 拒绝；补锁定依赖后第三包四组69/69，但运行期间源码变动令最终摘要检查正确拒绝整轮。全部失败日志保留；最终冻结后重建/打包四组70/70才作为当前证据。
+
+此批没有把 prepareRegisteredOwner 接进正常 PiSession.start/Controller，也未伪造 verified=true。精确 home/runtime 文件身份、共享宿主锁、真实 Pi SDK/Worker/journal/完整 stop、冷监督租约/来源、其他终端/TeX/force-quit/helper 和恶意同用户竞争域仍待推进；当前 registry 保留策略还不能支撑用户连续启动/重启产品闭环。下一步将当前真实登记回执接入共享 Controller 启动/回收与 PiSession.start，补 W1 私有 owner-home/固定 runtime 资源绑定，在完整 owner 退出和冷来源具备证明前继续保留资源。W1/W2/W3 unsupported，W4/W5 not-run，managedExecution.ready=false，能力矩阵未变。
+
+## Windows 实际 Pi/Controller 定向验证（2026-11-02，历史批次）
+
+该历史批次进程/Pi 组件证据为 `W2/pi-owner-roundtrip-third/process-component-roundtrip.json`：源码/解包 Node/Electron 各79/79。新增9项使用实际 Pi SDK 和回环脚本Provider，包含共享Controller组件、Unicode输入、native read、取消、原生日志刷盘、摘要拒绝、CAS赢家和未确认预算保留；不代表Workspace.open、冷恢复、完整stop或整应用通过。测试和资格命令在 apps/desktop 运行，先使用锁定Node22.23.4并完成文件/进程native构建与Pi build：
+
+```powershell
+$env:NOZELI_TEST_LIVE='1'
+node tools/test-suites.mjs windows-pi-owner
+node tools/qualify-windows-process-component.mjs --with-pi --output D:\nozeli-test\新的唯一证据目录
+```
+
+首条显式suite以真实native/SDK存在为前置，现已实跑9/9；第二条包含前70项、121个锁定Pi依赖包/许可、角色资源与固定Node，独立解包Pi根，不通过NODE_PATH/NODE_OPTIONS或源码node_modules补齐。Electron明确使用开发宿主。输出目录不得存在；失败日志保留。Pi build记录为W2/build-pi-owner-final.log；C++本批未改，复用匹配摘要的真实构建。共享最终回归39项37pass/2Linuxskip、预算单项1/1；首轮共享文件级退出1且无诊断，后续普通及串行重试通过，原因尚未定位。W1的84项源码闭包/二进制未改，未重新执行264项。全部限制与失败详情见windows-process-design.md当前批次。
+
+## Windows 同一宿主退出/恢复定向验证（2026-11-02）
+
+仍用 windows-pi-owner 显式suite（NOZELI_TEST_LIVE=1）及 tools/qualify-windows-process-component.mjs --with-pi --output <新的绝对证据目录>。当前四宿主合并资格为91/91（transport22、Pi19等），W2/owner-exit-roundtrip-first/process-component-roundtrip.json；Pi build为W2/build-owner-exit-final.log。共享最终39项37pass/2Linuxskip，预算单项1/1。新增场景包括真实正常停止/同线程warm恢复/零重放、崩溃无回执、两路EOF/最后尾帧、日志漂移/外部CAS赢家、真实提交丢回执/后检查故障、实际未观察瞬态Job进程、伪造证明及native drain有界拒绝。不要将Job空、主动reader.close或序列化summary当释放凭据。仅活registry的已核验retired回执允许下一次启动，冷registry仍拒绝；host锁/冷监督/Worker产品/整包未资格化，默认能力仍unsupported。全部开发失败保留，详见windows-process-design.md当前批次。
+
+## Windows 显式宿主租约定向验证（2026-11-02）
+
+使用windows-host-lease显式suite（NOZELI_TEST_LIVE=1）或tools/qualify-windows-process-component.mjs --with-pi --output <新绝对目录>。当前四宿主各115/115，receipt W2/host-lease-roundtrip-final/process-component-roundtrip.json；宿主21项、实际Pi22项。覆盖原生共享项目租约、真实SQLite宿主/owner代次、同步停止/最终放行、实际Host正常退出/强退、草稿保留与零重放、外部赢家/丢回执/后检查UNKNOWN。完整来源/监督/Workspace.open/Controller.open/Worker/桌面/整包仍未资格化；冷取得仍拒绝。共享定向37pass/2Linuxskip，预算1/1。初轮1pass/12fail的空SQLite初始化顺序问题及历史四宿主110项保留，详见windows-process-design.md。
+
+## Windows 原Job监督定向验证（2026-11-02）
+
+windows-process-supervisor显式suite（NOZELI_TEST_LIVE=1）含12项，要求实际构建新helper。完整组件运行tools/qualify-windows-process-component.mjs --with-pi --output <新绝对目录>；当前四宿主各127/127，W2/supervisor-roundtrip-first/process-component-roundtrip.json。真实native重建build-supervisor-final.log/build-supervisor.json；共享37pass/2Linuxskip，预算1/1。原Job跨宿主保留/冷查询通过仍不能代签冷业务恢复或完整来源/journal。首次1pass/8fail与后续开发记录完整保留，详见windows-process-design.md。
+
+## Windows 监督者实体租约验证（2026-11-02）
+
+显式windows-process-supervisor suite现在包含12项监督测试及7项windows-supervisor-custody测试，仍要求NOZELI_TEST_LIVE=1和真实双原生构建。W2最终四宿主各134/134，W1已重建且源码/解包四宿主各264/264；权威回执分别是W2/custody-roundtrip-first/process-component-roundtrip.json与W1/custody-roundtrip-final/component-roundtrip.json，源码W1另见custody-source-final。共享39项中37pass/2Linuxskip，UNKNOWN预算定向1/1；完整budget suite的3pass/12fail为生产PERSISTENCE_UNSUPPORTED，保留于shared-custody-budget-full-not-qualified.tap。不要把组件通过改写为产品/冷恢复/完整预算suite通过。失败fixture的精确helper清理、ACL变更事实、原始构建/测试日志见windows-process-design.md最新批次。
+
+## Windows来源绑定回归（2026-11-03）
+
+显式windows-process-supervisor suite包含原监督12项、custody7项及host-sources9项。完整W2带真实Pi在源码/解包Node/Electron各143/143；W1四宿主各264/264。当前回执为W2/source-binding-roundtrip-verified/process-component-roundtrip.json与W1/source-binding-roundtrip-final/component-roundtrip.json，源码W1另见source-binding-source-final。共享37pass/2Linuxskip。永久回归保留“真实来源+宿主声明+owner端点一起改写”的攻击路径；冷查询只观察，不能用于业务释放/采纳。所有原始失败保留，跨库原子性/冷业务恢复/完整应用仍未通过。
+
+## Windows监督者输出回归（2026-11-03）
+
+windows-process-supervisor显式suite新增windows-supervisor-output.test.mjs的10个真实场景，覆盖多MiB双流/Unicode/EOF摘要、独立range读者、后代管道、正常/强退宿主、handoff/端点/range拒绝、64MiB超限、空流、半连接IPC和helper丢失。完整W2源码/解包Node/Electron各153/153，真实Pi22项包含来源绑定冷输出核验但不释放owner或重放；共享37pass/2Linuxskip。权威回执W2/output-custody-roundtrip-first/process-component-roundtrip.json，构建W2/build-output-custody.json。W1当前源码/原生摘要保持前批264/264资格，本批未重跑。首轮清理钩子重复关闭同helper的6pass/1fail日志保留；最终输出定向10/10。
+
+## Windows冷停止响应与会话日志回归（2026-11-03）
+
+完整W2源码/中文空格解包Node/Electron各160/160，真实Pi29项含9种宿主退出/停止协议场景。cold-journal-host-final.tap定向9/9；共享55pass/2Linuxskip、Pi facts/questions14/14。验证原始响应身份、唯一终态帧、实际原生journal File ID/摘要/条目/元数据；日志改写、同字节替换、缺失、owner竞争均拒绝并保留赢家/草稿。观察对象不得用于registry退休。首轮夹具2pass/2fail及精确端点清理回执保留，修复后4/4、扩展后9/9。权威回执W2/cold-journal-roundtrip-first/process-component-roundtrip.json，实际Pi重建W2/build-cold-journal.json；原生未变，W1沿用摘要一致前批264/264资格。原stop请求准入、宿主投影落稳与冷恢复不在通过范围内。
+
+## Windows原宿主输入保管回归（2026-11-03）
+
+windows-supervisor-input.test.mjs新增8项真实native测试：多MiB二进制/Unicode、先写或关闭拒绝handoff、背压abort/UNKNOWN、64MiB超限、独立进程控制拒绝、实际丢回复零重发、normal/forced宿主退出后的保管与冷控制拒绝。真实Pi共30项，新增停止响应请求ID与原输入不匹配拒绝。定向48/48、完整W2源码/中文空格ZIP解包Node/Electron各169/169；共享57项为55pass/2Linuxskip。首轮16pass/2fail夹具时序已修复，失败保留；共享最初缺项52项已用真实basename纠正重跑57项。权威回执W2/input-custody-roundtrip-first/process-component-roundtrip.json、实际native构建W2/build-input-custody.json；Pi/W1摘要未变。输入投递/匹配dispatch取得局部资格，宿主投影与业务冷退休未取得资格，不能用此处通过放行生产selector。
+
+## Windows 真实共享打开入口回归（2026-11-03，历史批次）
+
+将 Workspace 的宿主获取、目录/Plan Tree 和 SessionIndex 文件效果抽为 workspace-io.mjs，复用原共享 Workspace/Controller/SQLite 状态机。默认 Windows 打开在创建 runtime/host.lock 前拒绝。显式 createExperimentalWindowsWorkspaceIO 使用原生共享项目宿主租约，核对获取前后的项目绑定，固定 runtime 目录和 create-only workspace-binding.json；绑定项目/实例/metadataRoot/本地数据库目录及其 File ID。另一项目不能共用目录，已有绑定不被覆盖。目录/文件都经原父链及私有 ACL 检查；SessionIndex 采用原生 create-only 发布和有界读取，Plan Tree 用原生 SHA CAS 和目录屏障，MemoryVersion 注入原生读取。Worker home 归档尚未接入，副作用前明确 WORKSPACE_CLEANUP_UNSUPPORTED。
+
+共享写入在宿主登记检查前后运行；业务前检查拒绝并发宿主赢家，实际存储提交后宿主检查失败保留 STORAGE_RESULT_UNKNOWN、草稿和宿主登记，不自动重投或退休。close 同步封口并等待队列，只返回原始不透明租约退休凭证；同进程原凭证可单次 warm reopen，序列化/缺失凭证与真实宿主退出后 cold reopen 均拒绝。Controller.open 使用真实初始化/restore，ownerLaunchFactory 接收原 hostLease，stop 在原 Pi 退出确认后返回宿主凭证。尚不声明整套投影/工具效果恢复或生产能力。
+
+新增16项真实公开入口场景，含草稿/Work 激活/warm reopen、默认与非法适配器拒绝、重叠目录、跨 runtime 争用/独立进程重命名拒绝、伪造凭证、SessionIndex 归档/冷读取/损坏赢家保留、真实共享 Plan Tree 外部 CAS 赢家、MemoryVersion 主题版本、Controller.restore 零启动、ACL 漂移、实际提交后宿主丢失 UNKNOWN、SQLite 宿主登记赢家、Worker 清理拒绝、跨项目 runtime 绑定、实际 public-open 宿主退出。新增1项 Controller.open→真实 Pi 单次 loopback 输入→共享原生投影/归档→确认 stop→宿主退休；Pi 共31项。该 Pi 测试使用隔离夹具显式模型目录，不声明生产配置或冷来源恢复。
+
+完整 W2 源码 Node/Electron 与中文空格 ZIP 解包 Node/Electron 各186/186，无失败/跳过；入口定向16/16，含Pi定向16/16，共享57项55pass/2Linuxskip。W1因共享源码变化实际重跑，源码及解包 Node/Electron 各264/264；闭包新增 workspace-io，不沿用旧源码摘要。回执 W2/workspace-open-roundtrip-second/process-component-roundtrip.json、W1/workspace-open-source-first/native-filesystem-hosts-validation.json、W1/workspace-open-roundtrip-first/component-roundtrip.json；完整性 W2/workspace-open-final-integrity.json。原生和Pi源码/二进制摘要与最近实际构建一致，本批没有宣称重新编译。早期夹具断言、已退休registry读取、eval参数继承和旧源码字符串测试失败全部保留，已由实际运行验证修正。
+
+首轮完整W2 driver在并行W1负载下触及原有180秒总时限，源码Node组未完整收尾，回执workspace-open-roundtrip-first为failed；保留原日志，不计通过。W1结束后用相同180秒时限独立重跑，当前权威为workspace-open-roundtrip-second；未放宽超时。
+
+当前只取得显式公开入口组件资格。生产 selector、宿主 pending/tool/native 投影落稳与共享 UNKNOWN/历史成员/冷退休、资源/依赖复制、Worker 目录归档、多步事务、Worker→候选→审阅接受→Git→重启全程、W3普通权限执行、W4真实Electron/IME/剪贴板/多窗口、W5整应用包/干净用户仍未取得资格。W0 passed；W1/W2/W3 unsupported；W4/W5 not-run；managedExecution.ready=false，能力矩阵未放行。
+
+## Windows 实际 Worker 审校与 Git 归档闭环（2026-11-03，历史批次）
+
+共享 Controller 显式传递 Workspace 的 ExecutionWorkspace/WorkChanges 文件效果和工件 filesystem；文档编辑复用共享 intent/重复调用合同，Windows 用原生 SHA CAS 发布，冷组件重读可核对已生效修改而不重复应用。工件校验读取实际摘要，发布前后变动可被发现。原生接受身份检查使用当前真实 Session/Job incarnation、原 prepared 登记回执及本机 SQLite 当前 revision/全部字段，拒绝 Linux 格式误判、伪造代次和独立登记赢家；原 Linux 路径保持原合同。
+
+实际场景经 Controller.open/start/send 和原共享调度器启动前台、后台及 Worker 三个真实 Pi owner。隔离模型配置在各自真实 home/config 中，全部请求仅发往本机脚本 HTTP：真实文档读→SHA CAS修改→冻结候选报告，共3次请求。源项目接受前保持基线；用户 reviewSave 保存精确人工审校版本，旧 reviewVersion 接受零写入拒绝，reviewAccept 绑定当前版本并交给共享宿主 Git 合入。原始 Session/Job/EOF/最终原生 journal 确认后才停止/释放 Worker 名额，保留其他文件及前台/后台未发送草稿。
+
+Worker home 归档复用共享 closure 状态机：先核对原宿主内存保留的真实 owner 退休回执与当前 SQLite 行。退休证明携带启动时原生pin的home File ID，以及最终确认journal的原相对路径/File ID/SHA；首次创建意图前即拒绝被替换的源目录、已修改或被改名的journal。再 pin 完整私有树，持久化原 home/destination/File ID/身份内容ACL清单摘要，执行无覆盖目录发布/屏障。范围是完整私有 owner home，包含真实 config/sessions journal 与配置；没有宣称凭据删除。实际移动后注入回调丢失，closure 被阻断且 Git结果/intent 保留；重新出现的源目录、journal内容漂移及替换目标目录均拒绝并保留独立赢家。恢复原实体/内容后精确重试只核对/同步原归档，不执行第二次移动。最终 journal SHA 与原生停稳证明相符。完整配置供给、跨目录事务原子性和恶意释放窗口/断电持久性仍未取得产品资格。
+
+确认停止全部3个owner并取得原宿主退休凭证后，同进程 Controller.open 恢复已完成 closure/人工版本/Git状态和未发送草稿，零会话启动、零 provider重放。此为原始不透明单次凭证的 warm reopen；进程重启/异常退出后的 cold 宿主/owner恢复依然拒绝，不以本场景代签。
+
+W2 源码 Node/Electron 与中文空格 ZIP 解包 Node/Electron 每组190/190，无失败/跳过；包含18项打开入口、32项实际Pi/Worker场景。公开入口/owner定向40/40，共享回归57项中55pass/2Linuxskip。W1新增3项真实文档CAS/外部赢家/提交后丢回调恢复，受影响的共享源码实际重跑，源码与ZIP解包 Node/Electron每组267/267。权威回执 W2/worker-flow-roundtrip-first/process-component-roundtrip.json、W1/worker-flow-source-first/native-filesystem-hosts-validation.json、W1/worker-flow-roundtrip-first/component-roundtrip.json；完整性 W2/worker-flow-final-integrity.json。原生/Pi源码与二进制逐项摘要仍等于最近实际构建，本批复用，不宣称重新编译；组件ZIP也不是完整应用包。
+
+开发过程失败日志 worker-flow-first 至 ninth（seventh 为早期正常路径通过）全部保留：工具开关夹具、Linux stamp实际接入缺口、绕过调度器导致的正确in-flight拒绝，以及新增故障测试的字段/字节类型错误。最终使用公开调度器，未放松执行中/进程停稳/UNKNOWN保护。
+
+当前交付仍为显式组件范围。下一阶段优先完整依赖/准备资源供给、共享 pending/工具效果/native投影/UNKNOWN及宿主冷恢复，再做W3普通权限执行、W4真实Electron工作面/IME/系统剪贴板/多窗口、W5整应用依赖闭包和干净用户运行。W0 passed；W1/W2/W3 unsupported；W4/W5 not-run；managedExecution.ready=false，能力矩阵未放行。
+
+## Windows 公开源依赖与准备资源供给（2026-11-03，历史批次）
+
+共享 worktree-dependencies 抽离文件效果，继续统一判定冻结 package/lock、资源声明、出处、已有目标与供给报告；修复根声明被重复处理。显式 Windows versioned adapter 仅增加窄 provisioning 接口，supported=false、泛用 chain/rename 与生产能力矩阵保持禁用。
+
+新增原生只读 public-source directory 类型，与私有写入类型用不同 native receiver tag 隔离；借用 private mutator 也真实拒绝。固定祖先/子目录/单链接文件 HANDLE，观察原 owner/group/DACL、不修复源 ACL，逐级相对枚举，冻结名字/File ID/内容/ACL摘要和有界流。复用同一个树清单/流式独立复制实现，将普通 ACL 源复制成排他私有目录与文件，并核对创建 ID、字节和文件/目录屏障。目标以无覆盖 native move 发布，既有目录/文件/交接点及晚到赢家保持原样。门文件读取 HANDLE 保留至结束，独立进程改写实际被拒绝；发布前复核源成员/内容。NTFS 必须释放后代后移动，释放窗口中的真实字节修改会在移动后复核中报告 committed/UNKNOWN，保留赢家而不伪称原子快照。
+
+暂存 marker 先同步。清理只接受当前操作原始分配的整树 File ID 与字节，新增或替换内容使清理拒绝；未知旧目录不按 workId marker 擅自删除。旧 matching stage 经原生读取 marker 后要求显式恢复，阻止新复制；真实复制宿主中途 exit 后新宿主实测保留原 marker/部分负载，未再分配。已记录 copy-result-unknown 的共享报告在普通 prepare/reopen 中原样保留，不自动重放。尚未实现旧暂存/UNKNOWN 的显式冷协调，不能把“保留并拒绝”写成恢复完成。
+
+新增19项：普通源ACL/不同native类型权限、Unicode/空目录/33MiB、真实独立Node导入与写入隔离、源/Worker冻结不符、已有目标/交接点、源硬链接/交接点拒绝、复制中源新增、独立门文件写入拒绝、晚到目标、发布回调丢失、真实宿主退出、清理新增赢家、发布释放窗口变化、根/嵌套依赖与资源、声明无效/已跟踪资源，以及实际共享 Work.prepare→候选Git排除。公开 Controller 的真实三Pi owner闭环新增冻结依赖/资源，实际Worker执行目录的Node可导入/读取；原文档工具→候选→精确人工审校/Git→原owner退休→完整home归档中断重试→warm reopen仍通过，Provider只收到3次本机请求。没有宣称模型执行过依赖工具、安装脚本或联网安装。
+
+实际重建 W1 native，构建回执 W1/build-provisioning.json；process/helper/Pi摘要核对复用既有构建。最终W1源码Node/Electron、中文空格ZIP解包Node/Electron每组286/286；W2同样四宿主每组190/190。共享相关52项为50pass/2Linuxskip；平台文件/持久化回归详见W1/provisioning-platform-first.tap。权威回执 W1/provisioning-source-final/native-filesystem-hosts-validation.json、W1/provisioning-roundtrip-first/component-roundtrip.json、W2/provisioning-roundtrip-third/process-component-roundtrip.json；最终完整性 W1/provisioning-final-integrity.json。初轮专项8pass/6fail、初轮全量旧假设失败、W2首轮静态测试import收集失败均保留。W2第二轮三个宿主190/190、解包Electron189/190：只读监督者测试假定Job-empty时原后代HANDLE立即signalled；改为分别等待各原HANDLE实际退出后复核，生产停稳规则/native未变。监督者定向Node/Electron各12/12，再按最终源码完整重跑。
+
+范围：本机NTFS x64、普通单链接文件/目录、每树最多10000项/1GiB。源symlink/junction/hardlink、未资格化别名/卷拒绝，不悄悄跳过后宣称可用；目标复制屏障为namespace-not-qualified。源链接实体化、更大真实项目负载、旧暂存/UNKNOWN冷协调、完整生产消费/多步事务、历史进程成员与pending/工具/native投影冷恢复、普通权限产品执行、实际Electron工作面及整应用包仍待验收。W0 passed；W1/W2/W3 unsupported；W4/W5 not-run；managedExecution.ready=false，能力矩阵未变。
+
+## Windows 供给完整副本的持久意图与冷协调（2026-11-03，历史批次）
+
+共享 worktree-dependencies 继续统一冻结门文件、资源声明、出处、报告和已有目标策略；ExecutionWorkspace 在原 Work manifest CAS 中保存独立 operation ID、Work/源/目标/冻结门绑定、分配前命名与父 File ID/实际 ACL、已分配暂存根及完整复制后的原始 ID/内容/ACL 清单。普通项目父目录只观察实际 ACL，不改权限；private-only 写入检查不放宽。恢复入口 reconcileDependencies 使用同一Work串行队列，先要求项目在线并验证 Work 的原 Git/执行目录身份。默认 prepare/reopen 对未决意图仍保持拒绝，显式协调先于普通 existing-target 快捷路径；源/Worker资源声明发生变化、当前无法再发现原负载时，共享报告仍从持久意图补回原UNKNOWN，不能用新声明抹去旧分配。
+
+完整复制已获确认后退出，可复核原父/暂存实体及清单，继续发布同一副本；发布前先保存意图，发布后退出或丢回调则核对原目标的完整清单、重新完成真实文件/目录屏障，零重复移动。清理前持久化原剩余成员清单，每次删除前记录 pending，删除和真实父目录屏障后记录 remaining；新宿主核对仅原 pending 可能缺失的精确剩余树，恢复到根删除后的最终保存窗口。原目标/源/门文件/父目录发生变化、同字节换 File ID 或新增暂存成员均保留 UNKNOWN/现场，晚到目标赢家不被删除。manifest CAS 未获确认时直接中断后续发布/清理/其他资源，不把不确定提交当作已失败。
+
+新增11项、供给专项共30项：真实子进程在完整复制、移动前、发布后、marker删除后和根删除后退出；原副本/发布零重放；晚到目标与清理恢复；字节/相同字节身份/成员/绑定/源/门/父替换；部分复制退出继续UNKNOWN；CAS提交前失败或真实提交丢回复阻止后续资源。实际共享 Work.prepare 注入真实发布后丢回调，新 ExecutionWorkspace 显式协调后继续生成真实 Git 候选，依赖/准备资源保持候选排除。已有实际Controller/三Pi Worker审校/Git/退休/归档/warm reopen场景也完整重跑。
+
+W1 native实际重建，build-provisioning-recovery.json；源码与中文空格ZIP解压 Node/Electron 各297/297，无失败/跳过。W2 process/helper/Pi按原构建摘要复用；源码/解压四组各190/190。共享57项为55pass/2Linuxskip。证据 W1/provisioning-recovery-source-authoritative/native-filesystem-hosts-validation.json、W1/provisioning-recovery-roundtrip-second/component-roundtrip.json、W2/provisioning-recovery-roundtrip-second/process-component-roundtrip.json，最终完整性 W1/provisioning-recovery-final-integrity.json。开发first/second/third的ACL类型/句柄冲突与fifth旧Linux默认入口10项拒绝及一项fixture预期错误全部保留；最终没有放宽生产检查。
+
+本批取得的是已确认完整副本的显式冷协调。复制中途/原分配身份尚未入账的现场继续UNKNOWN，marker不授予删除权；尚无逐文件分配前账本/部分字节协调。每树10000项/1GiB、Work证据16MiB有界，重复完整CAS保存的大规模性能未资格化。namespace/断电屏障仍未取得产品保证，不等于系统重启、宿主pending/tool/native投影或owner冷退休恢复。源链接/更大项目、完整生产消费/多步事务、W3普通权限、W4实际Electron/IME/剪贴板/多窗口/应用重启、W5整应用包仍待验收。W0 passed；W1/W2/W3 unsupported；W4/W5 not-run；managedExecution.ready=false，能力矩阵未变。
+
+## Windows 真实桌面启动与私有 profile（2026-11-03，历史批次）
+
+基于 release/alpha.4 的真实 main.cjs 入口，修复窗口前演示登记表 eager save 使用 Linux persistence 而退出的问题。共享 GuidedDemo 仍统一恢复 epoch、保留 inflight UNKNOWN 和串行 mutation；桌面记录文件效果单独抽出，Windows 只选择私有 profile 内有界原生 HANDLE 读取、保护 ACL 子目录、SHA CAS 文件发布与实际屏障。演示登记保存使用原始读取版本；DesktopHost 外观/修改者设置也绑定观察版本，writeVersioned 不为旧 mutation 偷换成新读取版本。独立进程赢家、损坏 JSON、ACL 漂移均拒绝并保留。Chromium 启动前建立 desktop/omp/migrations 私有子目录；已有宽松 ACL 不自动修复。
+
+DesktopHost 仅为私有 profile catalog 显式传递原生 ProjectStorage/SQLite root，实际保留原始目录和数据库 HANDLE、拒绝独立重命名；没有启用项目 initialization。真实 project.pick 在项目 .nozeli 分配前仍返回 PERSISTENCE_UNSUPPORTED。project-git 的全局能力检查、POSIX 身份和 path 写入尚待抽离/接入，不能为了阅读跳过 Git 初始化或在不安全路径上继续写。
+
+新增6项定向测试，源码 Node/Electron 与解压包内 Node/重命名 Nozeli.exe 的 Node 模式四组各6/6，无失败/跳过。固定入口 node tools/test-suites.mjs windows-desktop-profile。实际渲染器构建退出0；受影响共享回归6项为3pass/3Linuxskip，不宣称 Linux/macOS 实机回归。本批未修改 native/Pi 构建输入，逐项核对最新 W1 build-provisioning-recovery、W2 build-input-custody/build-cold-journal 后复用二进制，没有伪称重编译。
+
+实际制作完整目录候选闭包，包含 Electron、当前 src/renderer/assets、生产依赖、W1/W2 native/supervisor、固定 Node/Pi/MinGit 及许可证资料；25,270文件、1,240,745,718字节，ZIP SHA-256 为 7e890a55a287a5ed02ca759fa847daefb93dfc1d083cd010e54ebc03fd1a5d32。中文和空格目录解压，逐文件摘要/ZIP CRC/运行后源码一致性通过。包内 Pi/固定 Node/MinGit 在仅 Windows System32 的 PATH 下实际解析/执行版本检查；未启动 Pi 或模型。
+
+源码客户端和解压 Nozeli.exe 分别执行“显示原生窗口→稍后配置→真实IPC保存外观与修改者设置→准确拒绝项目初始化→正常关闭→全进程重启→读回精确设置/空恢复表→正常关闭”，各4项检查、两个进程均退出0，无 renderer error。测试使用全新合成 profile，当前继承宿主为非管理员令牌；没有读取个人项目/账号或发起付费请求。记录 native isVisible；早期 renderer document.visibilityState 在窗口被遮挡时为hidden，不以截图或页面就绪冒充物理输入/IME资格。
+
+证据 W4/profile-qualification.json、W4/profile-suite-final-cas/report.json、W4/profile-extracted-final/report.json、W4/startup-source-authoritative/report.json、W4/startup-extracted-final/report.json、W4/profile-package-final/package.json、W4/runtime-extracted-final.json、W4/profile-final-integrity.json。开发失败、历史旧快照和打包中源码变动被拒绝的回执全部保留。
+
+范围仍是隔离测试实例的启动/私有设置和空 catalog。未验收真实账户 singleton/启用自动更新、旧 profile ACL/配置锁迁移、项目登记/Git baseline/源读写/草稿/批注、物理IME/系统剪贴板/多窗口、托管业务冷恢复和干净账户/DLL闭包。应用候选可启动不等于可日常工作或可发行；随包合成测试只用于本地资格验证。全局能力矩阵未放行，managedExecution.ready=false；W0 passed，W1/W2/W3/W4/W5 unsupported。W4/W5由not-run改为unsupported，表示已实际运行部分场景但完整门未通过。
+
+## Windows 项目阅读、编辑与草稿主链（2026-11-04，历史批次）
+
+基于 release/alpha.4 继续落地。DesktopHost 已选择分别核验 profile 和每个已选择项目的原生作用域；主线程保留项目根 File ID/ACL 句柄直到全部数据库线程确认停止。未选择的 sibling 与 profile/project 重叠拒绝，项目同路径换实体保留外部赢家与原私有草稿。StorageDatabase 关闭同步封闭 admission，并等待关闭前已接收的 receipt reconciliation；实际停止未确认继续保留作用域，不以 request 已回复冒充 worker 已退出。
+
+共享 ensureProjectGit 仍统一新建/已有仓库、敏感文件名排除、初始基线、ignore、index/ref、原 operation journal 和重试策略；文件效果抽到 project-git-io，Windows 选择原生目录身份/保留句柄、源 HANDLE 流、排他锁、原读取 SHA CAS、create-only index 和实际 flush。已有 dirty HEAD/index/源字节不覆盖，父仓库仅增项目范围 ignore，commit-prepared 之后不捕获后来的用户文件。公开 .gitignore 保留 owner/group/protection/全部 ACE；Windows 可规范化自动继承 bookkeeping。Windows 链接/重定向 Git 目录、含 reparse 的基线目录继续准确拒绝。
+
+DesktopHost 源读取改用已选择作用域内的原生 HANDLE；文本保存沿用共享草稿/历史/批注映射状态机，在 TxF 锁内比较原先读取摘要。基线使用独立私有恢复材料库；外部原文变化、最终检查后的晚到写入、原文件删除/明确重建、外部 index/ignore 赢家都保留原事实。TxF 不可用时没有普通 rename 回退，namespace/断电持久性仍未资格化。Office 等调用点已传原基线摘要，但此批不为其完整界面验收签字。
+
+固定测试入口 node tools/test-suites.mjs windows-desktop-project。本批36项（含原profile6项）：源码 Node/Electron 与解压固定Node/Nozeli.exe Node模式四组各36/36，无失败/跳过；独立实际进程验证草稿/材料冷重开。共享关闭回归10/10，renderer实际构建退出0。native/Pi源码输入未变，按W1/W2原实际构建回执逐项复核复用，没有宣称新native编译或Linux/macOS实机回归。
+
+两套真实GUI在源码和中文空格解压Nozeli.exe均通过：第一套6项，窗口可见→稍后配置→项目pick/共享Git基线→HANDLE读→文本CAS保存→外部冲突/草稿保留→退出与全进程重开；第二套5项，实际Markdown→CDP鼠标选区及Shift+Arrow含中文锚点→本地批注与原始材料→键盘编辑/Ctrl+S→未保存文本恢复账本→全进程重启读回原批注。四套共8个应用进程正常退出0，无renderer error，child PATH仅System32。当前继承令牌非管理员；CDP键盘/选区不等于物理中文IME，未配置provider或调用模型。
+
+新本地候选闭包共25,282文件、1,240,816,620字节，ZIP SHA-256 6f148de0fec5e0ae1d2631a0d17587aa908e78557f3fc0882da8161c22e58529；包含当前src/dist/assets、生产依赖、Electron/native/supervisor/固定Node/Pi/MinGit及许可证数据和合成验证文件。CRC、25,282解压文件摘要、770个src/dist与源码一致性、测试文件一致性、native输入与Git diffcheck均通过；无非忽略二进制进入Git。此为本地资格候选，不是安装器或完整发行。
+
+证据：W4/project-qualification.json、W4/project-source-first/report.json、W4/project-extracted-first/report.json、W4/project-startup-source-authoritative/report.json、W4/project-startup-extracted-first/report.json、W4/project-reading-source-authoritative/report.json、W4/project-reading-extracted-first/report.json、W4/project-package-first/package.json、W4/project-runtime-extracted.json、W4/project-final-integrity.json。早期同步断言、祖先可写权限、SDDL bookkeeping、shell未绑定和一次真实关闭超时均保留。关闭超时后两次源码与一次解压真实阅读均正常退出；不据此宣称长时间关闭压力资格。
+
+剩余：物理IME/系统剪贴板/多窗口、旧profile ACL/配置锁迁移与账户singleton/更新门、文件树变更/Office/TeX/终端等剩余消费、托管pending/tool/native投影/owner冷恢复、源链接与大项目、TxF可用性/完整namespace屏障，以及干净普通账户DLL/安装发行。项目根在storage存活期间保持pin，不宣称支持在线移动。W0 passed；W1/W2/W3/W4/W5 unsupported；managedExecution.ready=false，全局能力矩阵未放行。
+
+## Windows 系统文本剪贴板、多窗口与关闭重开（2026-11-04，历史批次）
+
+本批新增真实Windows交互验收，生产src/dist与上一项目批逐文件摘要一致；没有修改业务状态机或放宽能力。新增 tests/windows-desktop-interaction.mjs 与独立 Python ctypes/Win32 clipboard oracle。实际Ctrl+C/Ctrl+X、剪切撤销、独立Win32写入后Ctrl+V（CRLF转LF，中文/emoji/组合字符保留）、document.clipboard IPC和可信navigator.clipboard写入均经独立进程读取CF_UNICODETEXT核对。原剪贴板各格式只保存在oracle内存，拒绝无法安全恢复的handle格式；最终源码和解压测试均恢复各自开始前的6种格式，不输出原内容，更新的外部赢家继续保留。
+
+真实双文档WebContentsView同时可见，分别键入只改变焦点文档；合成compositionstart期间拆出请求准确返回COMPOSITION_ACTIVE，原窗口/缓冲保留。结束组合后通过UI拆出为第二个可见原生窗口，再停靠；WebContents ID、generation、原DOM编辑器、精确Unicode缓冲、选区与真实撤销栈不变。截图仅记录宿主chrome或内容面，不冒充整个系统合成窗口。CDP键盘/合成composition不是物理中文IME/TSF候选证据。
+
+随后双面关闭前新输入草稿，正常退出后核对磁盘原基线不被关闭覆盖，完整重开从恢复账本读回精确草稿；另做4组键入→正常关闭→全进程重开→逐字核对→正常关闭。源码和中文空格解压Nozeli.exe各7组检查、10个实际应用进程正常退出0、renderer errors为空；共20进程及8组追加编辑/重开。每进程释放调试listener，PATH仅System32，未初始化provider或调用模型。这个有界批次不代表长期压力、崩溃/系统重启，前批一次真实关闭超时仍无根因结论。
+
+开发失败均保留：空executable参数、Python按Windows locale误解UTF-8 JSON、断言错误的内部composition码，以及忽略现有自动保存的磁盘预期。编码误判的早期second/third/fourth运行结束时保留了测试生成文本，未恢复测试前剪贴板；原内容只在已退出oracle内存，不能从日志还原。第五次起使用显式UTF-8并识别nonce合成赢家，最终源码和解压运行恢复各自开始状态。不能把最终恢复成功描述为恢复了整批调试前的剪贴板。
+
+renderer实际构建退出0，共享WindowRecovery回归26/26。本批native/Pi输入未变，按原W1/W2构建回执核对复用，不宣称新native编译或新四宿主组件重跑。新本地资格候选25284文件、1240841844字节，ZIP SHA-256 d069790072937261dd11b4708a7061350973c2021f757022fa9dae511566aac6；CRC、完整解压摘要、770个当前src/dist与所有随包测试、native输入均核对；包内固定Node/Electron/MinGit/Pi解析在System32-only PATH下通过。Python仅用于随包合成验证，不是用户运行依赖。不是安装器或完整发行。
+
+证据 W4/interaction-qualification.json、W4/interaction-source-eighth/report.json、W4/interaction-extracted-first/report.json、W4/interaction-package-first/package.json、W4/interaction-final-integrity.json、W4/interaction-runtime-extracted.json、W4/interaction-shared-close.tap。完整门仍为W0 passed，W1/W2/W3/W4/W5 unsupported；managedExecution.ready=false，能力矩阵未放行。
+
+下一批：默认启动/更新准确门控、旧profile ACL/配置锁与账户singleton。已观察Windows更新器先进入Linux ownedDirectory/getuid并显示内部异常，须在任何更新存储/网络前明确unsupported。物理IME、文件系统剪贴板/拖放、Office/文件树等剩余消费、托管pending/tool/native投影与owner冷退休、部分复制UNKNOWN/源链接/大项目、TxF/namespace屏障及干净普通账户发行仍缺。
+
+本批可复现入口（PowerShell，使用全新绝对输出目录；会短暂占用系统文本剪贴板，oracle在内存保留并按序列号恢复）：
+
+```powershell
+& 'D:/nozeli_windows/.tools/node-v22.23.4-win-x64/node.exe' tests/windows-desktop-interaction.mjs '<fresh-absolute-output>' '' '' 'C:/Users/seemseam/AppData/Local/Programs/Python/Python312/python.exe'
+# 解压运行：同一入口后依次传 fresh-output、包内 resources/app、Nozeli.exe、Python 解释器绝对路径。
+```
+
+## Windows 独立配置与更新平台门控（2026-11-04，历史批次）
+
+修复Windows启动更新器先进入Linux ownedDirectory/process.getuid、创建updates后显示内部异常的问题。共享AutoUpdater在构造/初始化、显式/自动检查、偏好写入、安装、直接请求/标签解析与停止状态路径上准确保持unsupported；文件目录检查、解包、安装helper和health回执也在副作用前拒绝。仅Linux x64保留既有发布合同和源码check-only语义，Windows/macOS/其他架构不读取更新文件、不建目录/排定时器、不发请求/派生helper/退出应用。主入口不消费不支持平台的health交接。状态增加checksSupported、平台/架构/reason/policy，界面准确说明此平台不支持并禁用检查/启用控件；没有实现Windows自动更新。
+
+共享nozeli-config继续拥有独立初始化staged→complete判定，Windows file effects接入原生私有HANDLE有界读取、原观察摘要CAS与真实屏障。原PID+unlink配置锁改为Windows专用持久gate：固定内容的私有文件由原排他HANDLE持有，正常/进程直接退出只释放HANDLE，文件保留，不根据PID存活推断删除。独立进程竞争准确拒绝，实际holder process.exit(37)不执行JS finally后原gate继续可用。未知旧configuration.lock、未知gate内容/权限或损坏JSON保留并拒绝，不自动迁移修复。
+
+Windows独立配置的暂存目录由原分配File ID入共享journal，恢复核对原目录实体并保留native pin直至结束；独立stage必须为空，marker仍用原读取SHA CAS。只通过原HANDLE删除已核对的空目录，替换目录/新增内容/外部marker赢家保留；无原stageIdentity旧记录要求显式恢复。Windows legacy import准确unsupported且不读取外部配置；apiKeyImportSupported=false。完成marker后清理中断仍可能保留stage，通用orphan清理和断电/重启保证尚未完成。
+
+固定入口 node tools/test-suites.mjs windows-desktop-update；11项（4更新/7配置）在源码Node/Electron与中文空格解压固定Node/Nozeli.exe Node模式各11/11，无失败/跳过。包含缺失更新目录保持缺失、enabled偏好/未决handoff/损坏status字节保留、强造candidate/health/direct helper拒绝、原生配置CAS外部赢家、ACL漂移、legacy lock、原stage恢复/替换/新增及真实持有宿主退出。原项目scope/storage/Git/读写/草稿36项在四宿主完整重跑各36/36，renderer实际构建退出0；共享release语义排序1/1，平台策略验证Linux x64可用，未取得Linux/macOS更新器实机回归。
+
+真实GUI在源码和解压各4项、2进程正常退出：启用本机loopback更新fixture并传health交接→可见启动→实际更新设置准确禁用与直接IPC阻断→经“查看初始化状态/使用独立配置”完成真实配置→退出重开读取同一complete→已有enabled偏好/未完成handoff/损坏status不变；本机feed请求始终0，不生成health回执。真实阅读/选区批注/键盘保存/草稿重开GUI也在源码和解压各5项、2进程退出0。四套共8应用进程，无renderer error，仅System32 PATH，未创建个人项目/配置账号或调用模型。
+
+新本地资格包25290文件、1240876761字节，ZIP SHA-256 d72009f912d3b3394b4e480fb6c54e938c705b6de5f4e998d7431632bccdba1a；CRC、所有解压文件、772个src/dist及随包测试与当前源码一致，native/Pi输入核对原实际构建回执复用，无新native编译声明。包内固定Node/Electron/MinGit/Pi解析通过；不是安装器/正式发行。
+
+证据 W4/default-qualification.json、W4/default-source-authoritative/report.json、W4/default-extracted-authoritative/report.json、W4/default-project-regression-source/report.json、W4/default-project-regression-extracted/report.json、W4/default-gui-source-fourth/report.json、W4/default-gui-extracted-first/report.json、W4/default-reading-source/report.json、W4/default-reading-extracted/report.json、W4/default-package-first/package.json、W4/default-final-integrity.json、W4/default-runtime-extracted.json。早期缺少test resize开关、错误等待启动初始化对话框、误传包内Node路径的失败原件保留。
+
+下一批仍缺：真实账户singleton/默认home启动与旧profile ACL/旧锁显式恢复；物理IME、文件剪贴板/拖放、文件树/Office/TeX/终端剩余消费；托管pending/tool/native投影与owner冷退休、部分复制UNKNOWN/源链接/大项目、TxF可用性/完整namespace屏障、干净普通账户DLL/安装发行。本批未重跑前批多窗口/系统剪贴板，不以历史交互回执代签改动后的全部产品资格。W0 passed，W1/W2/W3/W4/W5 unsupported，managedExecution.ready=false，全局矩阵未放行。
+
+本批GUI入口（PowerShell，从apps/desktop运行，fresh-output必须不存在；loopback仅用于核对0更新请求）：
+
+```powershell
+& 'D:/nozeli_windows/.tools/node-v22.23.4-win-x64/node.exe' tests/windows-desktop-defaults.mjs '<fresh-absolute-output>'
+# 解压GUI同入口后追加包内resources/app和Nozeli.exe绝对路径。
+# 四宿主专项：tests/windows-desktop-update-hosts.mjs <fresh-output> <Electron-or-Nozeli.exe> <pinned-Node.exe>
+```
+
+## Windows 原生单实例与启动路由（2026-11-04，历史批次）
+
+账户锁根仍从 OS 账户元数据 userInfo().homedir 解析，独立于 HOME/USERPROFILE/XDG、checkout 与实际 profile。Windows 在 profile 初始化前通过原生 HANDLE 创建/核验私有 singleton 子目录并固定原目录身份；Electron 持有原生单实例 mutex/IPC 和崩溃接替。争锁时临时设置 userData，随后恢复真实 profile；失败实例关闭自己的 pin，主实例在 will-quit 释放，强制退出由 OS 回收 HANDLE。已存在宽权限目录保留并拒绝，不自动改 ACL 或删除未知锁。单实例和独立配置 gate 是不同合同。
+
+修复 Windows Chromium 在 second-instance argv 中插入开关后，按固定位置截断可能将源码 main.cjs 当作待打开文件的问题；只传发送方 app.isPackaged 仍不足。当前发送方经 Electron additionalData 传 schema1 原始 argv、cwd 和打包标记，接收方核验后按原发送数据解析；原始/Chromium 实际传递参数在显式合成测试日志中可对照。不含此元数据的旧版本仍使用旧参数回退，未宣称跨版本/跨形态兼容。最终测试逐步断言最近项目只能包含合成 fixture，应用入口不能被登记为项目。
+
+固定入口 node tools/test-suites.mjs windows-desktop-singleton。源码 Node/Electron、最终中文空格解压固定 Node/Nozeli.exe Node 模式各 3/3，无失败/跳过，验证 profile 恢复、失败清理、主实例 pin 生命周期和发送端参数元数据。源码和解压实际 GUI 各 9 项，另加两个方向跨可执行文件/打包形态各 10 项：可见启动、独立 ACL 检查、不同 profile 二次启动在初始化前退出0、绝对中文空格文件/相对 cwd 文件准确打开、原未保存文本与磁盘原文保留、独立目录 rename 拒绝、三进程并发争锁、三个 helper 在 singleton/profile 前分流且缺 payload 退出1、正常退出接替、受控强制结束后的接替，以及 ACL 漂移拒绝并原样保留。
+
+所有 GUI 使用显式合成账户 singleton，未取得/写入个人账户实际 singleton；纯测试核对默认解析器不等于真实默认 home/旧安装共存资格。崩溃场景只证明 singleton 和目录 HANDLE 回收，不代签草稿/托管业务冷恢复。GUI 驱动在源码测试环境运行，实际产品进程从解压包启动、PATH 仅 System32；生产包不携带 puppeteer-core。最终包再跑默认独立配置/更新门控 4 项和阅读/编辑/批注/草稿重开 5 项，共 4 应用进程正常退出0；所有最终 GUI renderer errors 为空，未配置 provider 或调用模型。
+
+renderer 实际构建退出0，共享关闭回归26/26。native/Pi 输入核对原实际 W1/W2 构建回执复用，未修改 native 或宣称重编译。新本地资格候选 25293 文件、1240897645 字节，ZIP SHA-256 3548a35b1e372971176f72d3d8eabe551350f388320f07354d68fa0503e5a36d；CRC、全部解压摘要、772 个当前 src/dist 和随包测试一致性、native 输入、包内固定 Node/Electron/Pi/MinGit 解析均通过。单实例四宿主与双向 GUI 在 original-argv 包实际完成；最终 settled 包逐项比较所有文件，唯一变化为合成 reading 驱动等待保存回执，产品/依赖/native/单实例验证文件完全相同，回执 W4/singleton-package-equivalence.json。最终包另实际运行配置与阅读 GUI。候选是本地目录/ZIP，未制作安装器或替换日常安装。
+
+证据 W4/singleton-qualification.json、W4/singleton-source-original-argv-final/report.json、W4/singleton-extracted-original-argv-final/report.json、W4/singleton-cross-source-original-argv/report.json、W4/singleton-cross-extracted-original-argv/report.json、W4/singleton-defaults-settled-extracted/report.json、W4/singleton-reading-settled-extracted/report.json、W4/singleton-package-settled/package.json、W4/singleton-settled-final-integrity.json、W4/singleton-settled-runtime-extracted.json。早期 Electron reporter 计数失败、包内缺开发 GUI 驱动，以及真实跨形态路由超时与诊断原件保留；开发依赖缺失在应用启动前停止。阅读回归还暴露驱动在磁盘发布、界面保存回执未落稳时立即输入下一段的时序错误，共享保存循环吸收了前两个新字符；改为等待真实 save-status=saved 后才开始独立未保存阶段，未修改产品保存逻辑。
+
+早期“跨形态通过”缺少禁止登记入口路径的断言，不能作为最终资格。参数错误曾在源码 src/main 创建 .nozeli 项目元数据；已核对该批 operationId/projectId，将原5个文件和目录整体同卷移到 W4/singleton-unintended-source-project，未删除原始材料；移动前后根/文件身份和所有字节一致，回执 W4/singleton-unintended-source-project-move.json。源码内已无该意外元数据，当前最终回归明确拒绝再出现此类项目。
+
+仍缺旧 profile ACL/旧 PID 锁显式恢复、真实默认账户/旧安装共存、物理 IME/文件剪贴板/拖放、文件树/Office/TeX/终端剩余消费、托管 pending/tool/native 投影/owner 冷退休、部分复制 UNKNOWN/源链接/大项目、TxF 可用性/namespace 屏障与干净普通账户 DLL/安装发行。W0 passed；W1/W2/W3/W4/W5 unsupported；managedExecution.ready=false，全局矩阵未放行。
+
+可复现入口（apps/desktop，输出目录必须全新，均使用合成账户根）：
+
+```powershell
+node tools/test-suites.mjs windows-desktop-singleton
+# 跨形态 GUI：node tests/windows-desktop-singleton.mjs <fresh-output> <app-root-or-empty> <exe-or-empty> <peer-app-root> <peer-exe>
+# 解压组件与GUI：<bundled-node> <bundled-app>/tests/windows-desktop-singleton-hosts.mjs <fresh-output> <Nozeli.exe> <bundled-node> <bundled-app> <source-tests>/windows-desktop-singleton.mjs
+```
+
+最后一参数明确指定带 puppeteer-core 的外部测试驱动，实际应用仍完全运行解压的 Nozeli.exe/resources/app。旧 desktop-singleton.test.mjs / singleton-electron-entry.cjs 只观察 BrowserWindow，并未设置合成 singleton，不能覆盖当前 BaseWindow/WebContentsView 或作为本批证据。
+
+## Windows Office 保存、导入与完整表格恢复（2026-11-04，当前）
+
+固定 release/alpha.4 基线继续推进实际桌面消费。Word/XLSX 的共享 saveOffice 包装现在保留原生 committed、durability、commitUnknown、operationId、win32Code，顶层与 IPC details 均携带；真实发布后目录屏障失败不得伪装为“未写入”，保留编辑副本并提示核对原件。DOC 导入使用共享 replaceFile/createOnly，导入候选先留独立不可变恢复对象；仅明确未发布的目标碰撞可换后缀，发布不确定立即停止并保留实际路径/副本，不覆盖外部赢家。
+
+实际 GUI 验收发现格式不支持时“保留恢复副本并关闭表格”会在共享 session.flush 中再次导出失败。当前 retainWorkspace 在 XLSX 导出失败时捕获完整 schema1 编辑快照（原 XLSX + Fortune 模型），宿主校验快照和原包，恢复设置提供 .recovery.json 导出。保留 dirty/冲突事实，不以清空脏标志绕过关闭；捕获/持久化期间 revision 或源身份变化仍拒绝关闭。完整快照永不记为可清理的 cleanOfficeBaseline，避免重开时被当作已写回原件丢弃。此快照用于保留/导出，尚未实现自动还原成可编辑工作簿或无损格式化 XLSX 写回。
+
+源码 Node/Electron、中文空格解压固定 Node/Nozeli.exe Node 模式各16/16（11 原生 Host + 5 共享恢复），无失败/跳过。覆盖 Word/Sheet 原生 ACL、内容/公式保存与历史、独立进程外部赢家/删除/晚到 CAS、真实发布后屏障错误和冷重开；真实 OLE DOC 转换、目标碰撞与已发布不确定不重试。源码项目读写/Git/草稿/profile 回归 Node/Electron 各36/36。共享 workspace-native 广泛运行仍因默认 Windows persistence 门出现71项 fixture拒绝，原日志保留；不可宣称该套件通过。
+
+源码/解压实际 GUI 各8项，4个真实应用进程正常退出0、renderer errors为空：真实 Word 键盘/中文字符/Ctrl+S、表格 B2与SUM依赖和邻格不变、格式不支持且原件不变、快照期间新编辑阻止关闭、重试后完整原包/两次格式/公式保留、真实 DOC 导入控件、正常进程重开与快照字节不变。驱动是外部 Puppeteer，产品从解压 Nozeli.exe/resources/app 实际运行，PATH仅System32；未配置provider或调用模型，自动Unicode输入不代签物理IME。
+
+renderer实际构建退出0；native/Pi输入与原W1/W2构建回执核对后复用，未改native或宣称新编译。新本地资格ZIP 25300文件、1241000888字节，SHA-256 bdf252154a04a0545de13fbe302a578d12edeb0af596b627a6ea7bdec3881154；CRC、全清单解压摘要、当前src/dist和包内测试一致、native输入及固定Node/Electron/Pi/MinGit解析通过。仅本地目录/ZIP候选，不是安装发行资格。
+
+证据：W4/office-qualification.json、W4/office-source-recovery-final/report.json、W4/office-extracted-final/report.json、W4/office-gui-source-race/report.json、W4/office-gui-extracted-final/report.json、W4/office-project-regression/report.json、W4/office-package-recovery/package.json、W4/office-final-integrity.json、W4/office-runtime-extracted.json。首次原生测试驱动错误、实际恢复关闭失败、广泛共享fixture失败均保留。
+
+W0 passed；W1/W2/W3/W4/W5 unsupported；managedExecution.ready=false，能力矩阵未放行。旧profile/未知锁恢复、默认账户共存、公共文件树变更/文件剪贴板/拖放、物理IME、PPT/TeX/终端、托管冷恢复及干净账户发行仍缺；本批不外推其他系统或完整Office兼容性。
+
+复现（apps/desktop；输出目录必须全新；实际 GUI 驱动依赖源码开发环境）：
+
+```powershell
+node tools/test-suites.mjs windows-desktop-office
+node tests/windows-desktop-office.mjs <fresh-output> [app-root] [executable]
+# 解压纯组件：<bundled-node> <bundled-app>/tests/windows-desktop-office-hosts.mjs <fresh-output> <Nozeli.exe> <bundled-node>
+# 解压 GUI：<source-node> <source-tests>/windows-desktop-office.mjs <fresh-output> <bundled-app> <Nozeli.exe>
+```
 
 ## HTML 成果效果与冻结前后对比（2026-11-03，Linux 源码）
 
@@ -932,6 +1359,303 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 旧包复制Electron.app而未替换 `CFBundleIconFile=electron.icns`。打包改用现有Nozeli paired-tabs品牌PNG经sips生成完整iconset，再由iconutil输出Nozeli.icns；Dock启动图标也显式设置为同一品牌资源。`dist/macos-icon-fixed-20261108/Nozeli.app` 已实际构建／签名验证／启动；通过NSRunningApplication读取系统识别的运行图标并转PNG，视觉确认为红框黑色N。证据 `.test-output/icon-check/{verification.json,system-running-icon.png}`。不清空系统图标缓存、不覆盖旧包、不强退用户实例；本轮仅图标专项，不重跑完整默认套件。
 
+## Preserved Windows alpha.5 verification history
+
+The following results precede the alpha.6 integration and do not qualify the new sources.
+
+
+
+## Windows alpha.5 原生迁移验证
+
+当前分支基线为官方 `v0.1.0-alpha.5` / `26b39d61d44edf30988efcb1bddcdba1ff7cffdf`。全量迁移前源码和Git状态保存在 `D:/nozeli-test/20261104-alpha5-migration`；此路径是当前主机证据位置，产品运行不依赖它。原 alpha.4 结果仅作为历史，不外推新版资格。
+
+`node tools/test-suites.mjs windows-recovery-export` 是两个明确列入的Windows原生测试文件：真实有界多块导出、原始SQLite记录及在线/离线材料摘要、私有ACL、取消/窗口代次/最终发布检查、外部赢家、junction拒绝、真实发布后屏障失败事实，以及带原确认绑定的显式收尾重试。只用合成材料，无真实模型。
+
+双宿主完整驱动：`node tests/windows-alpha5-hosts.mjs <shared|native|process> <fresh-absolute-evidence> [electronExe] [nodeExe] [both|node|electron]`。PATH仅System32、清理敏感环境和继承的运行时配置；真实子进程退出/TAP同时保留，失败或超时不会伪造为通过。shared包含新版接口及原生恢复；native保留完整原生读写/事务/安全/归档场景；process包含原Job/stdio/owner/宿主lease及实际Pi SDK的本地loopback脚本服务。单次完整Worker超时180秒、双宿主每宿主上限600秒；测试断言和实际事务次数不因超时调整而减少。
+
+源码/解压GUI分别使用 `windows-desktop-file-tree.mjs` 和 `windows-desktop-office.mjs`，参数为全新的绝对证据目录，可额外传解压app与Nozeli.exe路径。驱动点击真实菜单/对话框/嵌入编辑器并检查实际磁盘内容、恢复和整进程退出。自动Unicode输入不代签物理IME。资格ZIP含合成测试和Puppeteer依赖，属于验证产物；不能直接当作安装发行包。
+
+默认套件的Windows失败与全部初次失败/超时日志保留在同一迁移证据目录。广泛共享fixture仍需按真实平台接入，既有Linux `/proc` fixture、终端/定时测试不能以修改platform或伪造权限让它们通过。源码与原生构建输入不变性、ZIP CRC、逐文件解压摘要、固定运行时解析和实际解压运行必须分别核验。
+
+
+表格首次加载的顺序回归 `sheet-readiness.test.mjs` 已列入unit和Windows shared组：ref早于工作表初始化时不计算/开放编辑，计算提交后才冻结实际模型；它与真实Office GUI一起检验初始化竞争。先前包的表格初始化失败与修复后结果分别保留，新版包必须重新构建renderer和验证实际编辑/保存/重开。
+
+公共文件树的 Windows 入口 `node tools/test-suites.mjs windows-desktop-file-tree` 现在在实际 Node/Electron 宿主各执行 32 项（16 项新建/恢复，16 项普通文件传输）。新增 `windows-desktop-file-transfer.test.mjs` 验证原生 HANDLE 改名/剪切、分块复制、批注/标记/历史/来源身份、未保存草稿、外部同名赢家、父目录/源 ACL 漂移、硬链接及 ADS 拒绝、真正进程退出前后恢复，以及已发布错误继续锁定原文档。硬链接不能假定被共享模式阻断；NTFS 实测可新增链接，必须通过发布前链接数复核拒绝，保留两个名字。独立 Worker 测试子进程使用真实 .mjs 文件，不通过 `--input-type` 运行文件型 Worker。
+
+实际 GUI 驱动 `tests/windows-desktop-file-tree.mjs <fresh-output> [app-root] [executable]` 含 8 项检查：真实菜单/对话框新建与改名、打开文档随新路径迁移、主进程 IPC 复制/剪切及完整退出重开。复制/剪切的这项证据是实际主入口 IPC，不能写为文件剪贴板或真实拖放验收。驱动仅对测试进程传入 `--disable-features=CalculateNativeWinOcclusion` 和 `--disable-backgrounding-occluded-windows`，并显式聚焦/核对文档可见性，避免原生窗口虽可见、Chromium 却将受遮挡文档暂停的自动化超时；这些参数记录在每个进程回执里，不修改产品默认启动参数。没有参数时的失败/隐藏状态证据保留，不能用此批代表无参数 GUI 启动或物理输入法资格。
+
+本轮普通文件范围为同项目、同固定 NTFS 卷、单链接且无 ADS、至多 512 MiB；目录递归移动/复制、回收站、跨项目、仅大小写改名、大文件扩容和自动恢复重放尚未接通。发布后故障保持 committed/uncertain，恢复记录保留原/目标元数据计划与草稿，冷启动暂停新建和传输，不自动路径回滚或删除目标。
+
+
+## alpha.5 Windows 公共目录递归传输（2026-11-04，最新批次）
+
+继续固定官方 v0.1.0-alpha.5（26b39d61d44edf30988efcb1bddcdba1ff7cffdf）。同项目/同 NTFS 卷内目录重命名、剪切、递归复制现已接入共享 FileTreeOps 的元数据集合 CAS、草稿 revision CAS 和恢复 admission。新 native 公共树根保留原根 HANDLE 和实际继承 ACL；独立只读 SourceDirectory view 共享该根，不能借用 Parent 写方法。复制先独占分配 .nozeli-tree-<operationId>.pending，分配前意图、分配后 File ID 和完整源清单均进入 prepared；文件分块写入并 flush，再核对暂存目录的全部成员与字节，整体 HANDLE 相对无覆盖发布。复制采用新 ID/目标继承 ACL，不克隆任意扩展元数据。
+
+复用已有 retained-tree 捕获/校验状态机，固定全部目录/文件身份、ACL 与 SHA256。Windows 改目录名必须释放子项 HANDLE，因此保留精确根句柄，发布后相对同一根重新捕获并比较完整清单；新成员、字节/权限变化、链接与元数据漂移保留实际发布结果及 needs-attention，不按旧路径 rollback/rm。部分复制或分配回执不确定保留隐藏暂存根及完整计划，冷启动阻止新变更，不自动删除或重放。这个合同是有界观察/复核，未宣称目录 namespace 冻结或断电原子事务。目录移动的子文件是只读租约，回执明确 files=not-flushed-by-read-lease；目录和两个父屏障已实际执行，完整 namespace 持久性未资格化。
+
+边界：目录最多 1,024 个子孙、合计 512 MiB、最多 128 级路径；恢复计划上限 8 MiB。原生清单拒绝任意层 .git/.nozeli（含大小写/规范化别名）、reparse/junction、硬链接与文件/目录 ADS，不截断树后伪装成功。现有普通文件上限仍 512 MiB；跨项目、回收站、文件剪贴板/拖放与仅大小写改名保持拒绝。
+
+源码/最终解压双宿主：文件树各48/48（原32加目录16）、原生各297/297、共享各102/102、项目各36/36；最终解压 Office 各16/16，无失败/跳过。目录16含嵌套/空目录/Unicode/多块复制、标签/历史/来源新旧身份、草稿/未保存复制保护、嵌套 metadata/ADS/硬链接/junction、晚到外部目标、释放窗口成员/字节漂移、实际发布后屏障失败、部分暂存和元数据赢家，以及复制/移动发布前后真实子进程退出与冷不重放。真实 GUI 源码/最终解压各10项、共4个应用进程正常退出0、renderer errors为空：实际文件夹菜单改名带动打开子文档，主进程 IPC 递归复制/剪切，整进程重开读回正文。仍使用逐进程记录的测试专用 Chromium 遮挡开关，不代签默认无遮挡、物理 IME 或文件剪贴板/拖放。
+
+新 native 已实际编译，15项输入，SHA256 `b4e5434140affcb3960908f31e09e0bbbf64e7c5cdd8e4d85ed9ff793a266f3e`；renderer 实际构建退出0，171项修改/新增JS语法通过。最新本地 ZIP 28197文件、1275138366字节展开内容，SHA256 `058ba2c4ce791dccd73fcd6d1705eb52d98f8b6b93fb4e3410067373cb240c83`；路径 `D:\nozeli-test\20261104-alpha5-directory-transfer\desktop-package-qualified\Nozeli-windows-alpha5-qualification.zip`。完整 ZIP CRC、全量解压清单、当前src/dist/tests、native构建输入、Pi manifest 与包内 Node/Electron/MinGit/Pi 解析均核验。仅本地资格产物，不是安装器或完整发行。进程/Pi190组本批未重跑，原二进制/输入复核后复用，既有 pipe-busy失败仍保留；默认套件此前619通过/12失败/1跳过仍不是全绿。未在Linux/macOS实机验收共享改动。
+
+首次 GUI 在刷新后点击已脱离 DOM 的旧节点失败，原 gui-source/report.json 保留；改为测试 locator 重试后源码 gui-source-stable 和解压 GUI 各10项通过，产品未因该驱动问题改变。
+
+权威证据：`D:/nozeli-test/20261104-alpha5-directory-transfer/qualification.json`；同根 native-build.json、hosts-source/report.json、hosts-extracted/report.json、native-source/report.json、native-extracted/report.json、shared-source/report.json、shared-extracted/report.json、project-source/report.json、project-extracted/report.json、office-extracted/report.json、gui-source-stable/report.json、gui-extracted/report.json、desktop-package-qualified/package.json、final-integrity.json、runtime-extracted.json、syntax.json。
+
+W0 passed；W1–W5 unsupported，managedExecutionReady=false，全局能力矩阵未放行。后续：系统回收站身份/恢复协议与跨项目/文件剪贴板/拖放、旧profile/未知锁和默认账户、物理IME/PPT/TeX/终端、托管生产冷恢复、部分暂存显式协调及干净普通账户安装发行。完整目标保持进行中；未创建开发提交、推送、公开发布或替换日常安装。
+
+
+## alpha.5 Windows 跨项目文件和目录传输（2026-11-04，最新批次）
+
+继续固定官方 v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf，远端标签对象 b7c32b1afc2d00c5c036af4283c616ff91e55fa2 已核实。两个已选择项目之间的普通文件/递归目录复制与同卷原生剪切已接入共享 FileTreeOps 和 WorkspaceNative。目标取得新的逻辑文档身份；源项目批注、修改历史、来源和草稿留在原项目，不迁移会话。剪切保留物理 File ID 和源 ACL；复制使用新 File ID/目标继承 ACL。Linux 既有 copy+trash 分支保留，未在 Linux/macOS 实机验收。主进程仍要求 shell 的活动目标项目，不放宽全局授权。
+
+两个项目按固定次序加锁，再取得共享元数据锁。两侧 intent 和本机 catalog 的 tree_cross_transfers 总账先持久化，再分配/发布。各次 prepared 同步两侧回执及总账；发布前重查源已保存、目标恢复资料无冲突。发布后先记共同事实，两侧 acknowledged 后才提交总账 complete，最后两侧 complete。任一发布/结果不确定、部分暂存、CAS 赢家或丢回调保留现场；共同总账加两侧 admission 阻止继续变更，冷开不自动重放。总账在 SQLite 内验证原始 JSON 类型/schema/UUID归属，再生成有界投影，不能从 UI 默认 kind 或数字化布尔值推导归属。未知/损坏归属阻止所有项目；每页50项/64KiB，超过1,024项无关 pending 则拒绝本次操作。仍缺显式协调/清理 UI。
+
+源码/最终解压 Node、Electron 两宿主：新增跨项目各17/17、原文件树各48/48、共享各102/102、项目各36/36，均无失败/跳过。17项覆盖文件/目录复制剪切、独立逻辑身份/ACL/字节、空目录/Unicode、多块复制、目标文件/元数据赢家、源未保存草稿、根替换/ACL变化、部分复制/丢回调、真实发布屏障失败、真实子进程在复制/移动前后及完成时退出、冷双项目 admission、2MiB未知记录有界投影、分页、原始类型/缺失kind、两侧/总账CAS竞争，以及共享源工作面 hold。真实 GUI 源码/最终解压各7项、共4个进程正常退出0且renderer errors为空：实际键盘/Ctrl+S、跨项目主IPC复制/剪切、活源文档保留、目录传输、目标赢家/活动项目权限、全进程重开。逐进程记录测试遮挡开关与forceVisible，不代签物理IME/无测试开关或真实文件剪贴板/拖放。
+
+renderer实际构建退出0，174项修改/新增JS语法通过。本批未改native，复用公共目录批实际构建，15项输入及全部原生二进制摘要均复核；未宣称新编译。native297、Office16、process/Pi190组本批未重跑，历史证据与既有pipe-busy失败保留。此前alpha.5默认619通过/12失败/1跳过仍不是全绿。最终本地资格ZIP 28200文件、1275185434字节展开内容，SHA256 `df33fa1c7d213c2c319f189754aa8cf1c00849722884ad2da64bf25a2d1b8d54`，路径 `D:\nozeli-test\20261104-alpha5-cross-project\desktop-package-final\Nozeli-windows-alpha5-qualification.zip`。全量CRC/解压摘要、当前src/dist/tests、Pi manifest、包内Node/Electron/MinGit/Pi解析均核对；子测试PATH仅System32，不回落checkout运行时。仅本地资格闭包，不是安装器/发行版。
+
+失败原件保留：cross-first.tap 14通过/2失败（一处测试误认为读取创建批注身份，一处产品漏导入path，均已修正）；中间包的源码一致性检查捕获了总账审查时的源码变动，原desktop-package-qualified记录保留，最终重新打包至desktop-package-final。最终17项双宿主通过数来自新报告，不使用中间结果补数。
+
+权威证据 `D:/nozeli-test/20261104-alpha5-cross-project/qualification.json`；同根 cross-source-final、cross-extracted、hosts-source、hosts-extracted、shared-source-final、shared-extracted、project-source、project-extracted、gui-source-final、gui-extracted 的report.json，以及 desktop-package-final/package.json、final-integrity.json、runtime-extracted.json、syntax.json。
+
+边界仍为本机固定NTFS、同卷、文件512MiB/目录合计512MiB和1,024子孙、128级路径、8MiB恢复计划。拒绝ADS/多硬链接/reparse及独立.git/.nozeli元数据，部分暂存保留。目录移动子文件只读租约不声明file flush；namespace/断电事务未资格化。W0 passed；W1–W5 unsupported，managedExecutionReady=false，能力矩阵未放行。下一步：系统回收站身份/恢复协议、真实文件剪贴板/拖放、旧profile/未知锁与默认账户、物理IME/PPT/TeX/终端、托管生产冷恢复、显式暂存协调及普通账户安装/更新/签名发行。完整目标继续，未提交、推送、发布或替换日常安装。
+
+
+## alpha.5 Windows 原生文件剪贴板与外部复制（2026-11-05，最新批次）
+
+基线固定官方 v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。接通真实 Ctrl+C/Ctrl+X/Ctrl+V、标准 Win32 CF_HDROP 文件列表导出、外部本地文件/递归目录粘贴和外部 Chromium File 拖入。独立 Win32 进程读写标准格式验证互通，修正 Electron 注册同名自定义格式不能替代标准 CF_HDROP 的问题。原生接口在 OpenClipboard 内核对 GetClipboardSequenceNumber 后才清空并发布；所有缓冲区预先分配，发布后失败保留 committed/uncertain。仅 CLIPBOARD_BUSY 异步每20ms重试，最多1秒；不重试代次变化或已提交错误。
+
+外部输入一律明确复制，Preferred DropEffect MOVE 也保留源。readonly 原生源句柄/身份/内容清单接入既有 FileTreeOps 独占暂存、无覆盖发布与回执协议，不注册或修改外部源、不修复源ACL、不隐式保存项目源。目标为新逻辑身份与继承ACL；源批注、历史和草稿保留。文件512MiB/目录合计512MiB、1,024子孙、128级路径、8MiB恢复计划；拒绝ADS、多硬链接、reparse和嵌套.git/.nozeli。部分暂存/结果不确定保留现场并阻止继续变更，冷开不自动重放。完成回执丢确认时保留CAS赢家并增加独立needs-attention记录，避免原赢家complete消除冷开阻塞。仍缺显式协调/清理UI和完整namespace/断电保证。
+
+外部拖入由preload的webUtils.getPathForFile处理实际File对象，主进程核验活动项目并签发绑定窗口/项目/TTL的一次性票据；renderer仅获得票据和名称。既有内部拖动继续共享文件树复制/移动状态机。已测Chromium实际鼠标内部拖动，以及CDP native File drag经过preload/主进程/复制流程；尚未验收资源管理器中物理鼠标拖入，不将CDP证据外推为Explorer实测。
+
+实际重建Windows文件原生模块退出0，16项构建输入与二进制均复核，SHA256 `aed0f453abcb178f7fca6fd8e158d94b9e09b0e876594300c645785a779c1cad`。源码和最终解压Node/Electron各：剪贴板17、native297、文件树48、跨项目17、共享102、项目36，均无失败/跳过；renderer相关7项通过。真实GUI源码/解压剪贴板各10项、跨项目活源文档/Ctrl+S各7项，共8次正常退出0，无renderer errors。GUI使用显式遮挡测试开关与forceVisible；不代签物理IME/默认无遮挡/全工作面验收。Office16、process/Pi190本批未重跑，进程二进制及原构建输入重新核对。此前alpha.5默认619通过/12失败/1跳过仍保留，不能报告全套绿灯。
+
+最终本地资格ZIP 28205文件、1275254538字节展开内容，SHA256 `1ca305e6577cb4a11bde1be4f8ea8903c015df26a0e65238151c957dbbed10b6`，路径 `D:\nozeli-test\20261104-alpha5-file-clipboard\desktop-package-stable\Nozeli-windows-alpha5-qualification.zip`。完整CRC、解压摘要、当前src/dist/tests、Pi manifest与包内Node/Electron/MinGit/Pi解析通过；测试子进程PATH仅System32。两次中间包因测试期间源码变更被一致性检查拒绝，失败原件保留，最终重新打包至desktop-package-stable。此包为本地资格产物，不是安装器或完整发行。
+
+剪贴板测试事故如实保留：早期gui-third曾覆盖测试前的图片，恢复失败且原内存快照随进程退出丢失，无法恢复；已告知用户，不能宣称整批恢复成功。后续改为保存序列化CF_DIB/CF_DIBV5并让Windows再生CF_BITMAP；独立合成2×2图片验证精确DIB与再生位图尺寸，最终源码/解压GUI运行开始时的剪贴板状态得到恢复或保留外部赢家。该修复不能恢复早期丢失图片。其余保留失败包括旧代次读取、前操作尚忙/脱离DOM的测试时序、实际CLIPBOARD_BUSY，以及独立hold加入后的测试选错回执。首次gui-extracted在启动中Target closed、尚未执行复制，原因未确定；所查时间段无Windows应用崩溃事件。原剪贴板已恢复，同一未改包在gui-extracted-retry通过全部10项；首次关闭仍列启动稳定性待查项，不能用重试消除该记录。具体记录见qualification.json。
+
+针对首次启动关闭，另用同一解压包和合成profile连续5次启动、激活项目及正常退出，5次均退出0且无renderer errors；未读写剪贴板。startup-probe/report.json与独立harness保留。未复现不代表已确定首次原因，该项仍待观察。
+
+权威证据 `D:/nozeli-test/20261104-alpha5-file-clipboard/qualification.json`；同根native-build.json、image-restoration.json、syntax.json、final-integrity.json、runtime-extracted.json和各source/extracted目录report.json。W0 passed；W1–W5 unsupported，managedExecutionReady=false，未放宽能力矩阵。下一优先项：系统回收站身份/恢复协议、物理Explorer拖入、旧profile/未知锁与默认账号共存、IME/PPT/TeX/终端、托管生产冷恢复、显式暂存协调及干净普通账户安装/更新/签名发行。完整目标继续，未提交、推送、发布或替换日常安装。
+
+
+## alpha.5 Windows 外部复制显式恢复核对（2026-11-05，最新批次）
+
+固定官方 v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。本机恢复设置为已识别的外部文件/目录复制记录新增“核对复制结果…”和显式确认。只读原生父/文件/目录句柄核对原 File ID、完整内容及目录暂存清单；已发布副本保留，未发布复制明确放弃且保留全部暂存和外部目标赢家。此确认只更新回执，不执行复制、删除、清理、重命名、源写入、ACL修复或元数据迁移。
+
+确认绑定主窗口/代次/项目根、完整回执revision与摘要和现场摘要，5分钟有效、一次使用；确认时重新捕获核验。只允许在线原项目，项目锁后取得共享meta锁，接入track/withProjectOperation以参与关闭排空。主记录与关联不确定记录各自expectedRevision CAS；原complete或已核对refused主记录原样保留。中间写入失败继续保留剩余hold，冷重开后重新预览/确认，不重放文件操作。新增第16项回归修复了“放弃复制主记录已确认、关联hold写入失败后不能重试”的缺口。独立批注/来源和草稿赢家保留。记录每项8MiB、关联合计16MiB、pending扫描256项、每页50项/64KiB；文件/目录512MiB、目录1,024子孙，超过上限拒绝且保留现场。
+
+本轮最终源码/解压Node、Electron各恢复16/16、剪贴板源/票据回归17/17、共享102/102；renderer相关7项通过。真实恢复GUI各6项，跨项目/活源Ctrl+S GUI各7项，共8次正常应用退出0，无renderer errors。实际恢复界面验证真实子进程退出留下的原生文件stage、保留字节/源、确认后另一次新操作、已发布文件和完整目录/空目录、文档窗口权限拒绝、预览后目标替换拒绝及整进程冷重开零重放。GUI仍使用逐进程记录的Chromium遮挡测试开关与forceVisible，不代签物理IME/Explorer拖入/默认无遮挡。本轮不读取或写入系统剪贴板；17项回归使用注入的剪贴板接口，真实标准Win32互通沿用上一批证据。
+
+renderer实际构建退出0，190项修改/新增JS语法通过。本轮未改native，复用上一批真实构建，16项输入和文件原生二进制摘要重新匹配；SHA256 aed0f453abcb178f7fca6fd8e158d94b9e09b0e876594300c645785a779c1cad，进程二进制/原构建输入也复核。native297、文件树48、跨项目单测17、项目36、Office16、process/Pi190本批未重跑，不冒称新通过；native297源码/解压历史结果见20261104-alpha5-file-clipboard。此前默认619通过/12失败/1跳过仍保留；共享改动未在Linux/macOS实机验收。
+
+新本地资格ZIP 28212文件、1275311989字节展开内容，SHA256 `a29e1b6ebe0eb07258719d6808d3a09d9185d52d991d08e7cee85eef3c72731f`，路径 `D:\nozeli-test\20261105-alpha5-tree-recovery\desktop-package-stable\Nozeli-windows-alpha5-qualification.zip`。完整CRC、全量解压摘要、当前src/dist/tests、Pi manifest和包内固定Node/Electron/MinGit/Pi解析通过，子进程PATH仅System32。它是本地资格产物，不是安装器/完整发行。中间desktop-package-final因修复期间源码变动被一致性检查拒绝，最终desktop-package-stable重新生成。早期hosts-source-first 5通过/8失败来自父句柄权限冲突及夹具误认普通关闭后文件stage仍存，已改只读父和真实进程退出；两次早期GUI分别为按钮locator与拒绝文案断言问题，失败原件保留。
+
+权威证据 `D:/nozeli-test/20261105-alpha5-tree-recovery/qualification.json`，同根hosts-source-stable、recovery-extracted、clipboard-source、clipboard-extracted、shared-source、shared-extracted、gui-source-stable、gui-extracted、gui-cross-source、gui-cross-extracted的report.json，以及desktop-package-stable/package.json、final-integrity.json、runtime-extracted.json、syntax.json。上一批剪贴板图片丢失事故及一次未解释的启动Target closed仍保留历史记录；本轮通过不能恢复旧图片或证明首次启动原因已解决。
+
+W0 passed；W1–W5 unsupported，managedExecutionReady=false，未放宽能力矩阵。仅外部复制记录获得显式核对，内部/跨项目/剪切/创建记录结算、系统回收站和暂存显式清理仍unsupported。后续继续这些事务的恢复合同、旧profile/未知锁与默认账号共存、托管生产冷恢复、终端/TeX/PPT、物理桌面和干净账户安装/升级/回滚。namespace/断电和TxF普适性未资格化。完整目标保持进行中，未创建开发提交、推送、发布或替换日常安装。
+
+
+## alpha.5 Windows 跨项目复制/剪切显式恢复（2026-11-05，最新批次）
+
+固定官方 v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。设置的本机恢复新增“核对跨项目操作…”，识别两个已登记项目之间的普通文件/有界递归目录复制和同卷原生剪切。复用外部复制的只读原生观察句柄，核对原 File ID、完整字节摘要、复制目标stageManifest或移动原manifest及空目录。剪切核对原对象位于原名还是目标名；原名被另一个对象占用时保留该外部赢家，不冒充原对象。已发布结果保留，未发布操作可明确放弃且保留全部暂存。确认只更新回执，不复制、移动、删除、修ACL或重新投影批注/历史/来源/草稿。
+
+两个项目按稳定次序取得项目锁，再取共享meta锁；两侧withProjectOperation和host.track纳入关闭排空。严格核对原project/instance/root绑定、同一operation/action/source/destination、两侧角色、元数据策略、各原生效果及共同tree_cross_transfers总账。每条完整记录8MiB、三处合计24MiB；真实文件/目录512MiB、目录1,024子孙；未知schema、缺失/损坏对侧记录、根绑定漂移、冲突效果/完整清单均保留hold，不猜测归属或重建对侧资料。总账完整读取复用共享recoveryRecord的collection参数，仍有界且使用真实revision和数据库version。
+
+预览令牌绑定主窗口/代次、两侧实际根与元数据身份、三条回执revision/摘要、现场摘要，5分钟有效且一次使用。确认重新捕获完整现场。两侧先CAS写入仍可见的needs-attention核对确认；观察到两处精确确认后，才CAS完成共同总账；最后分别CAS结束本机记录。任何一处失去确认或竞争，都留下共同或本机待处理记录，冷重开可重新预览/确认；不自动重放。原complete/refused回执与已完成总账保持原revision和完整值。原同宿主操作留下的WorkspaceNative恢复保护不由回执确认自动解除或改绑；仍需显式关闭/重新打开或使用原缺失文档恢复，完整活工作面衔接待补。GUI异常现场由独立合成宿主生成，不冒称覆盖同宿主失败后活源工作面的解除。这个顺序防止“本机记录先隐藏、总账写失败”导致恢复入口消失；总账确认后各项目按自有最后回执分别释放。
+
+最终源码/解压Node、Electron各新增恢复24/24、原外部复制恢复16/16、跨项目传输回归17/17、共享102/102，无失败/跳过；renderer相关7项通过。新增24项覆盖文件/目录复制和剪切发布、实际子进程在发布前/后和首个确认后退出、暂存和空目录、目标相同字节但新File ID、原名外部赢家、独立来源/草稿、三处CAS竞争、部分确认及最终本机CAS失败后的冷重试、原完成总账/回执保留、owner/TTL/代次/单次确认、无关恢复hold和损坏/缺失对侧拒绝。最终源码和解压24组驱动每宿主前后校验8项源码/测试输入摘要，禁止测试期间输入漂移。
+
+真实跨项目恢复GUI源码/解压各7项、原外部恢复GUI各6项，共8次正常退出0、renderer errors为空。实际UI覆盖保留真实进程退出stage、两个项目新操作、文件/目录复制剪切、外部源名赢家、文档窗口权限拒绝、共同总账失败后待处理仍可见并重新确认、目标替换拒绝和整进程冷重开零重放。GUI使用已记录Chromium遮挡测试开关与forceVisible，不代签物理IME/Explorer拖入/默认无遮挡；本轮不读写系统剪贴板。
+
+renderer实际构建退出0，197项修改/新增JS语法通过。native未改未重建，复用20261104-alpha5-file-clipboard实际构建，16项输入和文件二进制摘要重新核对：aed0f453abcb178f7fca6fd8e158d94b9e09b0e876594300c645785a779c1cad；进程二进制和原构建输入也复核。native297、文件树48、项目36、Office16、process/Pi190本批未重跑。此前默认619通过/12失败/1跳过仍保留，未在Linux/macOS实机验收共享改动。
+
+最新本地资格ZIP 28219文件、1275375261字节展开内容，SHA256 `1cc0cd403a731880a968bcb0a1dd13936949945026fc5d781b0ffc99e5fd2805`，路径 `D:\nozeli-test\20261105-alpha5-cross-recovery\desktop-package-stable\Nozeli-windows-alpha5-qualification.zip`。全量CRC/解压摘要、当前src/dist/tests、Pi manifest和包内固定Node/Electron/MinGit/Pi解析通过，子进程PATH仅System32。本地资格产物不是安装器或完整发行。首次20项Node18通过/2失败，是普通未发布剪切已自动refused而夹具仍找pending，改真实子进程退出后验证；中间hosts-source-final在审查追加effect.kind一致性期间运行，最终hosts-source-stable使用冻结输入摘要重新验证，原件保留。
+
+权威证据 `D:/nozeli-test/20261105-alpha5-cross-recovery/qualification.json`；同根hosts-source-stable、recovery-extracted、external-source、external-extracted、cross-source、cross-extracted、shared-source、shared-extracted、gui-source-first、gui-extracted、gui-external-source、gui-external-extracted的report.json，以及desktop-package-stable/package.json、final-integrity.json、runtime-extracted.json、syntax.json。旧剪贴板图片丢失及一次未解释启动关闭继续保留历史记录，不以本轮通过消除。
+
+W0 passed，W1–W5 unsupported，managedExecutionReady=false，未放宽能力矩阵。尚缺同宿主失败后活源工作面的保护解除/重绑/脏输入保留、同项目复制/移动的批注/历史/草稿协调及创建恢复、系统回收站合同/暂存显式清理、旧profile/未知锁、托管生产冷恢复、终端/TeX/PPT/物理桌面、namespace/断电与TxF普适性、干净普通账户安装/升级/回滚/发行。缺失或无法证明的跨项目对侧仍阻塞，不能用本轮已识别组的资格代签全部UNKNOWN。完整目标保持进行中，未提交、推送、发布或替换日常安装。
+
+
+## alpha.5 Windows 同宿主活源文档恢复（2026-11-05，最新批次）
+
+固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。本批接通WorkspaceNative真实源工作面与跨项目回执确认：文件操作的保护按operationId独立保存，不清除预览/网页等通用recoveryHeld，也不解除其他操作的保护。源工作面先实际flush/document-sync，再在原生只读句柄上捕获每个原文件的卷/File ID、完整SHA256与长度，绑定两侧项目/实例/根/元数据及原工作面代次。最多1,024个文档、合计512MiB，核对失败在文件操作前拒绝。
+
+恢复预览/确认与原操作使用同序的两个工作区队列，再取得两侧项目锁及共享meta锁，纳入两侧项目操作排空和host.track。确认持有源或移动目标文档的原生观察句柄，直到两侧回执/共同总账终态CAS完成。源身份/内容仍匹配的复制或放弃移动释放自己的保护，保留原缓冲对象、租约、选区和未发送内容；一般恢复保护及其他操作保护仍有效。源换成相同字节的新File ID、工作面重载/代次变化或绑定无法匹配时继续只读；用户恢复原对象后可明确“核验原文件并继续编辑”。最后写入实际成功但响应丢失时，此入口重新核验原终态回执/总账，不修改或重放文件效果。
+
+已发布剪切保留原项目阅读面、文档身份、批注和未发送内容；不静默改绑到新项目。单独“打开目标文件”入口重新核验原目标File ID/内容和项目绑定后，通过主窗口打开独立目标工作面。原位置存在外部新对象时保留该对象，原窗口不冒充它。普通成功剪切也使用相同保护与目标入口。renderer的独立恢复提示放在被inert保护的文档区之外；受保护工作面flush使用原workspace恢复保存路径，不写回项目。
+
+最终源码/解压Node、Electron各31项通过：15项新增真实Windows文件/回执/WorkspaceNative衔接，11项browser及5项update回归；两侧回执恢复24与跨项目传输17各在源码/解压双宿主通过，均无失败/跳过。31项驱动每宿主核对19项冻结输入摘要。覆盖已发布文件/目录剪切、复制、未发布目录stage与剪切、外部同字节新File ID、原对象恢复、脏缓冲/原租约、独立预览和另一操作保护、部分最后CAS失败、最后响应丢失、代次、权限/猜测operation及晚到目标替换拒绝、串行顺序和普通成功剪切。
+
+真实同宿主GUI源码/解压各6项，使用独立合成故障入口加载实际production main/IPC/WorkspaceNative，仅在真实native效果检查点制造故障，不添加产品故障IPC，不伪造owner/stop事实。源码使用开发Electron；解压故障GUI使用只从候选包复制的独立Electron运行目录，exe摘要与包一致，直接加载包内原fixture/main/src/dist，未改原包入口。原包入口另行通过跨项目GUI7和两侧回执GUI7；源码原入口跨项目GUI7也通过。五组GUI共10次正常退出0，renderer errors为空。源码GUI实际键入/保存、未发送备注、恢复后Ctrl+S、独立目标按钮、源替换拒绝与恢复按钮、完整冷重开均验证；未读写系统剪贴板。测试遮挡开关/forceVisible沿用并记录，不代签物理IME或Explorer拖入。
+
+首次新增Node14通过/1失败：普通未发布文件复制不保留测试预期的目录stage，改为实际目录复制保留场景；中间live-source因新增update测试造成输入漂移被驱动拒绝，最终live-source-stable和live-extracted以19项冻结摘要重新验证。首次GUI源复制恢复已通过，剪切目标按钮因位于inert文档区而无法点击；修复独立恢复banner后最终6项通过，失败原件保留。通用工作区扩展检查workspace-node-first为15通过/74失败：73项fixture仍使用未配置Windows native的默认ProjectStorage而在PERSISTENCE_UNSUPPORTED处拒绝；1项browser固定POSIX路径断言已改path.join并在双宿主重跑全部11项通过。通用fixture仍待适配，没有放宽生产能力门。
+
+renderer实际构建退出0，209项改动/新增JS语法检查通过。native未改未重建，复用原真实构建；16项filesystem输入及二进制、process原输入/二进制重新核对。native297、external16、shared102、project36、Office16、process/Pi190本批未重跑；历史默认619通过/12失败/1跳过亦未重跑，不能当作全套绿灯。Linux/macOS实机未资格化。
+
+最新本地资格ZIP 28226文件、1275431832字节展开内容，SHA256 `4816becf3452ff0acc7857e544797ff29688de8943a29dce39654ac34ea27548`，路径 `D:\nozeli-test\20261105-alpha5-live-recovery\desktop-package-stable\Nozeli-windows-alpha5-qualification.zip`。全量CRC、解压摘要、当前src/dist/tests、随包固定Node/Electron/MinGit/Pi解析通过。权威证据 `D:/nozeli-test/20261105-alpha5-live-recovery/qualification.json`，同根各report、desktop-package-stable/package.json、final-integrity.json、runtime-extracted.json、syntax.json和fault-harness-runtime.json。没有创建开发提交、推送、发布、安装或替换日常版本。旧图片丢失和一次未解释启动Target closed仍保留历史记录。
+
+W0 passed，W1–W5 unsupported，managedExecutionReady=false，能力矩阵未放宽。仍需整进程重启后原源阅读面的持久保护恢复（尤其原名被同字节外部对象占用时）、同项目元数据/草稿及创建恢复、系统回收站/明确暂存清理、通用workspace Windows fixture、旧profile/未知锁、托管生产冷恢复、终端/TeX/PPT、物理桌面、namespace/断电/TxF普适性及干净普通账户安装升级回滚发行。内存中的operation保护不冒充持久owner；本轮整进程重开只证明目标/暂存/外部赢家和零重放，不代签原源阅读面保护的持久重建。完整Windows目标保持进行中。
+
+
+## alpha.5 Windows 原文本源文档整进程冷恢复（2026-11-05，最新批次）
+
+固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。新增CrossTreeSurfaceJournal，使用既有私有recovery对象存储保存原文件响应（正文与原二进制字节分离）、原buffer、原workspace快照和view状态；摘要引用、卷/128位File ID/完整SHA256/长度及两侧项目绑定写入host生成描述。描述成为原两侧回执共同不可变内容；两侧intent及共同总账建立之后、原生文件效果之前写入各原view的tree-surface保护记录。部分写入或响应丢失在活窗口先保护，操作拒绝，效果不提前开始。
+
+原生窗口冷bootstrap及文档IPC先加载原view保护记录，再解析文件；校验原项目/根/元数据绑定、操作号、原源回执、描述摘要和不可变恢复对象。正文、编辑缓冲、原备注与后续由host绑定的workspace恢复记录得以保留。相同字节的外部新对象不作为原源；缺失源路径仍可打开原保留正文。file.read、阅读副本snapshot和导出共同走原保护内容，PPT保护读取避免重新解析当前源路径。保护本身不推断任何进程owner或冷停稳事实。
+
+原两侧回执核对后，受保护源窗口也在同项目重命名/剪切/删除前拒绝，不能把外部占用原名的对象移走。精确原源通过核验的复制/放弃移动先CAS写入该操作保护released，再释放活窗口；丢失释放响应可明确重核。未来/未知并发status保留，不能标准化后覆盖。已移动源经原终态记录重核后仍保持原阅读面，只允许明确另开精确目标；未知/更换目标拒绝。完整拒绝且没有prepared效果的原intent，只能在原回执和精确原文件验证后解除自身保护。保留其他操作及网页/预览hold。最多1,024文档、合计512MiB观察、每恢复对象256MiB、原view历史记录4,096；预算/对象校验失败保留资料并拒绝，未截断正文。
+
+最终源码/解压Node、Electron各47项全部通过，无失败/跳过；16项新增真实Windows检查覆盖独立进程重开、同字节源替换、原名缺失、正文/后续备注、成功/部分/丢响应释放、回执变更、未知并发status、目标替换、无buffer的导出与阅读副本，以及在真实原生prepared发布前检查点终止源宿主后由新进程重建保护和原输入。与此前15项活源、11项browser及5项update一起在每个宿主核对26项冻结输入。两侧回执24和跨项目传输17各在源码/解压双宿主通过。
+
+真实GUI源码/解压各8项，包含原生编辑/Ctrl+S、实际原生故障、两侧设置确认、明确目标/原源按钮，以及完整关闭/重启后原正文和通过真实键盘选区/可见备注菜单创建的未发送备注恢复。源码使用开发Electron；解压故障检查使用从合格包单独复制、exe摘要一致的Electron运行目录，直接加载原包fixture/main/src/dist。解压原程序入口另行通过跨项目及两侧回执GUI各7；五组共10次正常退出0，无renderer errors。未添加生产故障IPC。沿用并记录遮挡测试开关，不代签物理输入。当前实际冷阅读面资格为文本；Office/PDF/图片字节捕获已实现，但冷GUI/投影/导出尚未完整资格化。
+
+首次cold-node-first为7通过/1失败：夹具把未保存正文放在操作前恢复记录，被生产保存检查正确拒绝，改为已保存正文加未发送备注；随后定向检查暴露pending核验为moved后仍尝试原路径继续编辑，现返回保留移动状态。中间cold-source-stable虽然Node44通过，但因追加并发status/导出检查造成输入变化而被驱动拒绝；最终两侧各47以26项冻结摘要完成。中间GUI冷开原正文保护通过，但未锚定隐藏输入中的文字不是有效备注，后续又选用了不可点击页脚按钮；最终gui-source-frozen-v6使用真实键盘选区及可见备注菜单，原正文/备注/保护均在整进程重启后通过。原包入口GUI还发现源窗口集合为空时描述绑定报错，文件效果前拒绝；修复空集合分支，新增真实无源窗口递归目录复制/剪切回归。初始gui-cross-extracted失败及旧ZIP保留。最终源码GUI还因后台保存使恢复分页游标失效而停止，保留RECOVERY_CURSOR_INVALID原件并以同源码重试。分页读夹具现在最多12次重新读取失效页；不自动确认或重放任何文件效果。中间包的源码/测试变化由一致性检查拒绝，原始输出保留，后续审查还统一了较新保留正文与冷buffer，断言显示/导出/阅读副本都使用同一版本；定向通过后重新执行最终双宿主检查并生成最终候选，仅采用desktop-package-final-v6。首轮解压冷GUI已通过7项正文/备注/保护/目标检查，随后最后页面操作超时，第一次退出0、第二次未确认，失败原件保留；首次同包重试在早期Target closed停止，原因未明，原包入口两组7项GUI另外通过；采用第二次同包独立重试结果，保留前两次失败。
+
+renderer实际构建退出0，215项变更/新增JS语法检查通过。原native未改未重建；filesystem16项构建输入及二进制、process原输入/二进制重新核对。native297、external16、shared102、project36、Office16、process/Pi190及默认套件本批未重跑。默认619通过/12失败/1跳过和通用workspace扩展15通过/74失败的历史记录保留（73项存储fixture门控；browser路径已修并重跑），不宣称全套绿灯。
+
+最新本地资格ZIP 28232文件、1275486753字节展开内容，SHA256 `14910b2df3b1d49684442a46303dc2903ba5dca8cc2742be72ff3120fbbd96a7`，路径 `D:\nozeli-test\20261105-alpha5-cold-source\desktop-package-final-v6\Nozeli-windows-alpha5-qualification.zip`。权威证据 `D:/nozeli-test/20261105-alpha5-cold-source/qualification.json` 及同根各report、desktop-package-final-v6/package.json、final-integrity.json、runtime-extracted.json、syntax.json、fault-harness-runtime-v6.json。全CRC/解压摘要、当前src/dist/tests、固定Node/Electron/MinGit/Pi解析通过。没有创建开发提交、推送、发布、安装或替换日常版本；未读写系统剪贴板。旧图片丢失和一次未解释启动关闭的历史记录不删除。
+
+W0 passed、W1–W5 unsupported、managedExecutionReady=false，能力矩阵不放宽。下一批先补Office/PDF/图片冷阅读面和更大负载资格，然后继续同项目元数据/草稿及创建恢复、系统回收站/明确暂存清理、Windows通用workspace夹具、旧profile/未知锁、托管生产pending/工具/投影/owner冷恢复、终端/TeX/PPT/物理桌面及干净普通账户安装升级回滚发行。完整Windows目标保持进行中。
+
+
+## alpha.5 Windows Office/PDF/图片原阅读面冷恢复（2026-11-05，最新批次）
+
+最新证据 `D:/nozeli-test/20261105-alpha5-cold-office/qualification.json`：基于官方v0.1.0-alpha.5，Word/Sheet/PPT/PDF/图片的跨项目操作原阅读面冷恢复已补齐本地资格。原保护对象先核验再读取；Office保留候选包重新验证后显示和导出，候选摘要与原源摘要分开；完整表格快照转换为Fortune初始化格式，恢复格式/单元格/跨表公式，完整格式尚不支持写回XLSX时拒绝不完整导出。PPT恢复标题及幻灯片保留；受保护owner供给阅读副本，不误读外部同名路径。
+
+源码/解压Node和Electron各75项通过，冻结36项相关输入；真实五格式冷GUI源码/解压各11检查、各10次正常退出0，无renderer errors。解压原生产入口Office GUI另8检查/2次正常退出0。PDF/图片冷前后画布逐字节相同；合成晚到的引擎编辑经正常recovery保留，不冒充物理Office/IME资格。
+
+最新本地资格ZIP 28235文件、1275518902字节展开内容，SHA256 `ae0be3eeaaed200189bd70452316e91e36e0da85128db7cc5fe92d376de9b34a`，路径 `D:\nozeli-test\20261105-alpha5-cold-office\desktop-package-final-v3\Nozeli-windows-alpha5-qualification.zip`。完整CRC/全部解压摘要、当前src/dist/tests及运行时解析通过。native输入/二进制复核，未重建。默认619通过/12失败/1跳过和通用workspace失败仍保留。W0 passed、W1–W5 unsupported、managedExecutionReady=false。未安装/发布/提交/推送，未操作系统剪贴板。
+
+实际修复：CrossTreeSurfaceJournal异步重验Office候选包/完整sheetSnapshot；file.read返回原源身份摘要及单独候选摘要。document.export.read对保留编辑计算真实候选摘要和长度，origin明确retained-edit/retained-source；完整sheetSnapshot拒绝假装完整XLSX导出。workspace.document.snapshot和受保护owner的阅读副本共用保留内容。saveRecovery即时更新活hold候选，不将受保护Office标记clean baseline。renderer从候选bytes或完整sheet模型初始化并保留dirty；后台同步遇树保护使用既有host资料，不弹TRANSFER_HELD。Fortune初次mount始终从celldata重建，现显式转换每个runtime单元格，保留配置/公式/格式；恢复模型不支持完整格式导出时保留完整JSON。PPT草稿恢复后不再以文件名覆盖标题。
+
+新增10项实际Windows独立进程检查，覆盖五格式原名被外部占用、Office候选验证/导出/摘要/阅读副本、完整sheetSnapshot及损坏候选拒绝；与原Office11、office recovery5、sheet readiness2、live15、cold16、browser11、update5共75项，在源码和解压两种Node/Electron宿主各通过。真实GUI逐格式使用生产main/IPC、真实native cut、两侧恢复确认和整进程退出重开：Word保留正文、表格粗体/斜体/B2=35/SUM=55、PPT标题与幻灯片，PDF/图片画布精确一致；原名外部赢家和移动原件不改变。native故障fixture与晚到引擎输入明确为合成，不宣称物理输入或完整Office能力。源码/解压各11检查，20次正常退出0；解压原生产入口原Office8检查，2次正常退出0。
+
+中间失败全部保留：首次测试连续切换单内容布局使旧page脱离，改为逐格式完整冷循环；v2发现Fortune丢失runtime二维矩阵，修复celldata转换；v3发现PPT标题被文件名覆盖，修复；v4夹具structuredClone不能复制Vue proxy，改用引擎自身JSON模型。source-v5通过后截图发现后台TRANSFER_HELD提示并修复，最终source-frozen重跑。中间Node75通过但源码变化被driver拒绝；初driver错误预期80改为实际75，采用source-final75。首候选包因构建期间源码变化拒绝，v2被测试driver校正取代，仅v3权威。既有Target closed未解释历史、默认/通用workspace失败及旧clipboard图片丢失不删除。
+
+renderer实际构建退出0，217项变更新增JS语法通过，冻结1514项src/dist/tests摘要；native未改未重建，原输入和二进制复核。native297/external16/shared102/project36/processPi190未重跑，Office本批实际11，不冒用历史16数。完整CRC/28千余解压文件摘要与固定运行时验证通过；仅本地资格包，不是安装包或发行。剩余同项目metadata/draft/create、回收站/清理、通用Windowsfixture、旧profile/未知锁、生产托管pending/tools/projection/owner冷恢复、终端/TeX/PPT更广功能、物理桌面和普通账户干净安装/升级/回滚/签名发行。完整Windows目标继续进行中。
+
+
+## alpha.5 Windows 项目内元数据/草稿/新建显式恢复（2026-11-05，最新批次）
+
+最新证据 `D:/nozeli-test/20261105-alpha5-same-tree/qualification.json`：固定官方v0.1.0-alpha.5，当前HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。新增项目内复制、改名、剪切及新建对象的显式恢复。原生身份和完整字节/目录清单核对后，补齐原计划中的标签、历史、来源和草稿，保留无关记录、外部赢家和暂存数据。目标草稿、源草稿清除和完成回执在同一SQLite事务中比较全部版本并提交，文件效果零重放。
+
+源码及解压Node、Electron各93项通过：项目内恢复18、原子存储3、文件16、目录16、外部恢复16、跨项目恢复24。冻结24项驱动输入、1527项src/dist/tests，229项变更新增JS语法通过。真实生产入口GUI源码/解压各6项，两侧各2次正常退出0、无renderer errors，覆盖恢复设置、保留草稿/批注、Ctrl+S、新建文件/目录、同名目标替换拒绝、整进程重开。故障由独立合成宿主生成，不证明同宿主原编辑窗口完整活/冷衔接。
+
+本地资格ZIP 28243文件、1275575383展开字节，SHA256 `3f17fc4279ac9e30e72b30b58728c8ce7efeb400d4e6289cabd1cc6ea896a0fd`，路径 `D:\nozeli-test\20261105-alpha5-same-tree\desktop-package-final-v2\Nozeli-windows-alpha5-qualification.zip`。完整CRC/解压摘要、当前源码/测试和内置运行时核对通过。native未改未重建，复核原构建输入和二进制。W0 passed，W1–W5 unsupported，managedExecutionReady=false。默认619通过/12失败/1跳过、通用workspace15通过/74失败的历史保留；本批扩展storage另33通过/8失败，不能宣称全套通过。未安装/发布/提交/推送，未操作系统剪贴板。
+
+新增sameProject标记与项目/实例/根/元数据身份绑定；旧无标记记录仍unsupported。预览令牌绑定owner/代次、回执revision/hash、原生现场和metadata/draft计划，5分钟有效且单次使用。项目锁后取meta锁，withProjectOperation及host.track纳入排空。确认重验真实File ID、完整SHA256或含空目录的manifest。已发布保留，未发布明确放弃且保留全部暂存；新建对象已有用户内容时拒绝结算并保留内容。不会重新复制、移动、删除、清理文件或修ACL。
+
+元数据按原before/after差量合并，只接受受影响行仍等于before或after，无关新增行保留，受影响行并发赢家拒绝。项目数据库先CAS，恢复数据库再putMany单事务检查全部草稿源/目标及终态回执；任一revision冲突整批无写入。两数据库不是跨库原子事务，前阶段成功后失败仍留pending供明确重试。可识别旧的目标单写/源已清除部分状态；complete已落盘但响应丢失时，后续stale CAS不能覆盖成功回执。存储层另验证后项冲突全回滚、真实worker重开后幂等回执/请求指纹冲突、重复ID/无效版本/缺值无部分写入。
+
+新增18项真实Windows恢复覆盖文件/目录复制移动、新建文件/空目录、元数据响应丢失后独立进程重开、旧部分草稿迁移、整批响应丢失、同字节草稿revision赢家、最终事务边界目标赢家、预览后metadata/draft/file赢家、回执赢家及未发布stage保留。原file-transfer故障夹具更新到原子批次边界；完整事务成功但响应丢失时核对保留complete回执并允许后续独立操作。
+
+失败和中间产物保留：first/second为恢复版本purpose及stage生命周期夹具问题；third13/fourth17/atomic18在冻结前通过。hosts-source-first因源码漂移停止；hosts-source-final/首解压组合的旧600秒预算不足，在核实合成进程身份后停止，不能作为通过。初driver计数92随后按真实93修正；最终两个独立测试文件并发、每宿主1200秒预算，只采用desktop-package-final-v2。扩展storage33/8分别为打开SQLite不能unlink的Windows旧假设1项、旧controlled worker消息通道1项、通用初始化/retry fixture被Windows存储门控6项；保留TAP，不放宽生产门控。旧Target closed、默认/workspace失败及历史clipboard图片丢失继续保留。
+
+原编辑窗口在项目内操作失败后的完整活/冷恢复、成功改名后的buffer/lease迁移仍未资格化；本GUI是独立宿主产生故障后用生产应用核对并打开目标，不代表覆盖原活窗口。下一批先处理该边界，再继续回收站/显式stage清理、通用Windowsfixture/默认套件、旧profile/未知锁、生产managed pending/tools/projection/owner冷恢复、终端/TeX/PPT、物理IME/Explorer/多屏、普通账户干净安装/依赖/升级回滚/签名发行。完整目标保持进行中。
+
+
+## alpha.5 Windows 项目内原编辑窗口活/冷衔接（2026-11-05，v27）
+
+最新证据 `D:/nozeli-test/20261105-alpha5-same-surface/qualification.json`：固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。项目内原编辑窗口活/冷衔接已完成本地定向验证：正常改名迁移buffer、lease、layout和恢复记录，原窗口Ctrl+S只保存新路径；发布/未发布故障保留原文、批注与未发送备注，核对后显式打开独立目标，旧路径同名外部赢家不变。旧版本备注保留原摘要，不自动改绑到后来保存的新正文。
+
+源码及解压Node、Electron各149项通过：原窗口15、项目内恢复18、原子存储3、文件16、目录16、外部恢复16、跨项目恢复24、活源15、冷文本16、冷Office10。冻结35项驱动输入、1531项src/dist/tests，233项变更新增JS语法通过。原窗口故障GUI及正式生产入口GUI，源码/解压各6项、每组2次退出0、无renderer errors；前者通过独立合成fault entry加载真实main/IPC，后者直接启动生产入口。
+
+本地资格ZIP 28247文件、1275626206展开字节，SHA256 `a0cc6a9fcd223099a49a44207e6f89b92ec09cb29ed2cd129b681cbf0877b629`，路径 `D:\nozeli-test\20261105-alpha5-same-surface\desktop-package-final\Nozeli-windows-alpha5-qualification.zip`。ZIP CRC、全部解压文件摘要、源码/测试/native原构建输入及内置Git/Node/Pi清单核对通过。native未改未重建。W0 passed，W1–W5 unsupported，managedExecutionReady=false。历史默认619/12/1、通用workspace15/74及storage33/8结果保留，本批未重跑，不能宣称全套通过。未安装/发布/提交/推送，未操作系统剪贴板。
+
+原生效果前持久保存每个源文档的不可变capsule及host-only描述符，包含原文件、缓冲、恢复输入、布局和批注。回执绑定原项目实例/根/metadata身份、精确File ID及内容摘要。目录后代、阅读镜像复用共享保护；同项目终态核对取workspace串行、项目锁及meta锁，不复制业务状态机。
+
+正常移动先迁移恢复记录并持久化新布局，再释放原保护与迁移buffer/lease；丢失布局响应时，独立冷宿主仅接受终态回执和同一原生目标快照，避免读取旧路径赢家。改名后更新renderer documentKey。最终UI reconcile失败不会重建旧路径hold。失败移动继续保留原阅读面只读，按原capsule显示批注，确认不会改绑旧选区或未发送备注。
+
+中间失败TAP/GUI报告全部保留。夹具缺少layout/projectId、annotation kind与读后关闭时序已修复；GUI发现annotation.list返回envelope的生产判断错误已修复并用真实批注验证。GUI最初native pointer metrics等待超时，使用稳定窗口后renderer激活，仅为测试驱动修正。曾错误预期旧版本备注随正文保存自动改绑，现改为核对保留原materialDigest和新路径。远端本轮复核发生连接重置/超时，沿用既有官方alpha.5基线证据，不宣称最新网络核验成功。
+
+仍缺：多窗口部分journal release的完整故障矩阵、Office正常改名全部变体、回收站与显式stage清理、通用Windows fixture/default/storage失败、旧profile/未知锁、生产managed pending/tools/projection/owner冷恢复、终端/TeX/PPT、物理IME/Explorer/多屏、命名空间/断电/TxF可用性/大目录，以及普通账户干净安装/依赖/升级回滚/签名发行。完整Windows目标继续进行。
+
+
+## alpha.5 Windows 多窗口改名部分确认与冷恢复（2026-11-05，v28）
+
+最新证据 `D:/nozeli-test/20261105-alpha5-multi-surface/qualification.json`：固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。多窗口改名部分确认故障已完成本地定向验证：两个编辑窗口与阅读镜像保留原文和未发送备注；首个/第二个journal写入前故障及响应丢失、晚到旧布局、整进程冷恢复均保留原阅读身份。旧路径同名外部赢家不变。冷开可以恢复到已核验的新路径，也可保留只读原阅读面并显式核对目标。
+
+源码及解压Node、Electron各157项通过：多窗口8、原窗口15、项目内恢复18、原子存储3、文件16、目录16、外部恢复16、跨项目恢复24、活源15、冷文本16、冷Office10。冻结38项驱动输入、1534项src/dist/tests，236项变更新增JS语法通过。多窗口故障GUI源码/解压各5项，原窗口故障GUI及正式生产入口GUI各6项；每组2次退出0、无renderer errors。故障GUI仅通过合成entry加载真实main/IPC；正式入口GUI直接启动生产入口。
+
+本地资格ZIP 28250文件、1275656224展开字节，SHA256 `250520c23d89e5aef93791bb6c558da2c75930a27bdab27acbde54f77ad1222c`，路径 `D:\nozeli-test\20261105-alpha5-multi-surface\desktop-package-final\Nozeli-windows-alpha5-qualification.zip`。ZIP CRC、全部解压文件摘要、源码/测试/native原构建输入及内置Git/Node/Pi清单核对通过。native与renderer本批未改；沿用先前实际构建并核对输出。W0 passed，W1–W5 unsupported，managedExecutionReady=false。历史默认619/12/1、通用workspace15/74及storage33/8结果保留，本批未重跑。官方基线沿用已固定证据，本批未重新网络核验。未安装/发布/提交/推送，未操作系统剪贴板。
+
+故障复现：目录原生改名与新布局落盘成功后，首个文档保护记录释放成功而第二个失败；所有原窗口保留旧身份，晚到的旧布局可能覆盖新布局。若首个记录已标为released，重启会忽略原capsule并读到旧路径外部文件。第二轮TAP保留该失败证据。
+
+改为可验证的relocated状态，保留原身份capsule及明确relocatedTo。冷开旧身份继续使用原capsule；非原身份只有合法同项目、非copy、complete回执与精确目标公式的标记才可越过旧保护。尚未完成relocated写入的新目标需重新核验精确File ID、摘要与长度。再次正常改名允许当前身份继续，历史原身份仍保留。此批不追溯修复历史已released的记录，也不自动重放操作。
+
+8项原生定向场景覆盖3个文档面、两处部分写入、两处响应丢失、旧/新身份独立冷宿主、同字节不同File ID目标拒绝及连续改名。真实Electron GUI验证两个带锚点未发送备注的编辑窗口与阅读镜像，实际原生rename、主进程部分release故障、正常关闭和重启。冷窗口需逐个激活；首次显式核对可同时更新其他阅读面的状态，测试允许这一真实并发结果。所有中间失败证据保留。
+
+完整Windows目标仍缺：Office正常改名全部变体、回收站与显式stage清理、通用Windows fixture/default/storage失败、旧profile/未知锁、生产managed pending/tools/projection/owner冷恢复、终端/TeX/PPT、物理IME/Explorer/多屏、命名空间/断电/TxF可用性/大目录，以及普通账户干净安装/依赖/升级回滚/签名发行。
+
+
+2026-11-06 补充边界复核：外部合成验证脚本在源码/解压Node、Electron四组各3项通过、退出0。目标字段不符、非终态回执拒绝冷开；正常原生保存后新身份可继续读取，旧身份仍保留原capsule且不读取旧路径外部赢家。证据 `D:/nozeli-test/20261105-alpha5-multi-surface/marker-supplemental.json`；脚本及摘要记录在内。这3项是外部补充验证，不计入永久157项套件；源码/包内容未改。
+
+
+## alpha.5 Windows Office正常改名及PPT模型迁移（2026-11-07，v29）
+
+最新证据 `D:/nozeli-test/20261107-alpha5-office-rename/qualification.json`：固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。本批接通Office正常改名：Word、表格、PPT保持原编辑窗口身份，改名前后继续编辑，Ctrl+S只保存新路径；整进程重启保留内容与Word原版本未发送备注，旧路径同名外部赢家不变。PPT源文件不随独立模型编辑改写；全部索引版本和独立模型随项目内移动原子迁移，目标/并发模型冲突明确拒绝，已发布故障可显式完成元数据且零重放文件效果。
+
+新增PPT迁移6项已在锁定源码Node22定向通过，全部扩展套件包含既有157项共163项。源码Node24扩展162通过/1失败/0跳过：既有successful-copy冷恢复在Git初始化报not a git repository，单独重跑1通过，但原因未确定，原失败保留。源码Electron扩展163通过/0失败；解压宿主结果为node:163通过/0失败/0跳过; electron:163通过/0失败/0跳过。开发机Node24.13.0与随包锁定Node22.23.4为不同宿主，不宣称源码目录Node22整组重跑。源码/解压GUI各Office7项、多窗口5项、原窗口6项，共12次正常退出0，无renderer errors。Office使用正式生产入口；故障GUI使用合成entry加载真实main/IPC。选区为DOM/编辑器接口合成，明确使用forceVisible和遮挡测试开关，不代签物理IME或默认窗口。renderer实际重建退出0；241项变更新增JS语法检查通过，冻结1538项src/dist/tests摘要。
+
+当前本地资格ZIP 28254文件、1275685908展开字节，SHA256 `cbc60a7b04a290d20f5c1d4efd24a2b66745f3b8fb2ddf1f6ce0eb5c830245cf`，路径 `D:\nozeli-test\20261107-alpha5-office-rename\desktop-package-final-v2\Nozeli-windows-alpha5-qualification.zip`。完整CRC、全部解压摘要、当前src/dist/tests和包内Git/Node/Pi解析通过；native未改未重建，复核原实际构建输入和二进制。官方alpha.5标签本批首次网络复核成功，后续重复查询超时记录保留。W0 passed，W1–W5 unsupported，managedExecutionReady=false。默认619/12/1、通用workspace15/74及storage33/8历史失败本批未重跑，不能宣称全套绿灯。未安装、发布、提交、推送或操作系统剪贴板。
+
+复用共享文件树回执、恢复扫描与SQLite批次CAS；PPT版本索引和每个模型绑定原摘要，正常迁移与故障显式恢复均核对源/目标revision。copy保留源草稿且不建立目标模型身份。旧回执没有pptDrafts字段时继续原行为，不追溯修复历史丢失模型。目录迁移覆盖全部索引版本，任一后项冲突整批不提交。
+
+中间失败保留：首五次Office GUI停在改名前的选区/驱动环节；修正可见性和实际渲染DOM选区后sixth及正式重建后的final通过。额外旧多窗口GUI在键盘选区超时，现等待编辑器正文并用接口选区，retry通过；这是合成输入证据。首轮163宿主测试因测试输入变更而停止，不计通过；核对合成进程树后终止，残留查询已退出。首候选包desktop-package-final因后续测试夹具修改被取代，仅desktop-package-final-v2为当前一致闭包。
+
+完整目标剩余：Office更广改名/损坏旧恢复记录/跨项目PPT模型迁移、系统回收站与显式stage清理、通用Windows fixture/default/storage失败、旧profile/未知锁、生产managed pending/tools/projection/owner冷恢复、终端/TeX/PPT更广工作面、物理IME/Explorer/多屏、namespace/断电/TxF与大目录，以及普通账户干净安装、依赖、升级回滚、签名发行。
+
+
+## alpha.5 Windows 默认单元兼容与集成失败基线（2026-11-07，v30）
+
+最新证据 `D:/nozeli-test/20261107-alpha5-default-portability/qualification.json`：固定官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。本批修复默认单元套件的Windows兼容性：Linux合成恢复算法显式提供UID、使用POSIX路径；模拟终端在spawn前注入基线；屏幕80ms通知用可控时钟验证并修复排队写入在dispose后残留定时器的问题。共享Windows恢复与终端unsupported拒绝保留。
+
+定向修复前29通过/12失败/1跳过，修复后72通过/0失败/1跳过；后续原本因顶层getuid异常未注册的Linux合成用例现在执行。默认unit共71文件，源码锁定Node22、源码Electron、解压Node22、解压Electron四组各665通过/0失败/1跳过；跳过为Linux实机进程树用例，合成Linux算法不代表Windows原生所有权证明。完整integration已实际执行：527通过/1149失败/50跳过。624项报PERSISTENCE_UNSUPPORTED、377项报Cannot open pinned child；只归类失败入口，根因仍待逐项确认。全套default不能标绿，旧619/12/1历史保留。
+
+本地资格ZIP 43412文件、1398864172展开字节，SHA256 `cdd943e9742239353efe213110a26cb06ce97498fe182a857f495cb75c07bf06`，路径 `D:\nozeli-test\20261107-alpha5-default-portability\desktop-package-final-v2\Nozeli-windows-alpha5-qualification.zip`。CRC/全部解压摘要、当前src/dist/tests和随包Node/Git/Pi解析通过。冻结1538项，246项变更新增JS语法通过。renderer/native未改未重建，沿用已实际构建输出并核对native输入与二进制。本批未重新查询远端，使用上一批已核验官方alpha.5标签。W0 passed，W1–W5 unsupported，managedExecutionReady=false；未安装、发布、提交、推送或调用系统剪贴板。
+
+首解压包两宿主各637通过/5失败/1跳过：四个Pi测试按仓库相对路径导入失败，一个测试缺少esbuild。第二包两宿主各660通过/1失败/1跳过：桥接测试间接导入的Pi SDK依赖不完整。此为资格测试闭包缺失，不能称全套通过；原包、TAP及JSON保留。仅最终desktop-package-final-v2额外携带仓库布局Pi源码、SDK依赖和esbuild工具，全部71文件重跑通过；这些依赖只用于本地资格验证，不宣称最终用户发行包。没有删除、跳过失败用例或放宽生产平台门控。
+
+下一批优先复现默认integration中的私有目录打开失败、生产持久化选择与SQLite关闭占用；区分真实产品缺口、宿主不匹配和测试夹具，再继续pending/tools/projection/owner冷恢复与Work/Git接受闭环。Office v29源码Node24 Git初始化单项失败、旧workspace/storage失败继续保留，不能用本批unit通过抹去。
+
+
+## alpha.5 Windows 首次私有profile准备（2026-11-09，v31）
+
+最新证据 `D:/nozeli-test/20261107-alpha5-profile-bootstrap/qualification.json`：官方v0.1.0-alpha.5，HEAD 26b39d61d44edf30988efcb1bddcdba1ff7cffdf。本批接通桌面首次使用时缺少profile的原生私有目录准备：仅初始锚点缺失、尚无分配回执时从已存在的直接父目录创建完整私有链；设置记录和桌面ProjectStorage共享此逻辑。项目根不走备用锚点，不递归创建任意祖先，不修已有ACL，不跟随junction，不覆盖同名赢家，分配后/屏障失败保留现场。
+
+新增11项真实Windows回归覆盖首次catalog与设置、真实冷进程草稿、并发创建、缺失祖先、同名文件、junction、目录竞争、刷新失败和closed scope。源码Node22/Electron与解压Node22/Electron单元四组各665通过/0失败/1跳过；相邻profile/配置/项目存储四组各29通过/0失败/0跳过。Windows profile命名入口已纳入新增测试，源码两宿主各17通过。源码/解压正式生产入口GUI各6项、各两次退出0、无renderer errors；为可见Electron+CDP/invoke合成驱动，不代签物理IME/Explorer。完整integration567通过/1109失败/50跳过，比v30多40通过；624项PERSISTENCE_UNSUPPORTED、110项PROCESS_OWNERSHIP_UNSUPPORTED、108项EBUSY、41项OPEN_PERSISTENCE_UNCONFIRMED等仍待修复，失败码仅为入口分类，全套default未通过。
+
+当前本地资格ZIP 43414文件、1398873016展开字节，SHA256 `5bf985c4750c25a5cfb2669ad1dc557e616a12b6aaaf0c898f945b1d5f36a408`，路径 `D:\nozeli-test\20261107-alpha5-profile-bootstrap\desktop-package-final\Nozeli-windows-alpha5-qualification.zip`。ZIP CRC/全部解压摘要、当前src/dist/tests、随包Git/Node/Pi解析通过；冻结1540项、248项变更新增JS语法通过。renderer/native本批未改未重建，复核原实际构建输入与二进制；无构建入口或依赖变化。沿用已固定官方标签，本批未查询远端。W0 passed，W1–W5 unsupported，managedExecutionReady=false。未安装、发布、提交、推送或调用系统剪贴板。
+
+初始复现：全新合成profile未经正式配置初始化而直接传入DesktopHost，catalog打开返回WIN32_IO_ERROR/win32Code2；相同目录预先通过原生私有创建后登记成功。旧资格包独立重复复现，当前实现两种情况都成功。现有正式应用启动会提前创建profile，这次补齐独立桌面消费者首次使用合同。
+
+首次11项测试有2个驱动问题：冷读进程使用--input-type参数被worker继承、ACL拒绝码预期写错。改用独立.mjs冷进程并按实际FS_SECURITY_CHANGED核对，原失败TAP保留。目录屏障测试特别注入同样的Win32 missing错误，核对它不会触发备用锚点；分配后失败要求committed与uncertain保留。
+
+完整integration实际耗时约1112秒，原生目录准备后部分长用例不再立即失败，继续执行真实文件/worker操作。剩余失败不能全部归为fixture：生产持久化、进程所有权和外部打开队列仍有明确能力缺口；EBUSY需核验宿主/SQLite实际关闭和项目pin释放，不通过宽松删除绕开。下一批优先这些消费点及pending/tools/projection/owner冷恢复，再推进回收站、普通账户安装与完整W1–W5。
+
+
+## alpha.5 Windows 宿主夹具生命周期（2026-11-09，v32）
+
+证据 `D:/nozeli-test/20261109-alpha5-host-lifetime/qualification.json`。本批重新查询 GitHub 官方 `v0.1.0-alpha.5`：annotated tag `b7c32b1afc2d00c5c036af4283c616ff91e55fa2`，剥离后仍为当前 HEAD `26b39d61d44edf30988efcb1bddcdba1ff7cffdf`。保留既有 Windows 工作树。仅修改测试夹具与命名测试入口，生产源码/renderer/native未修改或重建。
+
+实际复现 annotation-package 首项的 hookFailed/EBUSY：旧夹具直接删除项目，原宿主和同进程“重启”宿主仍持有原生目录与数据库归属。为8个文件显式管理全部宿主；关闭先等待已准入任务，再确认所有数据库worker退出，失败保留合成目录，不放宽产品保护、不吞关闭失败。新增2项真实Windows检查：只关第一个宿主仍拒绝独立进程移动原目录；全部关闭后原项目/profile才允许改名，原文保持；关闭等待最后一次准入写入，冷开草稿/精确回执保持，旧revision写入拒绝。新增测试纳入integration。
+
+原8文件源码Node22：74通过/7失败/1跳过。源码Electron与解压Electron加入2项后各75通过/8失败/1跳过；解压Node22为76通过/7失败/1跳过。源码Node22新增与相邻存储生命周期7项通过。所有本批定向组无EBUSY、无取消。对照v31全部82个同名测试：原68项EBUSY中62项通过，其余6项露出原被清理错误遮住的能力门控；未删除/跳过原失败用例。剩余普通Node7项为6个RECOVERY_OWNER_UNVERIFIED（特殊/复制项目恢复）与1个NOZELI_CAPABILITY_UNAVAILABLE（回收站操作）。Electron额外1项为document-entry在ELECTRON_RUN_AS_NODE下仍访问app.commandLine，源码/解压同样复现，普通Node通过；真实产品辅助入口兼容性仍待修复。
+
+完整默认命令实际退出1。unit 665通过/0失败/1跳过；integration 631通过/1047失败/50跳过，共1728项。全套default未通过。入口失败码分类为{"'WIN32_IO_ERROR'": 34, "'PROCESS_OWNERSHIP_UNSUPPORTED'": 110, "'PERSISTENCE_UNSUPPORTED'": 624, "'PROJECT_ROOT_OVERLAP'": 23, "'ERR_ASSERTION'": 72, "'UPDATE_PLATFORM_UNSUPPORTED'": 1, "'EPERM'": 22, "'NOZELI_CAPABILITY_UNAVAILABLE'": 13, "'RECOVERY_OWNER_UNVERIFIED'": 8, "'OPEN_PERSISTENCE_UNCONFIRMED'": 41, "'ERR_TEST_FAILURE'": 10, "'EBUSY'": 40, "'ENOENT'": 15, '1': 1, "'PROJECT_IDENTITY_CONFLICT'": 4, "'DEMO_IDENTITY_CHANGED'": 13, "'FS_PLATFORM_UNSUPPORTED'": 11, "'EINVAL'": 1, "'CONFIG_IMPORT_UNSUPPORTED'": 2, "'EACCES'": 1, "'EADDRINUSE'": 1}，不是根因或完成率。首次只给System32 PATH的default在unit通过后因缺Git前置退出2，原件default-system-path.tap/json保留；补独立测试进程Git和固定Node路径后执行本次完整default，不修改系统环境。外部打开队列仍使用全局持久化门控，不以profile专项可用推断它已经适配。
+
+本地资格ZIP 43416文件、1398878361展开字节，SHA256 `9444520b12173f78bdac9b94177ef120711817c1cd9fb61d1ffa25eed996173d`，路径 `D:\nozeli-test\20261109-alpha5-host-lifetime\desktop-package\Nozeli-windows-alpha5-qualification.zip`。ZIP CRC/全部解压摘要、当前src/dist/tests、随包Node/Git/Pi解析通过；冻结1542项、258项变更新增JS语法通过。native输入与既有实际构建二进制复核。源码相同的定向失败保留，资格包不称用户发行包；无GUI/物理桌面新增资格。W0 passed，W1–W5 unsupported，managedExecutionReady=false。未安装、发布、提交、推送、使用个人资料或系统剪贴板。
+
+下一批：修document/handoff/terminal辅助入口对Electron Node模式的判断并实测真实CLI；接通外部打开队列的Windows私有读写、CAS、屏障与未知结果；继续特殊项目恢复owner原实体/原注册/停稳证明，其他仍未释放的fixture逐个确认全部宿主归属；生产pending/tools/projection/owner冷恢复及Work/Git接受闭环随后推进。历史默认失败、旧Office Git一次失败和未解释GUI关闭保留，不能用本批62项改善替代完整W1–W5。
+
+## Windows alpha.6 整合验证（2026-11-09）
+
+本轮本机 unit：813 通过 / 8 失败 / 1 跳过（822 项）；integration：766 通过 / 1111 失败 / 58 跳过（1935 项）。源码与最终解压包的 Node／Electron Node 模式组合回归分别见 [Windows alpha.6 整合记录](windows-alpha6-integration.md)。真实可见 GUI 各6项通过；广泛 Windows 批次1200秒超时。全部原始失败和首包快照不一致记录保留，生产平台探针ready=false。合成fixture与loopback，不使用个人账号或付费模型，未安装或发布。
+
 ## PR #27 主线整合安全复核（2026-11-09）
 
 在独立干净worktree检出原PR `5fbc482`（base `9a2466a`），未改变日常安装或原开发目录的在途修改。内置reviewer分别审查文件／持久化与进程／打包两域，识别并关闭五项新增缺陷：最终发布async间隙覆盖同宿主修正、FIFO最终打开阻塞、长requestId临时文件名超限、Darwin进程表ENOMEM重试耗尽冒充空表、PID查询错误冒充gone。最终发布恢复平台内同步pin操作，明确不宣称跨进程原子CAS；Darwin错误均传播非零退出，不能授权回收锁或进程槽。两名reviewer复审确认对应发现关闭，不代替原生运行。
@@ -944,6 +1668,17 @@ postinstall 用 `electron-rebuild` 针对 Electron 重建 `node-pty`。该依赖
 
 首轮macOS arm64 CI `42576568859`：fs_anchor/fullsync/procinfo真实编译和selfcheck成功，新增helper故障注入四组全部通过；总计64通过／4跳过／2失败。两项文件系统测试在Git仓库准备阶段受runner宿主配置触发 `FILTER_UNSUPPORTED`，不是跳过或降低产品拒绝规则；后续CI给原生测试显式独立HOME，避免继承runner全局Git过滤器。此初轮失败保留，最终须重跑完整合并门，不能把局部native通过说成整个job通过。
 
+
+## Windows alpha.6 / 已合并 PR27 增量（2026-11-09）
+
+当前 Windows 工作树以 main `cb07c51` 为固定上游，保留未提交 Windows 改动；最终 PR HEAD 为 `b72e744`。15 文件最终安全修正和 Windows 检查点 Git 长路径补修已落地。源码／解压 Node／Electron Node 四组各 166 通过 / 0 失败 / 1 跳过（167 项），真实 GUI 各6项通过；unit 813 通过 / 8 失败 / 1 跳过（822 项），上游安全批次 12 通过 / 25 失败 / 16 跳过（53 项）。全部失败保留；full integration 本批未重跑，旧结果不外推。renderer 实际重建，native 本批未重编且输入／二进制核对一致。新 ZIP SHA256 `76cab383ca5a758fabfc83d96699e7479eb920054fccefd36b4769b2522e4ffe`。详见 [最终合并版记录](windows-alpha6-pr27-merged.md)；前文 Draft/初稿记录为历史。生产能力矩阵及完整 W1–W5 状态不改绿，未安装／提交／push／签名／发布。
+
+
+## Windows alpha.6 生产外部打开（2026-11-09）
+
+2026-11-09 Windows 新进展：正式外部启动已接入原生持久队列及实际文档显示确认，冷恢复不重放；四宿主各179通过/0失败/1跳过，源码/解压生产GUI各8项通过。完整边界和当前ZIP见[外部打开记录](windows-alpha6-external-routing.md)；W1–W5完整资格仍未完成。
+
+证据 `D:/nozeli-test/20261109-alpha6-external-routing/qualification.json`。完整unit/integration本批未重跑，历史失败不变；原生未改未重编，renderer实际构建。
 ## Beta1 双平台私有草稿准备（2026-11-10）
 
 本轮用户只授权准备 Linux x64／macOS arm64 草稿，不公开发布；历史 alpha.6 例外不复用。Linux整合工作树从 `/tmp/nozeli-beta1-integration` 迁到 `/var/tmp/nozeli-beta1-integration`：首轮完整集成在 `/tmp` 遭 errno -122（EDQUOT）、SQLite I/O及最终日志写入失败，后续烟测截图也写入失败，均不计通过。首轮原件保留 `/var/tmp/nozeli-beta1-first-attempt-evidence`，不删除用户文件或把失败改为跳过。

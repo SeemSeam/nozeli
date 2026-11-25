@@ -1,5 +1,5 @@
 // Pointer-driven titles keep right-click available; native app-region drag consumes it.
-export function mountWorkspaceTitleDrag({tree,call,toast}) {
+export function mountWorkspaceTitleDrag({tree,call,toast,conversationScope}) {
   let session=null, pending=null, moving=false, sourceView=null,sourceGroup=null;
   const clear=()=>{for(const el of tree.querySelectorAll('[data-drop-side]'))delete el.dataset.dropSide;};
   let latestPoint=null,inFlight=null,finishing=false;
@@ -16,11 +16,11 @@ export function mountWorkspaceTitleDrag({tree,call,toast}) {
     catch(error){toast(error.message);}finally{pending=null;latestPoint=null;moving=false;finishing=false;clear();}
   }
   tree.addEventListener('pointerdown',event=>{
-    const title=event.target.closest('.workspace-pane-header');
+    const title=conversationScope?event.target.closest('.conversation-head>span'):event.target.closest('.workspace-pane-header');
     if(!title||event.button!==0||event.target.closest('button')||pending||finishing)return;
-    if(document.documentElement.dataset.workspaceRole==='detached'&&!event.target.closest('.workspace-pane-title'))return;
-    const viewId=title.dataset.sourceView||title.parentElement.querySelector('[data-view-id]')?.dataset.viewId;
-    const groupId=title.dataset.sourceGroup||title.parentElement.dataset.workspaceGroup;
+    if(!conversationScope&&document.documentElement.dataset.workspaceRole==='detached'&&!event.target.closest('.workspace-pane-title'))return;
+    const viewId=conversationScope?.viewId||title.dataset.sourceView||title.parentElement.querySelector('[data-view-id]')?.dataset.viewId;
+    const groupId=conversationScope?.groupId||title.dataset.sourceGroup||title.parentElement.dataset.workspaceGroup;
     if(!viewId&&document.documentElement.dataset.workspaceRole!=='detached')return;
     title.setPointerCapture(event.pointerId);
     sourceView=viewId;sourceGroup=groupId;

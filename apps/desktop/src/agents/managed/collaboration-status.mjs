@@ -38,9 +38,9 @@ function roundTiming({jobs,current,work,target,primaryState,session,facts,live,c
  const started=timestamp(latest.startedAt,now),ended=timestamp(latest.finishedAt??latest.completedAt,now);
  return {...empty,jobId:identity(latest.id),...(started!==null&&ended!==null&&ended>=started?{kind:'completed',startedAt:new Date(started).toISOString(),endedAt:new Date(ended).toISOString(),elapsedMs:ended-started}:{})};
 }
-export function collaborationProjection({projectId,instanceId,controller=null,recorded=null,slots=[],capacityAvailable=null,enabled=false,connecting=false,connectionError=null,limit=24,cursor=null,modelOptions=new Map()}){
+export function collaborationProjection({projectId,instanceId,controller=null,recorded=null,slots=[],capacityAvailable=null,enabled=false,connecting=false,connectionError=null,limit=24,cursor=null,modelOptions=new Map(),workTarget=null}){
  if(!Number.isSafeInteger(limit)||limit<1||limit>50||cursor&&typeof cursor!=='string'||typeof projectId!=='string')throw fail('COLLABORATION_PAGE_INVALID');
- const state=controller?.store?.state,live=Boolean(controller),works=state?.works??recorded?.works??[],residents=state?.residents??recorded?.residents??{};
+ const state=controller?.store?.state,live=Boolean(controller),allWorks=state?.works??recorded?.works??[],works=workTarget?allWorks.filter(work=>(work.id??work.target)===workTarget):allWorks,residents=state?.residents??recorded?.residents??{};
  const now=Date.now(),observedAt=new Date(now).toISOString();
  // 纯读控制事实：人工门/回执来自 works/jobs 记录本身，冷开（recorded）同样成立。
  const pureState={works,jobs:state?.jobs??[]};
@@ -114,7 +114,7 @@ export function collaborationProjection({projectId,instanceId,controller=null,re
   row.activityText=activityText;
   return row;
  };
- const residentsRows=['frontdesk','orchestrator'].map(target=>targetRows(target,null));let protectedCount=residentsRows.filter(row=>row.protectedActivity).length;
+ const residentsRows=workTarget?[]:['frontdesk','orchestrator'].map(target=>targetRows(target,null));let protectedCount=residentsRows.filter(row=>row.protectedActivity).length;
  const selected=[];for(const work of works){if(!visibleWork(work))continue;const target=work.id??work.target;if(!identity(target))throw fail('COLLABORATION_ID_INVALID');const row=targetRows(target,work);if(row.protectedActivity)protectedCount++;if(target>after){let at=selected.findIndex(item=>item.target>target);if(at<0)at=selected.length;selected.splice(at,0,row);if(selected.length>limit+1)selected.pop();}}
  const more=selected.length>limit;if(more)selected.pop();rows.push(...residentsRows,...selected);
  const unknownSlots=projectSlots.some(slot=>slot.state==='unconfirmed')||providers.some(value=>!controller?.sessions?.get(value.target)||controller.sessions.get(value.target).closed)||recorded?.providersTruncated;

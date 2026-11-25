@@ -175,6 +175,12 @@ export function createHostToolBridge({ send, onHostControl }) {
       return true;
     }
     const result = resultToAgentToolResult(entry.toolName, payload?.result ?? payload?.answer);
+    const value = payload?.result;
+    if (!result.isError && value?.ok !== false && typeof value?.at === 'string' && turn &&
+        (entry.toolName === 'nozeli_dispatch' && value.action === 'dispatch' ||
+         entry.toolName === 'nozeli_manage' && ['continue','clarify','read-only'].includes(value.action) && value.continueTurn !== true)) {
+      turn.routingReceipt = value.action;
+    }
     // Resolve first so the native abort cannot replace an already committed receipt.
     entry.resolve(result);
     if (result.terminate === true) onHostControl?.();

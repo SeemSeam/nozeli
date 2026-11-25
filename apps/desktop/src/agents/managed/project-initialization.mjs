@@ -6,6 +6,10 @@ import {withSafeFile,readSafeBytes,defaultFilesystemAdapter} from './file-stream
 export const INITIALIZATION_LIMITS=Object.freeze({entries:1200,inventoryMs:1500,bytes:96000,fileBytes:12000,calls:24,runMs:180000,mapBytes:24000});
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const fail=code=>{throw Object.assign(Error(code),{code});};
+export const projectInitializationSupported=()=>defaultFilesystemAdapter.supported===true;
+export function requireProjectInitializationSupport(){
+ if(!projectInitializationSupported())throw Object.assign(Error('当前平台尚未支持安全的项目语义整理；未启动模型或修改项目资料。'),{code:'PROJECT_INITIALIZATION_UNSUPPORTED'});
+}
 const excluded=/^(?:\.git|\.nozeli|node_modules|vendor|dist|build|target|coverage|\.next|\.cache|__pycache__|\.venv|venv|\.ssh|\.aws|\.azure|\.kube|\.docker|\.gnupg|\.npmrc|\.pypirc|\.netrc|\.env(?:\..*)?|auth\.json|kubeconfig|service[-_]account.*\.json|tokens?(?:\..*)?|credentials(?:\..*)?|secrets?(?:\..*)?|id_(?:rsa|ed25519|ecdsa)(?:\..*)?|.*\.(?:pem|key|p12|pfx|keystore))$/i;
 export function initializationPath(rel){
  if(typeof rel!=='string'||!rel||rel.includes('\\')||rel.includes(':')||rel.includes('\0')||rel.startsWith('/')||rel.split('/').some(p=>!p||p==='.'||p==='..'||excluded.test(p)))fail('PROJECT_INITIALIZATION_PATH_REJECTED');

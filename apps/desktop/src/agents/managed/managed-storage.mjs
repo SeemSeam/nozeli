@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+import {holdInterruptedExecution} from './restart-recovery.mjs';
 
 const localFields=new Set(['providers','residents','residentArchive','drafts','bindings','contextBudgetEpochs']);
 const workLocal=new Set(['threadId','toolsDigest','binding','execution','contextRecovery','threadArchive','contextHandoff','zeroActivity']);
@@ -164,6 +165,10 @@ export async function verifyManagedObject(storage,projectId,digest){
  catch(projectError){try{return await storage.withRecoveryObject(projectId,digest,({stat})=>({digest,byteLength:stat.size}));}catch(error){if(error.code==='MATERIAL_MISSING')throw projectError;throw error;}}
 }
 const pendingKind=(id,value)=>value.kind??(id.startsWith('managed:object-pending:')?'object':id.startsWith('managed:publication:')?'publication':value.collections?'business':'record');
+export async function hasUnconfirmedManagedCommit(storage,projectId){
+ const page=await storage.recoveryPage(projectId,{prefixes:['managed:pending:'],pendingOnly:true,unconfirmedOnly:true,limit:1,maxBytes:8192,purpose:'managed-commit-gate'});
+ return page.entries.length>0;
+}
 export async function listManagedPendingPage(storage,projectId,options={}){
  const page=await storage.recoveryPage(projectId,{...options,prefixes:['managed:pending:','managed:object-pending:','managed:publication:'],pendingOnly:true,purpose:'managed-pending'});
  return {...page,entries:page.entries.map(({id,revision,byteLength,value})=>({id,revision,byteLength,...value,automaticReplay:false,requiresConfirmation:true}))};
@@ -220,8 +225,8 @@ function inspectionOnly(collections,base,candidate){
  for(const name of ['managed_jobs','managed_works'])for(const row of collections[name]??[]){
   const prior=(base[name]??[]).find(item=>item.id===row.id)?.value,proposed=(candidate[name]??[]).find(item=>item.id===row.id)?.value;
   if(equal(prior,proposed))continue;
-  if(name==='managed_jobs'&&['queued','running','transferring'].includes(row.value.status))Object.assign(row.value,{status:'interrupted',recoveryRequiresExplicitInput:true,automaticReplay:false});
-  if(name==='managed_works'&&['queued','running'].includes(row.value.status))Object.assign(row.value,{status:'paused',recoveryRequiresExplicitInput:true,automaticReplay:false});
+  if(name==='managed_jobs'&&['queued','running','transferring'].includes(row.value.status))holdInterruptedExecution(row.value,null);
+  if(name==='managed_works'&&['queued','running'].includes(row.value.status))holdInterruptedExecution({},row.value);
  }
 }
 const sameCollections=(a,b)=>Object.keys(b).every(name=>{

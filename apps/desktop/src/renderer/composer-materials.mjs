@@ -81,16 +81,27 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
 
 
 
-  /* ---------- send keys: Enter newline, Ctrl/Cmd+Enter send, IME guard --- */
+  let composing = false;
+  composer.addEventListener('compositionstart', () => { composing = true; });
+  composer.addEventListener('compositionend', () => { composing = false; });
+  let leaveWithTab = false;
+  composer.addEventListener('blur', () => { leaveWithTab = false; });
+  form.addEventListener('keydown',event=>{if(event.target===composer&&event.key==='Escape'&&!composing&&!event.isComposing&&event.keyCode!==229&&composer.value.trim()&&!composer.readOnly&&!composer.disabled){leaveWithTab=true;statusEl.textContent='下一次 Tab 移动焦点，不排队';}},true);
+  const plainEnter = event => event.key === 'Enter' && !event.defaultPrevented && !composing && !event.isComposing && event.keyCode !== 229 && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+  // Bubble after the textarea's @ and slash pickers so selection wins over sending.
   form.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
-      // Enter inserts a newline natively; nothing to do, kept explicit for clarity.
-      return;
+    if (event.target === composer && !event.defaultPrevented && !composing && !event.isComposing && event.keyCode !== 229 && composer.value.trim() && !composer.readOnly && !composer.disabled) {
+      if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (leaveWithTab) { leaveWithTab = false; return; }
+        if (form.querySelector('#send-message').disabled) return;
+        event.preventDefault();
+        if (!event.repeat) void window.__agentSend?.({lane:'normal'});
+        return;
+      }
     }
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing && event.keyCode !== 229) {
-      event.preventDefault();
-      if (!event.repeat) form.requestSubmit();
-    }
+    if (event.target !== composer || !plainEnter(event)) return;
+    event.preventDefault();
+    if (!event.repeat && !composer.readOnly && !composer.disabled && !form.querySelector('#send-message').disabled) form.requestSubmit();
   });
 
   /* ---------- paste / drop images ------------------------------------------ */
@@ -411,9 +422,9 @@ export function mountComposerMaterials({ invoke, toast, openProjectFile, getProj
       event.preventDefault();
       atIndex = (atIndex + (event.key === 'ArrowDown' ? 1 : atItems.length - 1)) % atItems.length;
       [...atPopup.children].forEach((n, i) => n.setAttribute('aria-selected', String(i === atIndex)));
-    } else if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.isComposing) {
+    } else if (plainEnter(event)) {
       event.preventDefault();
-      insertAt('`' + atItems[atIndex] + '` ');
+      if (!event.repeat) insertAt('`' + atItems[atIndex] + '` ');
     } else if (event.key === 'Escape') {
       event.stopPropagation(); closeAt();
     }

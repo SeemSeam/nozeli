@@ -4,26 +4,27 @@ import {setActionButton} from './ui-actions.mjs';
 import {offsetToPosition} from './editor-adapter.mjs';
 
 // TeX owns only its toolbar and the shared comparison pane while explicitly open.
-export function mountTexWorkspace({ getContext, beside, closeBeside, openFile }) {
+export function mountTexWorkspace({ getContext, beside, closeBeside }) {
   const $ = id => document.getElementById(id);
   const toolbar = document.createElement('div'); toolbar.id = 'tex-toolbar'; toolbar.className = 'tex-toolbar'; toolbar.hidden = true;
-  toolbar.innerHTML = '<label>主文档 <select id="tex-root" aria-label="TeX 主文档"></select></label><select id="tex-engine" aria-label="TeX 编译引擎"></select><button id="tex-build" type="button">编译</button><button id="tex-cancel" type="button" hidden>取消</button><span id="tex-view-commands" hidden><label><input id="tex-auto" type="checkbox">自动</label><button id="tex-preview" type="button" aria-pressed="true">预览</button><button id="tex-sync" type="button" aria-pressed="true" title="源码与预览联动滚动">联动</button></span><span id="tex-status" role="status"></span>';
+  toolbar.innerHTML = '<label>主文档 <select id="tex-root" aria-label="TeX 主文档"></select></label><select id="tex-engine" aria-label="TeX 编译引擎"></select><button id="tex-build" type="button">编译</button><button id="tex-cancel" type="button" hidden>取消</button><button id="tex-preview" type="button" aria-pressed="false">预览</button><button id="tex-refresh" type="button">刷新预览</button><span id="tex-view-commands" hidden><button id="tex-sync" type="button" aria-pressed="true" title="源码与预览联动滚动">联动</button></span><span id="tex-status" role="status"></span>';
   const details = document.createElement('details'); details.id = 'tex-diagnostics'; details.hidden = true;
   const summary = document.createElement('summary'); summary.textContent = '编译诊断与日志';
   const errors = document.createElement('div'), log = document.createElement('pre'); details.append(summary, errors, log);
   $('reader-scroll').before(toolbar, details);
   const positions = new Map();
   const positionKey = (identity=active) => identity ? `${identity.projectId}:${identity.config.engine}:${identity.config.root}` : null;
-  let active = null, epoch = 0, timer, showPreview = true, renderEpoch = 0, rendering = null, link = null, linked = true, syncLeader = 'preview';
+  let active = null, epoch = 0, showPreview = false, renderEpoch = 0, link = null, linked = true, syncLeader = 'preview';
   let initializing = false, configuring = false, configurationEpoch = 0;
   const persistFailure = (code,message) => ({ok:false,error:{code,message}});
   const stalePersistence = () => persistFailure('STALE_CONTEXT','TeX 上下文已变化，旧保存回执不能确认当前导航。');
   function positionSnapshot(identity){
     const key=positionKey(identity);
     if(beside.tex&&beside.pdf)positions.set(key,{page:beside.pdf.current(),zoom:beside.pdf.zoomLevel(),scrollTop:$('secondary-scroll').scrollTop});
-    return {...(positions.get(key)||{page:1,zoom:1,scrollTop:0}),preview:showPreview,linked};
+    const {page=1,zoom=1,scrollTop=0}=positions.get(key)??{};
+    return {page,zoom,scrollTop,preview:showPreview};
   }
-  async function savePosition(checked=true){
+  async function savePosition(checked=true, linkChoice){
     let current=()=>false;
     try{
       let context;try{context=getContext();}catch(error){return {result:persistFailure(error.code||'TEX_CONTEXT_FAILED',error.message||'TeX 上下文无法读取。'),current};}
@@ -43,6 +44,7 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
       let view;
       try{view=positionSnapshot(identity);}catch(error){return {result:current()?persistFailure(error.code||'TEX_POSITION_FAILED',error.message||'TeX 预览位置无法读取。'):stalePersistence(),current};}
       if(!current())return {result:stalePersistence(),current};
+      if (linkChoice !== undefined) view.linked = linkChoice;
       const response=await call('tex.view',{projectId,root,view});
       return {result:current()?{ok:true,value:{applicable:true,projectId,root}}:stalePersistence(),response,current};
     }catch(error){
@@ -50,9 +52,9 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
       return {result:unchanged?persistFailure(error.code||'TEX_VIEW_FAILED',error.message||'TeX 预览位置未保存。'):stalePersistence(),current};
     }
   }
-  async function rememberPosition(){
+  async function rememberPosition(linkChoice){
     if(!active?.config.root)return;
-    const {result,response,current}=await savePosition(false);
+    const {result,response,current}=await savePosition(false,linkChoice);
     if(result.ok)return response;
     try{if(current())message('预览位置未保存：'+result.error.message);}catch{}
   }
@@ -72,7 +74,7 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     const adapter = getContext().editor?.adapter, identity = active, pdf = beside.pdf;
     if (!adapter || !identity || !pdf || !beside.tex) return;
     if (!identity.syncTool) syncState('unavailable', '未安装SyncTeX定位工具；预览可独立阅读');
-    const enabled = () => active === identity && linked && identity.syncTool && showPreview && beside.tex && beside.pdf === pdf && getContext().editor?.adapter === adapter && !getContext().composing;
+    const enabled = () => active === identity && linked && identity.syncTool && beside.texBuildId && showPreview && beside.tex && beside.pdf === pdf && getContext().editor?.adapter === adapter && !getContext().composing;
     link = mountPreviewScrollLink({ source: adapter, preview: $('secondary-scroll'), enabled, delay: 65,
       onError: error => { if (active === identity) syncState('paused', error.message); },
       fromSource: async ({ current, write, offset }) => {
@@ -104,57 +106,108 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     });
     if(savedLink?.leader==='source'&&Number.isInteger(savedLink.offset))link.alignSourceOffset(savedLink.offset);else link.align(syncLeader);
   }
-  $('tex-sync').onclick = () => { linked = !linked; attachLink(); void rememberPosition(); };
+  async function revealSource({projectId,relPath,sourceDigest,line,column,selectLine=false}) {
+    const context = getContext();
+    if (context.project?.id !== projectId || context.file?.relPath !== relPath || !context.editor) return;
+    const adapter = context.editor.adapter, text = adapter.getText();
+    const comparable = selectLine ? text.replace(/\r\n?/g, '\n') : text;
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(comparable)))].map(n => n.toString(16).padStart(2, '0')).join('');
+    const now = getContext();
+    if (now.project?.id !== projectId || now.file?.relPath !== relPath || now.editor?.adapter !== adapter) return;
+    if (adapter.getText() !== text || digest !== sourceDigest) { syncState('paused', '目标源码已变化，请重新编译后定位'); if(selectLine) message('目标源码已变化，请重新编译后定位'); return; }
+    if (selectLine) {
+      const breaks = /\r\n?|\n/g;
+      let start = 0;
+      for (let index = 1; index < line; index++) {
+        if (!breaks.exec(text)) return;
+        start = breaks.lastIndex;
+      }
+      adapter.revealRange(start, breaks.exec(text)?.index ?? text.length);
+    } else adapter.revealRange(Math.min(text.length, lineOffset(text, line, column)));
+    adapter.focus();
+  }
+  $('tex-sync').onclick = () => { linked = !linked; attachLink(); void rememberPosition(linked); };
   $('secondary-scroll').addEventListener('click', async event => {
     if (!(event.ctrlKey || event.metaKey) || !active || !beside.tex || !beside.pdf || event.target.closest('.note-anchor')) return;
+    if (!beside.texBuildId) return;
     const point = beside.pdf.syncPoint(.25, { x: event.clientX, y: event.clientY }); if (!point) return;
     event.preventDefault(); const identity = active, projectId = active.projectId;
     try {
       const result = await query('inverse', point);
       if (active !== identity || !result.relPath) return;
-      if (getContext().file.relPath !== result.relPath) await openFile(result.relPath);
-      const context = getContext(); if (context.project?.id !== projectId || context.file?.relPath !== result.relPath || !context.editor) return;
-      const adapter = context.editor.adapter, text = adapter.getText();
-      const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(n => n.toString(16).padStart(2, '0')).join('');
-      if (getContext().editor?.adapter !== adapter || adapter.getText() !== text || digest !== result.sourceDigest) { syncState('paused', '目标源码已变化，请重新编译后定位'); return; }
-      const offset = Math.min(text.length, lineOffset(text, result.line, result.column)); adapter.revealRange(offset); adapter.focus();
+      const locator={projectId,relPath:result.relPath,sourceDigest:result.sourceDigest,line:result.line,column:Math.max(1,result.column||1)};
+      if (getContext().file.relPath !== result.relPath) await call('workspace.control', {type:'tex-source-open',...locator});
+      else await revealSource(locator);
     } catch (error) { syncState('paused', error.message); }
   });
   function ensurePane() {
     if (beside.tex) return;
     closeBeside(); beside.tex = true; showPreview = true;
     $('secondary-pane').hidden = false; $('pane-divider').hidden = false; $('documents').classList.add('dual');
-    $('secondary-pane').setAttribute('aria-label', 'TeX 编译预览，只读');
+    $('secondary-pane').setAttribute('aria-label', 'TeX PDF 预览，只读');
     $('secondary-pane').querySelector('.compare-switch').hidden = true;
     $('secondary-text').hidden = true; $('secondary-pdf').hidden = false; $('secondary-tools').hidden = false;
-    $('secondary-message').hidden = false; $('secondary-message').textContent = '编译成功后在这里显示 PDF。';
-    $('secondary-path').dataset.iconPath='preview.pdf'; $('secondary-path').textContent = 'TeX 编译预览';
+    $('secondary-message').hidden = false; $('secondary-message').textContent = '请选择预览或编译。';
+    $('secondary-path').dataset.iconPath='preview.pdf'; $('secondary-path').textContent = 'TeX PDF 预览';
   }
-  async function showArtifact(record) {
-    if (!active || !showPreview || record.root !== active.config.root || record.engine !== active.config.engine || beside.texBuildId === record.buildId || rendering === record.buildId) return;
-    ensurePane();
-    const identity = active, ticket = ++renderEpoch; rendering = record.buildId;
-    $('secondary-pdf').dataset.loading = record.buildId;
+  async function renderPreview(load, {record = null, relPath, label}) {
+    const identity = active;
+    if (!identity) return;
+    ensurePane(); showPreview = true; $('tex-preview').setAttribute('aria-pressed', 'true');
+    const ticket = ++renderEpoch;
+    const configuration = configurationEpoch;
+    const current = () => active === identity && ticket === renderEpoch && configuration === configurationEpoch && showPreview && beside.tex && getContext()?.project?.id === identity.projectId && getContext()?.file?.relPath === identity.sourcePath;
+    $('secondary-pdf').dataset.loading = String(ticket);
     let stage, pdf;
     try {
-      const result = await call('tex.artifact', { projectId: identity.projectId, buildId: record.buildId });
-      if (active !== identity || ticket !== renderEpoch || !showPreview || !beside.tex) return;
+      const result = await load();
+      if (!current()) return;
+      if (result.previewRecord) { record = result.previewRecord; relPath = record.root; label = `${record.root} · ${record.buildId.slice(0, 8)}`; }
       const saved = positions.get(positionKey());
       const page = beside.pdf?.current() || saved?.page || 1, zoom = beside.pdf?.zoomLevel?.() || saved?.zoom || 1, scrollTop = beside.pdf ? $('secondary-scroll').scrollTop : saved?.scrollTop || 0;
-      stage = document.createElement('div'); stage.dataset.texStage = record.buildId; stage.style.cssText = `position:absolute;visibility:hidden;width:${$('secondary-pdf').clientWidth || $('secondary-scroll').clientWidth}px;`;
-      $('secondary-scroll').append(stage);
-      pdf = await mountPdf({ parent: stage, fitViewport: $('secondary-scroll'), bytes: result.bytes, page, initialZoom: zoom, onPage: (p, count) => { if (ticket === renderEpoch) { $('secondary-page').textContent = `${p} / ${count}`; if(beside.pdf===pdf)link?.pageChanged(); } } });
-      if (active !== identity || ticket !== renderEpoch || !showPreview || !beside.tex) { pdf.destroy(); stage.remove(); return; }
-      beside.pdf?.destroy(); beside.pdf = pdf; beside.texBuildId = record.buildId;
-      beside.texFile = { kind: 'pdf', relPath: record.root, buildId: record.buildId, generated: true };
-      stage.style.cssText = 'width:100%;min-width:0;flex-shrink:0;'; $('secondary-pdf').replaceChildren(stage); $('secondary-scroll').scrollTop = scrollTop;
-      $('secondary-message').hidden = true; $('secondary-path').dataset.iconPath='preview.pdf'; $('secondary-path').textContent = `${record.root} · ${record.buildId.slice(0, 8)}`;
-      $('secondary-pdf').dataset.buildId = record.buildId;
-      delete $('secondary-pdf').dataset.loading;
+      stage = document.createElement('div'); stage.dataset.texStage = record?.buildId || relPath;
+      stage.style.cssText = 'position:absolute;visibility:hidden;inset:0;min-width:0;';
+      $('secondary-pdf').append(stage);
+      pdf = await mountPdf({ parent: stage, fitViewport: $('secondary-scroll'), bytes: result.bytes, page, initialZoom: zoom, onPage: (p, count) => { if (current()) { $('secondary-page').textContent = `${p} / ${count}`; if(beside.pdf===pdf)link?.pageChanged(); } } });
+      if (!current()) { pdf.destroy(); stage.remove(); return; }
+      link?.dispose(); link = null;
+      beside.pdf?.destroy(); beside.pdf = pdf; beside.texBuildId = record?.buildId || null;
+      beside.texFile = { kind: 'pdf', relPath, buildId: record?.buildId, generated: true };
+      stage.style.cssText = 'min-width:0;flex-shrink:0;'; $('secondary-pdf').replaceChildren(stage); $('secondary-scroll').scrollTop = scrollTop;
+      $('secondary-message').hidden = true; $('secondary-path').dataset.iconPath='preview.pdf'; $('secondary-path').textContent = label;
+      if (record) $('secondary-pdf').dataset.buildId = record.buildId; else delete $('secondary-pdf').dataset.buildId;
       attachLink();
+      if (!record) syncState('unavailable', '同名 PDF 为冻结预览；编译后可使用源码定位');
+      message(record ? '显示编译结果' : '已加载同名 PDF');
       void rememberPosition();
-    } catch (error) { pdf?.destroy(); stage?.remove(); if (active === identity) message('预览加载失败：' + error.message); }
-    finally { if (rendering === record.buildId) rendering = null; }
+    } catch (error) {
+      pdf?.destroy(); stage?.remove();
+      if (current()) {
+        const text = `预览加载失败（${relPath}）：${error.message}`;
+        message(text); $('secondary-message').hidden = false; $('secondary-message').textContent = text + (beside.pdf ? '；保留原预览。' : '');
+      }
+    } finally { if (current()) delete $('secondary-pdf').dataset.loading; }
+  }
+  function showArtifact(record) {
+    if (!active || record.root !== active.config.root || record.engine !== active.config.engine || beside.texBuildId === record.buildId) return;
+    const projectId = active.projectId;
+    return renderPreview(() => call('tex.artifact', {projectId, buildId: record.buildId}), {record, relPath: record.root, label: `${record.root} · ${record.buildId.slice(0, 8)}`});
+  }
+  function refreshPreview() {
+    if (!active) return;
+    const identity = active, relPath = identity.sourcePath.replace(/\.tex$/i, '.pdf');
+    return renderPreview(async () => {
+      try {
+        const file = await call('workspace.tex.companion', {projectId: identity.projectId, sourcePath: identity.sourcePath});
+        if (file.kind !== 'pdf' || !file.bytes) throw Error(`${relPath} 不是有效 PDF`);
+        return file;
+      } catch (error) {
+        const record = identity.state?.lastSuccess;
+        if ((error.code !== 'NOT_FOUND' && error.code !== 'ENOENT') || record?.root !== identity.config.root || record.engine !== identity.config.engine) throw error;
+        const artifact = await call('tex.artifact', {projectId: identity.projectId, buildId: record.buildId});
+        return {...artifact, previewRecord:record};
+      }
+    }, {relPath, label: relPath});
   }
   function receive(state) {
     if (!active || state.projectId && state.projectId !== active.projectId) return;
@@ -169,20 +222,25 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     if (state.phase === 'error' && state.message) { const note = document.createElement('p'); note.textContent = state.message; errors.append(note); }
     for (const diagnostic of state.diagnostics || []) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = `${diagnostic.relPath}:${diagnostic.line} · ${diagnostic.message}`;
+      button.disabled = !diagnostic.sourceDigest || !Number.isSafeInteger(diagnostic.line) || diagnostic.line < 1;
       button.onclick = async () => {
-        await openFile(diagnostic.relPath);
-        const context = getContext(); if (context.file?.relPath !== diagnostic.relPath) return;
-        const adapter = context.editor?.adapter; if (!adapter) return;
-        const lines = adapter.getText().split('\n'), offset = lines.slice(0, diagnostic.line - 1).reduce((n, l) => n + l.length + 1, 0);
-        adapter.setSelection(offset, Math.min(offset + (lines[diagnostic.line - 1]?.length || 0), adapter.getText().length)); adapter.focus();
+        const identity = active;
+        if (!identity || identity.state !== state || button.disabled) return;
+        const locator = { projectId: identity.projectId, relPath: diagnostic.relPath, sourceDigest: diagnostic.sourceDigest, line: diagnostic.line, column: 1, selectLine: true };
+        try {
+          if (identity.sourcePath === locator.relPath) await revealSource(locator);
+          else await call('workspace.control', { type: 'tex-source-open', ...locator });
+        } catch (error) { if (active === identity && active.state === state) message(error.message); }
       };
       errors.append(button);
     }
     if (state.phase === 'error') details.open = true;
-    if (state.lastSuccess) void showArtifact(state.lastSuccess);
+    if (state.phase === 'success' && state.lastSuccess && state.lastSuccess.buildId !== active.observedBuildId) {
+      active.observedBuildId = state.lastSuccess.buildId;
+      void showArtifact(state.lastSuccess);
+    }
   }
   async function build() {
-    clearTimeout(timer);
     const context = getContext(), identity = active;
     if (!identity || !context.editor || context.composing) return;
     try {
@@ -192,43 +250,42 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
     } catch (error) { if (identity === active) message(error.message); }
   }
   function changed() {
-    clearTimeout(timer);
     if (!active) return;
     active.revision++;
     link?.pause(); syncState('paused', '源码或项目已有修改，等待对应的新编译结果后恢复联动');
     message('有修改待编译 · 预览为上次成功版本'); $('secondary-pane').classList.add('tex-stale');
-    if (active.config.automatic && !getContext().composing) timer = setTimeout(build, 1100);
   }
   async function configure() {
     if (!active) return;
     const identity = active, ticket = ++configurationEpoch;configuring=true;
     try {
-      const config = { root: $('tex-root').value, engine: $('tex-engine').value, automatic: $('tex-auto').checked };
+      const config = { root: $('tex-root').value, engine: $('tex-engine').value, automatic: false };
       const saved = await call('tex.configure', { projectId: identity.projectId, ...config });
       if (identity !== active || ticket !== configurationEpoch) return;
       identity.config=saved;identity.ready=true;
-      if (beside.tex && beside.texBuildId && (identity.state?.lastSuccess?.root !== config.root || identity.state?.lastSuccess?.engine !== config.engine)) { closeBeside(); ensurePane(); }
-      if (config.automatic && config.root) void build(); else message('设置已保存');
+      renderEpoch++;
+      message('设置已保存；点击编译后生效');
     } catch (error) { if(identity===active&&ticket===configurationEpoch){identity.ready=false;message(error.message);} }
     finally { if(identity===active&&ticket===configurationEpoch)configuring=false; }
   }
-  for (const id of ['tex-root', 'tex-engine', 'tex-auto']) $(id).addEventListener('change', configure);
+  for (const id of ['tex-root', 'tex-engine']) $(id).addEventListener('change', configure);
   setActionButton($('tex-build'),'compile');$('tex-build').onclick = build;
-  $('tex-cancel').onclick = () => { clearTimeout(timer); if (active) void call('tex.cancel', { projectId: active.projectId }).catch(e => message(e.message)); };
+  $('tex-cancel').onclick = () => { if (active) void call('tex.cancel', { projectId: active.projectId }).catch(e => message(e.message)); };
   $('tex-preview').onclick = () => {
-    showPreview = !showPreview; $('tex-preview').setAttribute('aria-pressed', String(showPreview));
-    if (!showPreview && beside.tex) closeBeside();
-    else if (showPreview) { ensurePane(); if (active?.state?.lastSuccess) void showArtifact(active.state.lastSuccess); }
+    if (showPreview && beside.tex) closeBeside();
+    else void refreshPreview();
   };
+  $('tex-refresh').onclick = () => void refreshPreview();
   window.nozeli.subscribe('tex', receive);
-  window.nozeli.subscribe('workspace.control',event=>{if(event.type!=='tex-configuration'||!active||event.projectId!==active.projectId||configuring)return;clearTimeout(timer);active.config=event.config;configurationEpoch++;$('tex-root').value=event.config.root;$('tex-engine').value=event.config.engine;$('tex-auto').checked=event.config.automatic;message('项目编译设置已更新；下次编译使用新配置。');});
+  window.nozeli.subscribe('workspace.control',event=>{if(event.type!=='tex-configuration'||!active||event.projectId!==active.projectId||configuring)return;active.config=event.config;configurationEpoch++;renderEpoch++;$('tex-root').value=event.config.root;$('tex-engine').value=event.config.engine;message('编译设置已更新');});
   return {
+    revealSource,
     changed,
     persist: rememberPosition,
     async persistChecked(){return (await savePosition()).result;},
-    composing() { clearTimeout(timer); link?.pause(); },
-    paneClosed() { link?.dispose(); link = null; showPreview = false; renderEpoch++; rendering = null; void rememberPosition(); if (active) { $('tex-preview').setAttribute('aria-pressed', 'false'); } },
-    leave() { void rememberPosition(); link?.dispose(); link = null; epoch++; configurationEpoch++; initializing=false; configuring=false; renderEpoch++; clearTimeout(timer); active = null; rendering = null; toolbar.hidden = true; details.hidden = true; if (beside.tex) closeBeside(); },
+    composing() { link?.pause(); },
+    paneClosed() { link?.dispose(); link = null; showPreview = false; renderEpoch++; void rememberPosition(); if (active) { $('tex-preview').setAttribute('aria-pressed', 'false'); } },
+    leave() { void rememberPosition(); link?.dispose(); link = null; epoch++; configurationEpoch++; initializing=false; configuring=false; renderEpoch++; active = null; toolbar.hidden = true; details.hidden = true; if (beside.tex) closeBeside(); },
     async enter() {
       const context = getContext(); if (!/\.tex$/i.test(context.file?.relPath || '')) return;
       const generation = ++epoch;configurationEpoch++;initializing=true;configuring=false;active = null; toolbar.hidden = false; message('检测 TeX 项目…');
@@ -240,24 +297,22 @@ export function mountTexWorkspace({ getContext, beside, closeBeside, openFile })
         const data = await call('tex.inspect', { projectId, relPath: sourcePath });
         if (!current()) return;
         for (const id of ['tex-root','tex-engine','tex-build']) $(id).disabled = false;
-        active = { projectId, sourcePath, config: data.config, state: data.state, syncTool: data.syncTool, revision: 0, sentRevision: 0, ready:false };
+        active = { projectId, sourcePath, config: data.config, state: data.state, observedBuildId: data.state.lastSuccess?.buildId, syncTool: data.syncTool, revision: 0, sentRevision: 0, ready:false };
         $('tex-root').replaceChildren(new Option(data.config.root ? '选择主文档' : '请选择主文档', ''));
         for (const root of data.texFiles) $('tex-root').append(new Option(root, root));
         $('tex-root').value = data.config.root;
         $('tex-root').title = data.inference?.reason || ''; $('tex-engine').title = data.inference?.engineReason || '';
         $('tex-engine').replaceChildren();
         for (const [engine, available] of Object.entries(data.tools)) $('tex-engine').append(new Option(engine + (available ? '' : '（未安装）'), engine));
-        $('tex-engine').value = data.config.engine; $('tex-auto').checked = data.config.automatic;
+        $('tex-engine').value = data.config.engine;
         if (data.view) positions.set(positionKey(), data.view);
-        showPreview = data.view?.preview !== false;
+        showPreview = false;
         linked = data.view?.linked !== false; syncLeader = 'preview'; $('tex-sync').setAttribute('aria-pressed', String(linked));
-        if (showPreview) ensurePane();
         $('tex-preview').setAttribute('aria-pressed', String(showPreview));
         // Persist only the inferred root; entering a file never cancels an existing build.
-        if (data.config.root && data.config.root !== data.configuredRoot) await call('tex.configure', { projectId, ...data.config });
+        if (data.config.root && data.config.root !== data.configuredRoot) await call('tex.configure', { projectId, ...data.config, automatic:false });
         if (!current()) return;
         receive(data.state);
-        if (data.config.root && data.config.automatic && !['building', 'queued'].includes(data.state.phase)) void build();
         active.ready=true;
       } catch (error) { if (current()) { message(error.message); details.hidden = false; details.open = true; errors.replaceChildren(); const note = document.createElement('p'); note.textContent = error.message; const retry = document.createElement('button'); retry.textContent = '重新检测 TeX 项目'; retry.onclick = () => this.enter(); errors.append(note,retry); for (const id of ['tex-root','tex-engine']) $(id).replaceChildren(new Option('检测失败','')); } }
       finally { if(generation===epoch)initializing=false; }

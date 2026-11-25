@@ -5,7 +5,8 @@
   "type": "module",
   "license": "AGPL-3.0-only",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test:storage-patch": "node --test tools/patch-sdk.test.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",

@@ -1,0 +1,212 @@
+--- a/vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/runtime-supervisor.ts
+@@ -115,6 +115,8 @@
+ }
+ 
+ export interface RuntimeSupervisorOptions {
++  readonly createModelRuntime?: typeof ModelRuntime.create;
++  readonly modelConfigStorage?: import("./custom-provider-store.js").ModelsJsonStorage;
+   readonly agentDir?: string;
+   readonly builtinExtensions?: readonly BuiltinExtension[];
+   readonly isBuiltinExtensionEnabled?: BuiltinExtensionEnabled;
+@@ -148,6 +150,7 @@
+   private readonly isBuiltinExtensionEnabled: BuiltinExtensionEnabled;
+   private readonly customProviderStore: CustomProviderStore;
+   private readonly createRuntimeResources?: RuntimeSupervisorOptions["createRuntimeResources"];
++  private readonly createModelRuntime: typeof ModelRuntime.create;
+   private readonly contexts = new Map<string, RuntimeContext>();
+ 
+   constructor(options: RuntimeSupervisorOptions = {}) {
+@@ -159,6 +162,7 @@
+     this.isBuiltinExtensionEnabled = options.isBuiltinExtensionEnabled ?? (() => true);
+     this.customProviderStore = deps.customProviderStore;
+     this.createRuntimeResources = options.createRuntimeResources;
++    this.createModelRuntime = options.createModelRuntime ?? ModelRuntime.create.bind(ModelRuntime);
+   }
+ 
+   async getRuntimeSnapshot(workspace: WorkspaceRef): Promise<RuntimeSnapshot> {
+@@ -701,7 +705,7 @@
+     readonly accepted: ExtensionProviderRegistration[];
+     readonly acceptedNative: ExtensionNativeProviderRegistration[];
+   }> {
+-    const runtime = await ModelRuntime.create({
++    const runtime = await this.createModelRuntime({
+       authPath: this.authPath,
+       modelsPath: this.modelsJsonPath,
+       refreshOnCreate: false,
+--- a/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/pi-sdk-driver.ts
+@@ -35,6 +35,7 @@
+ export interface PiSdkDriverConfig extends PiSdkDriverOptions, RuntimeSupervisorOptions {}
+ 
+ export class PiSdkDriver implements SessionDriver {
++  private readonly createModelRuntime?: RuntimeSupervisorOptions["createModelRuntime"];
+   private readonly supervisor: SessionSupervisor;
+   private readonly agentDir: string;
+   private readonly generateThreadTitleOverride:
+@@ -48,6 +49,7 @@
+   constructor(options: PiSdkDriverConfig = {}) {
+     const deps = createRuntimeDependencies(options);
+     this.agentDir = deps.agentDir;
++    this.createModelRuntime = options.createModelRuntime;
+     this.generateThreadTitleOverride = options.generateThreadTitleOverride;
+ 
+     this.supervisor = new SessionSupervisor({ ...options, agentDir: deps.agentDir });
+@@ -203,11 +205,13 @@
+             ? override
+             : generateThreadTitle(workspace, options, {
+                 agentDir: this.agentDir,
++                createModelRuntime: this.createModelRuntime,
+               }),
+       );
+     }
+     return generateThreadTitle(workspace, options, {
+       agentDir: this.agentDir,
++      createModelRuntime: this.createModelRuntime,
+     });
+   }
+ }
+--- a/vendor/pi-gui/packages/pi-sdk-driver/thread-title-generator.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/thread-title-generator.ts
+@@ -20,6 +20,7 @@
+ 
+ interface ThreadTitleGeneratorDeps {
+   readonly agentDir: string;
++  readonly createModelRuntime?: typeof ModelRuntime.create;
+ }
+ 
+ const MAX_THREAD_TITLE_LENGTH = 36;
+@@ -47,7 +48,7 @@
+     retry: { enabled: false },
+   });
+   const resourceLoader = createThreadTitleResourceLoader();
+-  const modelRuntime = await ModelRuntime.create({
++  const modelRuntime = await (deps.createModelRuntime ?? ModelRuntime.create.bind(ModelRuntime))({
+     authPath: join(deps.agentDir, "auth.json"),
+     modelsPath: join(deps.agentDir, "models.json"),
+     refreshOnCreate: false,
+--- a/vendor/pi-gui/packages/pi-sdk-driver/custom-provider-store.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/custom-provider-store.ts
+@@ -30,22 +30,39 @@
+   providers?: Record<string, unknown>;
+ }
+ 
++export interface ModelsJsonStorage {
++  read(): Promise<string | undefined> | string | undefined;
++  update<T>(callback: (current: string | undefined) => Promise<{result: T; next?: string}>): Promise<T>;
++}
++
+ export class CustomProviderStore {
+   private queue: Promise<unknown> = Promise.resolve();
+ 
+-  constructor(private readonly modelsJsonPath: string) {}
++  constructor(private readonly modelsJsonPath: string, private readonly storage?: ModelsJsonStorage) {}
++
++  private update<T>(callback: (data: ModelsJson) => {result: T; changed: boolean}): Promise<T> {
++    if (this.storage) return this.storage.update(async current => {
++      const data = parseModelsJson(current ?? "");
++      const value = callback(data);
++      return {result: value.result, ...(value.changed ? {next: JSON.stringify(data, null, 2) + "\n"} : {})};
++    });
++    return (async () => {
++      const data = await readModelsJson(this.modelsJsonPath), value = callback(data);
++      if (value.changed) await atomicWriteJson(this.modelsJsonPath, data);
++      return value.result;
++    })();
++  }
+ 
+   async list(): Promise<readonly CustomProviderEntry[]> {
+     return this.enqueue(async () => {
+-      const data = await readModelsJson(this.modelsJsonPath);
++      const data = this.storage ? parseModelsJson((await this.storage.read()) ?? "") : await readModelsJson(this.modelsJsonPath);
+       return readCustomProviders(data);
+     });
+   }
+ 
+   async set(input: CustomProviderInput): Promise<void> {
+     validateInput(input);
+-    await this.enqueue(async () => {
+-      const data = await readModelsJson(this.modelsJsonPath);
++    await this.enqueue(() => this.update(data => {
+       const providers = ensureProvidersRecord(data);
+       const existing = providers[input.providerId];
+       if (
+@@ -57,25 +74,23 @@
+         );
+       }
+       providers[input.providerId] = toProviderConfig(input);
+-      await atomicWriteJson(this.modelsJsonPath, data);
+-    });
++      return {result: undefined, changed: true};
++    }));
+   }
+ 
+   async delete(providerId: string): Promise<boolean> {
+-    return this.enqueue(async () => {
+-      const data = await readModelsJson(this.modelsJsonPath);
++    return this.enqueue(() => this.update(data => {
+       const providers = data.providers;
+       if (!providers || !Object.hasOwn(providers, providerId)) {
+-        return false;
++        return {result: false, changed: false};
+       }
+       const existing = providers[providerId];
+       if (!isRecord(existing) || !isPiGuiCustomProviderConfig(providerId, existing)) {
+-        return false;
++        return {result: false, changed: false};
+       }
+       delete providers[providerId];
+-      await atomicWriteJson(this.modelsJsonPath, data);
+-      return true;
+-    });
++      return {result: true, changed: true};
++    }));
+   }
+ 
+   private enqueue<T>(task: () => Promise<T>): Promise<T> {
+@@ -235,25 +250,27 @@
+     }
+     throw error;
+   }
++  return parseModelsJson(text);
++}
++
++function parseModelsJson(text: string): ModelsJson {
+   if (text.trim().length === 0) {
+     return {};
+   }
+   let parsed: unknown;
+   try {
+     parsed = JSON.parse(text);
+-  } catch (error) {
+-    throw new Error(
+-      `${path} is not valid JSON. Fix or remove the file before editing custom endpoints from the app. (${
+-        error instanceof Error ? error.message : String(error)
+-      })`,
++  } catch {
++    throw new Error(
++      "models.json is not valid JSON. Fix or remove the file before editing custom endpoints from the app. Existing data was not changed.",
+     );
+   }
+   if (!isRecord(parsed)) {
+-    throw new Error(`${path} must contain a JSON object at the top level.`);
++    throw new Error("models.json must contain a JSON object at the top level. Existing data was not changed.");
+   }
+   if (Object.hasOwn(parsed, "providers") && !isRecord(parsed.providers)) {
+     throw new Error(
+-      `${path} must contain a JSON object for providers. Existing data was not changed.`,
++      "models.json has an invalid structure. Existing data was not changed.",
+     );
+   }
+   return { ...parsed, ...(isRecord(parsed.providers) ? { providers: parsed.providers } : {}) };
+--- a/vendor/pi-gui/packages/pi-sdk-driver/runtime-deps.ts
++++ b/vendor/pi-gui/packages/pi-sdk-driver/runtime-deps.ts
+@@ -17,7 +17,7 @@
+   const modelsJsonPath = join(agentDir, "models.json");
+   const authPath = join(agentDir, "auth.json");
+   const customProviderStore =
+-    options.customProviderStore ?? new CustomProviderStore(modelsJsonPath);
++    options.customProviderStore ?? new CustomProviderStore(modelsJsonPath, options.modelConfigStorage);
+   return {
+     agentDir,
+     modelsJsonPath,

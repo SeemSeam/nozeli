@@ -19,7 +19,7 @@ import { renderTagMarkdown, tagMarkdownSummary } from './tag-markdown.mjs';
 import { mountAnnotationComposer, describeAnnotationSource } from './annotation-composer.mjs';
 import { mountThreadTranscript, threadRounds } from './discussion-thread.mjs';
 import { panelButton, panelMenuPosition, observePanelWidth } from './panel-menu.mjs';
-import { mountContextMenu } from './context-menu.mjs';
+import { menuShortcut, mountContextMenu } from './context-menu.mjs';
 // Tags are persistent view projections with two display states: open and closed-summary.
 // Compact card contract: ~28px header (number/title/more/collapse, no local font
 // control — conversation size stays a global setting), source shown through the
@@ -63,7 +63,7 @@ function tagCardMenu(doc = globalThis.document) {
 let tagSourceSeq = 0;
 
 
-export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, resolution, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, legacyView = () => null, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
+export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAvailability, readReply, replyEntries = [], status = '', open = true, anchorDrift = false, resolution, history = [], draftText = '', anchor = {}, material = {}, relPath = '', displayLocation, information, executeStatus = '', anchorKind = '' }, { draw, filePath = () => '', sourceText = () => '', remove, save, execute = null, confirmTask = message => window.confirm(message), legacyView = () => null, onDraft, onOpen, autoEdit = () => false, inline = false, readOnly = false } = {}) {
   const sessionKey = JSON.stringify([window.__workspaceScope?.projectId,window.__workspaceScope?.viewId,relPath || filePath(),id]);
   const existing = !inline && tagSessions.get(sessionKey);
   if (existing) {
@@ -113,7 +113,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   cardNumber.setAttribute('aria-expanded', 'false');
   const content = document.createElement('span'); content.className = 'note-projection-content';
   const sourceChange=document.createElement('span');sourceChange.className='note-source-change';
-  const renderAdvisory=()=>{const label=anchorKind==='file'?'':resolution?resolution.advisory||'':anchorDrift?'位置可能偏移':'';sourceChange.textContent=label;sourceChange.hidden=!label;sourceChange.title=label?'原引用与历史已保留；可继续讨论或提交任务，重新定位为可选。':'';};
+  const renderAdvisory=()=>{const label=anchorKind==='file'?'':resolution?resolution.advisory||'':anchorDrift?'位置可能偏移':'';sourceChange.textContent=label;sourceChange.hidden=!label;sourceChange.title=label?'原引用与历史已保留；可继续讨论或提交后台任务，重新定位为可选。':'';};
   renderAdvisory();
   const displayText = () => {
     if (kind === 'note') return initialDraft || '（无文字）';
@@ -156,31 +156,46 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   });
   const focusEditor = () => { if (editor.isConnected) editor.focus(); else queueMicrotask(() => { if (editor.isConnected && editing) editor.focus(); }); };
   const canFollowup = conversation && status !== 'draft';
-  const composerRow = document.createElement('span'); composerRow.className = 'tag-composer';
+  const composerRow = document.createElement('span'); composerRow.className = 'tag-composer discussion-composer';
+  const composerStatus = document.createElement('span'); composerStatus.className = 'discussion-composer-status';
+  const composerActions = document.createElement('span'); composerActions.className = 'discussion-composer-actions';
   const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'tag-send';
   setActionButton(submit, kind === 'note' ? 'save' : 'send', {label: kind === 'note' ? '保存本地备注，不发送' : (canFollowup ? '发送续问' : '发送讨论')});
   submit.disabled = readOnly || (conversation && pending);
-  composerRow.append(editor, submit);
-  // Status lines exist only when they carry state (pending/failed/execute).
+  composerRow.append(editor, composerStatus, composerActions);
   const delivery = document.createElement('span'); delivery.className = 'tag-delivery'; delivery.setAttribute('role', 'status'); delivery.hidden = true;
-  const setDelivery = value => { delivery.textContent = value || ''; delivery.hidden = !delivery.textContent; };
-  setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
   const executeStatusLine = document.createElement('span'); executeStatusLine.className = 'tag-execute-status'; executeStatusLine.setAttribute('role', 'status'); executeStatusLine.hidden = !executeStatus;
+  composerStatus.append(delivery, executeStatusLine);
+  const syncComposerVisibility = () => {
+    composerStatus.hidden = delivery.hidden && executeStatusLine.hidden;
+    composerRow.hidden = composerActions.hidden && composerStatus.hidden;
+  };
+  const setDelivery = value => { delivery.textContent = value || ''; delivery.hidden = !delivery.textContent; syncComposerVisibility(); };
+  setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
   // Keep secondary actions as real buttons for shared menu dispatch.
   // Discussion/task submission stays visible next to the composer.
   const menuActions = document.createElement('span'); menuActions.className = 'tag-menu-actions';
-  const executeButton = document.createElement('button'); executeButton.type = 'button'; executeButton.className = 'tag-execute'; executeButton.textContent = '提交任务';
+  const executeButton = document.createElement('button'); executeButton.type = 'button'; executeButton.className = 'tag-execute'; executeButton.textContent = '后台任务';
   executeButton.title = '把当前要求与材料直接提交后台；保存备注和打开小窗不派工';
-  executeButton.setAttribute('aria-label', `提交 ${ordinal} 对应的任务`);
+  executeButton.setAttribute('aria-label', `标签 ${ordinal} 的后台任务`);
   executeButton.disabled=readOnly;
   let executing = false;
   executeButton.addEventListener('click', async () => {
     if (readOnly || executeButton.disabled || executing) return;
-    if (!execute) { executeStatusLine.textContent = '当前会话不支持后台执行。'; executeStatusLine.hidden = false; return; }
+    if (!execute) { executeStatusLine.textContent = '当前会话不支持后台执行。'; executeStatusLine.hidden = false; syncComposerVisibility(); return; }
     executing = true; executeButton.disabled = true; submit.disabled = true;
     const submitted = conversation ? editor.value : draftValue;
     try {
       if (!submitted.trim()) { setDelivery('请先填写任务要求；不会重复发送上一条内容。'); return; }
+      if (conversation) {
+        const source = { anchor, material, path: relPath || filePath(), projectId: scope.projectId, generation: scope.generation };
+        const connected = card.isConnected;
+        if (!await confirmTask('将此标签绑定的材料和当前草稿提交为后台任务？不会另外发送讨论。')) return;
+        if (layoutDisposed || readOnly || collapsed || (connected && !card.isConnected) || editor.value !== submitted || anchor !== source.anchor || material !== source.material || (relPath || filePath()) !== source.path || scope.projectId !== source.projectId || scope.generation !== source.generation) {
+          setDelivery('来源或草稿已变化，未提交后台任务。');
+          return;
+        }
+      }
       const accepted = await execute(id, submitted);
       if (!accepted?.accepted) { setDelivery('任务未确认接收，输入已保留。'); return; }
       setDelivery('任务已接收，进展与成果见工作栏。');
@@ -202,7 +217,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   editButton.disabled = readOnly;
   const drawingButton = information?.drawing && draw ? document.createElement('button') : null;
   if (drawingButton) { drawingButton.type = 'button'; drawingButton.className = 'tag-drawing-edit'; setActionButton(drawingButton, 'draw', {label: '编辑涂鸦'}); drawingButton.onclick = () => draw(id); }
-  if(conversation&&execute)composerRow.append(executeButton);else menuActions.append(executeButton);
+  if(conversation&&execute)composerActions.append(executeButton);else menuActions.append(executeButton);
+  composerActions.append(submit);
   menuActions.append(editButton);
   if (drawingButton) menuActions.append(drawingButton);
   if (remove) menuActions.append(removeButton);
@@ -260,8 +276,8 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     content.hidden = false;
     if (collapsed) editing = false;
     const composing = !readOnly && !collapsed && (conversation || editing);
-    composerRow.hidden = !composing;
-    editor.hidden = !composing;
+    composerActions.hidden = editor.hidden = !composing;
+    syncComposerVisibility();
     card.classList.toggle('editing-note', !conversation && editing && !collapsed);
     if (!composing) composer?.hide(); else { composer?.reset(); autoGrow(); }
     transcript.hidden = collapsed;
@@ -282,7 +298,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     focusCard(); editing = true;
     card.classList.toggle('editing-note', !conversation);
     editor.value = draftValue;
-    composerRow.hidden = editor.hidden = false;
+    composerRow.hidden = composerActions.hidden = editor.hidden = false;
     editButton.hidden = true;
     composer?.reset(); autoGrow(); focusEditor();
   };
@@ -304,12 +320,13 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
           autoGrow();
           onDraft?.(id, '');
           editing = true;
-          if (!collapsed) { composerRow.hidden = editor.hidden = false; }
+          if (!collapsed) { composerRow.hidden = composerActions.hidden = editor.hidden = false; }
         } else {
           draftValue = accepted.text;
           content.textContent = tagMarkdownSummary(accepted.text || '（无文字）');
           editing = false;
-          composerRow.hidden = editor.hidden = true;
+          composerActions.hidden = editor.hidden = true;
+          syncComposerVisibility();
           composer?.hide(); card.classList.remove('editing-note'); content.hidden = false; editButton.hidden = false;
           renderTagMarkdown(noteBody, accepted.text || '（无文字）');
         }
@@ -320,7 +337,7 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   const more = panelButton(); more.dataset.tagMore = '';
   const cardMenuItems = () => {
     const items = [], isCollapsed = controller?.snapshot().collapsed ?? collapsed;
-    if (execute && !readOnly && !conversation) items.push({ id: 'card-execute', label: '提交任务', enabled: !executeButton.disabled });
+    if (execute && !readOnly && !conversation) items.push({ id: 'card-execute', label: '后台任务', enabled: !executeButton.disabled });
     if (drawingButton && !readOnly) items.push({ id: 'card-drawing', label: '编辑涂鸦' });
     if (!conversation && !readOnly) items.push({ id: 'card-edit', label: '编辑备注', enabled: !editing });
     items.push({ id: 'card-source', label: source.open ? '收起来源' : '查看来源', enabled: !isCollapsed });
@@ -357,15 +374,24 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   if (conversation) {
     renderConversation();
     editor.value = draftValue || '';
-    editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…';
-    editor.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing && event.keyCode !== 229 && !event.repeat && !submit.disabled) { event.preventDefault(); submit.click(); } });
+    const mac = menuShortcut('CmdOrCtrl') === '⌘';
+    editor.placeholder = mac ? '⌘ + Return 发送 · Return 换行' : 'Ctrl + Enter 发送 · Enter 换行';
+    let composing = false;
+    editor.addEventListener('compositionstart', () => { composing = true; });
+    editor.addEventListener('compositionend', () => { composing = false; });
+    editor.addEventListener('keydown', event => {
+      if (composing || event.isComposing || event.keyCode === 229 || event.defaultPrevented || event.altKey || event.shiftKey || event.key !== 'Enter') return;
+      if (!(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      if (!event.repeat && !submit.disabled) submit.click();
+    });
     setActionButton(close, 'collapse', {label: '折叠' + (conversation ? '对话 ' : '备注 ') + ordinal});
   }
   const noteBody = document.createElement('span'); noteBody.className = 'tag-markdown tag-note-body';
   if (!conversation) { renderTagMarkdown(noteBody, initialDraft || '（无文字）'); transcript.append(noteBody); editor.placeholder = '用 Markdown 记录你的理解…'; }
   head.append(cardNumber, title, content, sourceChange, more);
   if (inline) head.append(close);
-  card.append(head, source, transcript, composerRow, delivery, executeStatusLine, menuActions);
+  card.append(head, source, transcript, composerRow, menuActions);
   if (inline) {
     if (conversation) paintRemoveButton();
     const view = document.createElement('button'); view.type = 'button'; view.className = 'tag-view'; view.textContent = '查看原文与备注';
@@ -376,12 +402,12 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
   }
   if (!conversation) {
     composer = mountAnnotationComposer({ root: card, input: editor });
-    // Keep the note composer's 输入/预览 tabs and preview body outside the
-    // single-row composer so the row stays textarea + send.
+    // The note's input/preview tabs are above the composer; the preview
+    // replaces the textarea and leaves the local Save action below it.
     const tabs = composerRow.querySelector(':scope > .composer-tabs');
     const previewBody = composerRow.querySelector(':scope > .composer-preview');
     if (tabs) composerRow.before(tabs);
-    if (previewBody) composerRow.after(previewBody);
+    if (previewBody) composerRow.before(previewBody);
   }
   root.append(index, card);
   setOpen(open, false);
@@ -452,7 +478,6 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     submit.disabled = readOnly || pending;
     setDelivery(pending ? '等待前台回复…' : status === 'failed' ? '回复失败 · 原问题已保留' : '');
     content.textContent = tagMarkdownSummary(displayText());
-    editor.placeholder = pending ? '继续记下问题，收到回复后发送…' : '关于这处材料，聊一聊…';
     renderConversation(); root.updateAnchor(value.anchor); return true;
   };
   root.relayout = fitConversation;
@@ -462,10 +487,11 @@ export function makeAnchorTag({ id, ordinal, kind, text, replyText = '', replyAv
     index.setAttribute('aria-label', `打开${conversation ? '对话' : '备注'} ${value}`);
     cardNumber.setAttribute('aria-label', `查看${conversation ? '对话' : '备注'} ${value} 的来源`);
     setActionButton(close, collapsed ? 'expand' : 'collapse', {label: `${collapsed ? '展开' : '折叠'}${conversation ? '对话' : '备注'} ${value}`});
+    executeButton.setAttribute('aria-label', `标签 ${value} 的后台任务`);
     paintRemoveButton(value);
   };
   root.fitConversation = fitConversation;
-  root.updateExecuteStatus = value => { executeStatusLine.textContent=value||'';executeStatusLine.hidden=!executeStatusLine.textContent;executeButton.disabled=readOnly||executing; };
+  root.updateExecuteStatus = value => { executeStatusLine.textContent=value||'';executeStatusLine.hidden=!executeStatusLine.textContent;executeButton.disabled=readOnly||executing;syncComposerVisibility(); };
   root.updateReadOnly = value => { readOnly=Boolean(value);editor.readOnly=readOnly;submit.disabled=readOnly||pending;executeButton.disabled=readOnly||executing;removeButton.disabled=readOnly;editButton.disabled=readOnly;if(drawingButton)drawingButton.disabled=readOnly; };
   root.updateReadOnly(readOnly);
   root.acceptNoteProjection = value => { if(conversation||editing||status&&typeof status==='object')return false;draftValue=value.note||'';editor.value=draftValue;content.textContent=tagMarkdownSummary(draftValue||'（无文字）');renderTagMarkdown(noteBody,draftValue||'（无文字）');anchor=value.anchor||anchor;renderSource();return true; };

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nozeli Store · 本地技能移植 Demo</title>
+<style>
+:root{color-scheme:light dark;--paper:light-dark(#f6f7f3,#191f1c);--card:light-dark(#fff,#232a26);--line:light-dark(#d6ded5,#414e45);--ink:light-dark(#213128,#e6eee8);--muted:light-dark(#52645a,#b2c3b8);--accent:light-dark(#285b43,#9dd5b5);--soft:light-dark(#e9f2eb,#2e4036)}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 system-ui,sans-serif}header,main{max-width:850px;margin:auto;padding:16px 20px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid var(--line)}h1{font-size:28px;margin:10px 0 0}h2{font-size:19px;margin:0 0 8px}p{margin:.5em 0}small,.muted{color:var(--muted)}nav,.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}nav{margin:22px 0 15px}button,select,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:7px;padding:7px 11px;max-width:100%}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button[aria-current],.primary{background:var(--soft);color:var(--accent);border-color:var(--accent);font-weight:650}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}section,dialog{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}section+section{margin-top:12px}dialog{width:min(560px,calc(100% - 28px));max-height:calc(100dvh - 28px);color:var(--ink)}dialog::backdrop{background:#0007}fieldset{border:1px solid var(--line);border-radius:7px;margin:14px 0;padding:8px 12px}fieldset label{display:inline-flex;gap:5px;margin:3px 10px 3px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;background:var(--paper);border-radius:6px}summary{cursor:pointer}textarea{width:100%;resize:vertical}.note{border-inline-start:3px solid var(--accent);padding-inline-start:10px}.badge{color:var(--accent);font-size:13px}.spread{justify-content:space-between}.status{min-height:1.6em;margin-top:12px;color:var(--accent)}[hidden]{display:none!important}
+</style>
+<header><strong>Nozeli Store</strong><div class="row"><small>离线交互 Demo</small><button id="theme" type="button">切换主题</button></div></header>
+<main>
+<h1>本地技能</h1><p class="muted">用内置样例验证导入与角色授权。不读本机文件、不联网、不调用模型或 Pi；刷新重置。</p>
+<nav aria-label="流程"><button data-page="discover">发现</button><button data-page="library">已导入</button><button data-page="project">项目设置</button><button data-page="use">角色工作面</button></nav>
+<div id="view"></div><p id="notice" class="status" role="status"></p>
+</main>
+<dialog id="modal" aria-labelledby="modal-title"></dialog>
+<script>
+'use strict';
+const el=id=>document.getElementById(id),view=el('view'),modal=el('modal'),notice=el('notice');
+const roles={frontdesk:'前台',orchestrator:'主控',worker:'工作助手'},projects={a:'论文项目 A',b:'研究项目 B'};
+const sources={codex:['Codex','已检测到安装'],claude:['Claude Code','已检测到安装'],pi:['Pi','仅发现技能目录']};
+const examples=[
+ {id:'audit@1',key:'audit',source:'codex',name:'资料核对',v:1,original:'列出主张，核对材料。',body:'逐条列出主张、材料出处与未确认项。'},
+ {id:'summary@1',key:'summary',source:'claude',name:'阅读摘要',v:1,original:'总结长文。',body:'按问题、证据与局限整理阅读摘要。'},
+ {id:'index@1',key:'index',source:'pi',name:'目录生成',v:1,blocked:'依赖外部脚本，不能按文本技能移植。'},
+ {id:'audit@2',key:'audit',source:'codex',name:'资料核对',v:2,original:'核对材料并标记页码。',body:'逐条列出主张、材料出处、页码与未确认项。'},
+];
+const skills=new Map(examples.map(row=>[row.id,row])),installed=new Map(),bindings=new Map(),drafts=new Map(),turns=[],revoked=new Set(),affected=new Set();
+let page='discover',project='a',role='frontdesk',selected='',running=null;
+const scope=()=>`${project}/${role}`,binding=(row,r=role)=>`${project}/${r}/${row.key}`;
+const label=row=>`${row.name} v${row.v}`;
+const esc=text=>text.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+const say=text=>{notice.textContent=text;};
+function go(next){page=next;selected='';render();}
+function show(title,body){modal.innerHTML=`<h2 id="modal-title" tabindex="-1">${title}</h2>${body}`;if(!modal.open)modal.showModal();el('modal-title').focus();}
+function step(title,body,submit,onSubmit,valid){
+ show(title,`<form id="step">${body}<div class="row"><button type="button" data-action="cancel">取消</button><button id="next" class="primary" disabled>${submit}</button></div></form>`);
+ const form=el('step'),data=()=>new FormData(form),sync=()=>{el('next').disabled=!valid(data());};
+ form.onchange=sync;form.onsubmit=event=>{event.preventDefault();const value=data();if(valid(value))onSubmit(value);};sync();
+}
+const has=(data,key)=>data.getAll(key).length>0;
+function discover(update=false){
+ step('1 / 3 · 选择来源 Agent',`<p class="muted">以下是模拟检测结果。仅检查所选来源的技能目录，不启动外部 Agent。</p><fieldset><legend>本地来源（可多选）</legend>${Object.entries(sources).map(([id,[name,state]])=>`<p><label><input type="checkbox" name="source" value="${id}"> ${name} · ${state}</label></p>`).join('')}</fieldset><p class="note">正式版继续前会告知哪些候选文本将交给已配置的模型服务。Demo 不发送。</p>`,'让管理助手分析（模拟）',data=>analyze(data.getAll('source'),update),data=>has(data,'source'));
+}
+function analyze(chosen,update){
+ const rows=examples.filter(row=>chosen.includes(row.source)&&!installed.has(row.id)&&(update?row.v===2:row.v===1));
+ step('2 / 3 · 选择可移植技能',`<p>管理助手已完成样例分析，尚未安装。</p><fieldset><legend>技能（可多选）</legend>${rows.map(row=>`<p><label><input type="checkbox" name="skill" value="${row.id}" ${row.blocked?'disabled':''}> ${label(row)} · ${sources[row.source][0]}</label><small>${row.blocked||'可移植 · 纯文本'}</small></p>`).join('')||'<p>所选来源没有新的可移植技能。</p>'}</fieldset>`,'下一步：选择角色',data=>confirm(data.getAll('skill').map(id=>skills.get(id))),data=>has(data,'skill'));
+}
+function confirm(rows){
+ const target=project;
+ step('3 / 3 · 开放角色并安装',`${rows.map(row=>`<fieldset><legend>${label(row)} · ${sources[row.source][0]}</legend><details open><summary>来源与拟安装内容</summary><pre>来源：${row.original}\n\n拟安装：${row.body}</pre></details>${Object.entries(roles).map(([id,name])=>`<label><input type="checkbox" name="${row.id}" value="${id}"> ${name}</label>`).join('')}</fieldset>`).join('')}<label><input type="checkbox" name="activate"> 同时在${projects[target]}启用所选角色</label><p class="note">正常 Pi 回合沿用现有工具。立即启用只影响该项目的新发送；不换会话，也不改已受理版本。</p>`,'确认移植并安装',data=>{
+  for(const row of rows){const allowed=data.getAll(row.id);installed.set(row.id,allowed);if(data.has('activate'))for(const r of allowed)bindings.set(binding(row,r),row.id);}
+  modal.close();go('library');say(data.has('activate')?`已安装 ${rows.length} 项，${projects[target]}的新回合可选用。`:`已安装 ${rows.length} 项，未启用任何项目。`);view.querySelector('[data-action=project]').focus();
+ },data=>rows.length>0&&rows.every(row=>has(data,row.id)&&!installed.has(row.id)));
+}
+function render(){
+ for(const node of document.querySelectorAll('[data-page]')){if(node.dataset.page===page)node.setAttribute('aria-current','page');else node.removeAttribute('aria-current');}
+ if(page==='discover')view.innerHTML='<section><h2>从本地 Agent 移植技能</h2><p class="muted">选择来源，再从管理助手分析后的清单中挑选技能。</p><button class="primary" data-action="discover">发现本地 Agent…</button></section>';
+ if(page==='library')view.innerHTML=`<section><h2>已安装</h2>${[...installed].map(([id,list])=>`<div class="row spread"><p><strong>${label(skills.get(id))}</strong> <span class="badge">${revoked.has(id)?'已安全撤销':list.map(r=>roles[r]).join('、')}</span></p>${revoked.has(id)?'':`<button data-action="revoke" data-id="${id}">安全撤销</button>`}</div>`).join('')||'<p>尚未安装技能。</p>'}<div class="row"><button data-action="project">前往项目设置</button>${installed.has('audit@1')&&!installed.has('audit@2')?'<button data-action="update">演示发现新版本</button>':''}</div></section>`;
+ if(!['project','use'].includes(page))return;
+ const select=(id,choices,value)=>`<select id="${id}">${Object.entries(choices).map(([key,name])=>`<option value="${key}" ${key===value?'selected':''}>${name}</option>`).join('')}</select>`;
+ const available=examples.filter(row=>!revoked.has(row.id)&&installed.get(row.id)?.includes(role)),active=available.filter(row=>bindings.get(binding(row))===row.id);
+ const context=`<section><h2>${page==='project'?'技能与角色':'正常 Pi 对话'}</h2><div class="row"><label>项目 ${select('project-select',projects,project)}</label><label>角色 ${select('role-select',roles,role)}</label></div></section>`;
+ const draft=drafts.get(scope())??'', held=affected.has(scope());
+ view.innerHTML=context+(page==='project'?`<section><h2>项目技能</h2>${available.map(row=>`<p>${label(row)} <button data-action="${active.includes(row)?'disable':'enable'}" data-id="${row.id}">${active.includes(row)?'停用':bindings.has(binding(row))?'切换至此版本':'启用'}</button></p>`).join('')||'<p>该角色没有可启用的本地技能。</p>'}<button data-action="use">前往角色工作面</button></section>`:`<section><p class="muted">同一模拟会话 · ${scope()}。工具配置保持不变。</p>${held?'<p class="note">此会话用过被撤销的技能，须先核对上下文。草稿与历史保留。</p>':''}<div class="row">${active.map(row=>`<button data-action="select" data-id="${row.id}" aria-pressed="${selected===row.id}" ${held?'disabled':''}>${label(row)}</button>`).join('')||'<small>该项目角色未启用本地技能。</small>'}</div><p><label for="input">本轮消息</label></p><textarea id="input" rows="2">${esc(draft)}</textarea><div class="row spread"><small>${selected?`本轮选择：${label(skills.get(selected))}`:'未选技能'}</small><button class="primary" data-action="send" ${held||running||!draft.trim()?'disabled':''}>模拟发送</button></div></section><section><h2>回合记录</h2>${turns.filter(row=>row.scope===scope()).map(row=>`<p>${esc(row.text)} <small>· ${row.id?label(skills.get(row.id)):'未使用技能'} · ${row===running?'运行中':'已结束'}</small></p>`).join('')||'<p>尚无发送记录。</p>'}${running?.scope===scope()?'<button data-action="settle">结束模拟回合</button>':''}</section>`);
+ for(const [id,change] of [['project-select',v=>{project=v;}],['role-select',v=>{role=v;}]])el(id).onchange=event=>{change(event.target.value);selected='';render();el(id).focus();};
+ if(page==='use')el('input').oninput=event=>{drafts.set(scope(),event.target.value);view.querySelector('[data-action=send]').disabled=held||!!running||!event.target.value.trim();};
+}
+document.addEventListener('click',event=>{
+ const b=event.target.closest('button');if(!b)return;
+ if(b.dataset.page){say('');go(b.dataset.page);return;}
+ const action=b.dataset.action,id=b.dataset.id,row=skills.get(id);
+ if(action==='discover'||action==='update')discover(action==='update');
+ if(action==='cancel')modal.close();
+ if(action==='project'||action==='use')go(action);
+ if(action==='enable'&&installed.get(id)?.includes(role)&&!revoked.has(id)){bindings.set(binding(row),id);render();say('新回合可选用；已受理回合不换版。');}
+ if(action==='disable'&&bindings.get(binding(row))===id){bindings.delete(binding(row));render();say('已停用；历史保留。');}
+ if(action==='select'){selected=selected===id?'':id;render();view.querySelector(`[data-id="${id}"]`).focus();}
+ if(action==='send'){
+  const text=drafts.get(scope())?.trim(),chosen=skills.get(selected);if(!text||running||affected.has(scope())||chosen&&bindings.get(binding(chosen))!==selected)return;
+  running={scope:scope(),id:selected,text};turns.push(running);drafts.delete(scope());selected='';render();say('模拟回合已固定版本。可到项目设置换版，再回来核对。');el('input').focus();
+ }
+ if(action==='settle'&&running?.scope===scope()){running=null;render();say('模拟回合已结束。');}
+ if(action==='revoke')show(`安全撤销 · ${label(row)}`,`<p>该版本不可再选用。历史不会删除；使用过它的会话须先核对上下文。Demo 不执行实际停止或清理。</p><div class="row"><button data-action="cancel">取消</button><button class="primary" data-action="revoke-confirm" data-id="${id}">确认安全撤销</button></div>`);
+ if(action==='revoke-confirm'){
+  revoked.add(id);for(const [key,value] of bindings)if(value===id)bindings.delete(key);
+  for(const turn of turns)if(turn.id===id)affected.add(turn.scope);
+  modal.close();go('library');say('已标记安全撤销；相关会话待核对。');document.querySelector('[data-page=library]').focus();
+ }
+});
+el('theme').onclick=()=>{const current=document.documentElement.style.colorScheme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.style.colorScheme=current==='dark'?'light':'dark';};
+render();
+</script>
+</html>

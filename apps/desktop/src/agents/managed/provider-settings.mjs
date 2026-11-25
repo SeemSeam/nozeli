@@ -4,6 +4,8 @@ import {randomUUID,createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
+import {createWindowsDesktopProfileIO} from '../../platform/windows/desktop-profile.mjs';
+import {AsyncLocalStorage} from 'node:async_hooks';
 
 const roles=['frontdesk','orchestrator','worker'];
 // Native SDK thinking vocabulary (input syntax only). Per-model support and
@@ -84,7 +86,6 @@ function migrateRoleDefaults(raw){
  for(const role of roles)value[role]=raw.roles[role]??nativeDefaultEntry();
  return value;
 }
-async function atomic(file,value){await platformPersistence.writeAtomic(file,value);}
 async function optional(file,fallback){try{return await fs.readFile(file,'utf8');}catch(e){if(e.code==='ENOENT')return fallback;throw e;}}
 async function readJson(file,fallback){try{return JSON.parse(await optional(file,fallback));}catch{return null;}}
 
@@ -163,13 +164,34 @@ export class ProviderSettings {
  constructor({source,worker=null,isReferenced=async()=>false,onDefaultsSaved=async()=>({applied:0,pending:0,failed:[],sessions:[]}),getModelSync=()=>({applied:0,pending:0,failed:[],sessions:[]}),onSourceSaved=null}={}){
   if(!source)throw Error('ProviderSettings requires the private Pi source.');
   Object.assign(this,{source,worker,isReferenced,onDefaultsSaved,getModelSync,onSourceSaved});this.queue=Promise.resolve();this.login=null;
+  this.recordVersions=new Map();
+  this.recordTransaction=new AsyncLocalStorage();
+  this.nativeRecords=process.platform==='win32'?createWindowsDesktopProfileIO(source.root):null;
  }
- serial(fn){const result=this.queue.then(fn);this.queue=result.catch(()=>{});return result;}
+ async readRecord(file,fallback){
+  if(!this.nativeRecords)return readJson(file,fallback);
+  await this.nativeRecords.ensureDirectory(this.source.agentDir);
+  const record=await this.nativeRecords.read(file);(this.recordTransaction.getStore()??this.recordVersions).set(file,record.sha256);
+  try{return JSON.parse(record.bytes?.toString('utf8')??fallback);}catch{throw Object.assign(Error('Private provider record is invalid; original bytes retained'),{code:'SETTINGS_INVALID'});}
+ }
+ async writeRecord(file,value){
+  if(!this.nativeRecords){await fs.mkdir(path.dirname(file),{recursive:true,mode:0o700});return platformPersistence.writeAtomic(file,value);}
+  const versions=this.recordTransaction.getStore()??this.recordVersions;
+  if(!versions.has(file))await this.readRecord(file,'null');
+  const receipt=await this.nativeRecords.write(file,Buffer.from(value),{expectedSha256:versions.get(file)});versions.set(file,receipt.sha256);return receipt;
+ }
+ async recordVersion(){
+  // Version is the digest of the raw record content: the SHA-256 of empty
+  // content when absent, identical to the non-native reading below.
+  if(this.nativeRecords){await this.nativeRecords.ensureDirectory(this.source.agentDir);return (await this.nativeRecords.read(this.file)).sha256??createHash('sha256').update('').digest('hex');}
+  return createHash('sha256').update(await optional(this.file,'')).digest('hex');
+ }
+ serial(fn){const result=this.queue.then(()=>this.recordTransaction.run(new Map(),fn));this.queue=result.catch(()=>{});return result;}
  get file(){return path.join(this.source.agentDir,'nozeli-role-defaults.json');}
  get revisionsFile(){return path.join(this.source.agentDir,'nozeli-source-revisions.json');}
  get discoveryFile(){return path.join(this.source.agentDir,'nozeli-source-discovery.json');}
- async defaults(){const raw=await readJson(this.file,'{"schema":2,"roles":{}}');return validateRoleDefaults(migrateRoleDefaults(raw));}
- async defaultsSnapshot(){return this.serial(async()=>({defaults:await this.defaults(),version:createHash('sha256').update(await optional(this.file,'')).digest('hex')}));}
+ async defaults(){const raw=await this.readRecord(this.file,'{"schema":2,"roles":{}}');return validateRoleDefaults(migrateRoleDefaults(raw));}
+ async defaultsSnapshot(){return this.serial(async()=>({defaults:await this.defaults(),version:await this.recordVersion()}));}
  async adminSummary(){
   const {defaults,version}=await this.defaultsSnapshot();
   let sources=[];
@@ -188,10 +210,10 @@ export class ProviderSettings {
   const entry=(await this.defaults())[role];
   return {selector:entry.model.mode==='explicit'?entry.model.selector:null,effort:entry.thinking.mode==='explicit'?entry.thinking.level:null};
  }
- async readRevisions(){const value=await readJson(this.revisionsFile,'{"schema":1,"sources":{}}');if(!value||value.schema!==1||!value.sources||typeof value.sources!=='object')return {schema:1,sources:{}};return value;}
- async writeRevisions(value){await fs.mkdir(path.dirname(this.revisionsFile),{recursive:true,mode:0o700});await atomic(this.revisionsFile,JSON.stringify(value,null,2)+'\n');}
- async readDiscovery(){const value=await readJson(this.discoveryFile,'{"schema":1,"sources":{}}');if(!value||value.schema!==1||!value.sources||typeof value.sources!=='object')return {schema:1,sources:{}};return value;}
- async writeDiscovery(value){await fs.mkdir(path.dirname(this.discoveryFile),{recursive:true,mode:0o700});await atomic(this.discoveryFile,JSON.stringify(value,null,2)+'\n');}
+ async readRevisions(){const value=await this.readRecord(this.revisionsFile,'{"schema":1,"sources":{}}');if(!value||value.schema!==1||!value.sources||typeof value.sources!=='object')return {schema:1,sources:{}};return value;}
+ async writeRevisions(value){await this.writeRecord(this.revisionsFile,JSON.stringify(value,null,2)+'\n');}
+ async readDiscovery(){const value=await this.readRecord(this.discoveryFile,'{"schema":1,"sources":{}}');if(!value||value.schema!==1||!value.sources||typeof value.sources!=='object')return {schema:1,sources:{}};return value;}
+ async writeDiscovery(value){await this.writeRecord(this.discoveryFile,JSON.stringify(value,null,2)+'\n');}
  requireWorker(){if(!this.worker)throw unavailable();return this.worker;}
  safeUrl(value){try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash?u.href:'';}catch{return '';}}
  async models(){
@@ -280,8 +302,7 @@ export class ProviderSettings {
  saveDefaults(payload,options={}){
   const value=validateRoleDefaults(payload);
   return this.serial(async()=>{
-   const raw=await optional(this.file,'');
-   const version=createHash('sha256').update(raw).digest('hex');
+   const version=await this.recordVersion();
    if(options.expectedVersion!==undefined&&options.expectedVersion!==version)throw Object.assign(Error('全局默认配置已变更，请重新准备方案。'),{code:'SETTINGS_CONFLICT'});
    const models=await this.models();
    const current=await this.defaults();
@@ -292,8 +313,7 @@ export class ProviderSettings {
     // currently cannot list it.
     if(model.mode==='explicit'&&model.selector!==current[role].model.selector&&!models.some(m=>m.selector===model.selector))fail('所选模型不在当前已配置Pi目录中，请刷新。');
    }
-   await fs.mkdir(path.dirname(this.file),{recursive:true,mode:0o700});
-   await atomic(this.file,JSON.stringify({schema:2,revision:randomUUID(),roles:value},null,2)+'\n');
+   await this.writeRecord(this.file,JSON.stringify({schema:2,revision:randomUUID(),roles:value},null,2)+'\n');
    let modelSync;
    try{modelSync=await this.onDefaultsSaved(value);}
    catch{modelSync={applied:0,pending:0,failed:[{code:'PI_DEFAULTS_APPLY_UNKNOWN',message:'默认配置已保存，在线应用结果未知。'}],sessions:[]};}

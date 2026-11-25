@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {runGit,runGitStream,ensureGit} from './git-runtime.mjs';
+import {runGit,runGitStream,ensureGit,assertGitWorktreeDirectory} from './git-runtime.mjs';
 import {createHash} from 'node:crypto';
-import {Readable} from 'node:stream';
-import {withSafeFile,hookWouldExecute,defaultFilesystemAdapter} from './file-stream.mjs';
+import {Readable,PassThrough} from 'node:stream';
+import {createFileStream,hookWouldExecute,defaultFilesystemAdapter} from './file-stream.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {optionalIsolatedLaunch} from './process-isolation.mjs';
@@ -14,13 +14,24 @@ export const str=async(cwd,args,extra)=>(await git(cwd,args,extra)).toString().t
 export const read=async file=>fs.readFile(file).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
 export const entries=buffer=>new Map(buffer.toString().split('\0').filter(Boolean).map(row=>{const at=row.indexOf('\t');return [row.slice(at+1),row.slice(0,at).split(' ')];}));
 export const gitStream=(cwd,args,options={},extra={})=>runGitStream(cwd,args,{...options,env:gitEnv(extra)});
+// Lazy: a rejected base version never starts Git. Bound the pipe and await the
+// child's exit after stdout ends, so a late Git failure cannot publish a file.
+export async function* blobStream(cwd,oid,{signal}={}){
+ if(typeof oid!=='string'||!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid))fail('GIT_OBJECT_REJECTED','Expected a complete Git object ID');
+ const output=new PassThrough({highWaterMark:256*1024});
+ let failure;
+ const producer=gitStream(cwd,['cat-file','blob',oid],{output,signal}).catch(error=>{failure=error;output.destroy(error);});
+ try{for await(const chunk of output)yield chunk;await producer;if(failure)throw failure;}
+ finally{output.destroy();await producer;}
+}
 export async function gitRecords(cwd,args,extra={}){const rows=[];let pending=Buffer.alloc(0);await gitStream(cwd,args,{onStdout:chunk=>{const data=pending.length?Buffer.concat([pending,chunk]):chunk;let start=0,at;while((at=data.indexOf(0,start))!==-1){if(at>start)rows.push(data.toString('utf8',start,at));start=at+1;}pending=Buffer.from(data.subarray(start));}},extra);if(pending.length)rows.push(pending.toString());return rows;}
 export async function gitEntries(cwd,args,extra={}){return new Map((await gitRecords(cwd,args,extra)).map(row=>{const at=row.indexOf('\t');return [row.slice(at+1),row.slice(0,at).trim().split(/\s+/)];}));}
 export async function blobDigest(cwd,oid){if(!oid)return null;const hash=createHash('sha256');await gitStream(cwd,['cat-file','blob',oid],{onStdout:chunk=>hash.update(chunk)});return hash.digest('hex');}
 export async function gitHasOutput(cwd,args){let any=false;await gitStream(cwd,args,{onStdout:chunk=>{any||=chunk.length>0;}});return any;}
-// A small descriptor batch avoids one Git process per file without keeping an
-// unbounded set of descriptors or any file bodies in memory.
-export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
+// Two bounded anchored reads cross-check the bytes streamed into Git without
+// passing platform-specific descriptor paths across the process boundary.
+export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1',{filesystem=defaultFilesystemAdapter}={}){
+ const {withSafeFile}=createFileStream({filesystem});
  const results=new Map();
  for(const rel of rels){
   // Pass 1: anchored read computes the digest and the git object id of the
@@ -51,7 +62,7 @@ export async function blobFiles(cwd,root,rels,known=new Map(),format='sha1'){
  }
  return results;
 }
-export async function blobFile(cwd,root,rel){return (await blobFiles(cwd,root,[rel],new Map(),await str(cwd,['rev-parse','--show-object-format']))).get(rel);}
+export async function blobFile(cwd,root,rel,options={}){return (await blobFiles(cwd,root,[rel],new Map(),await str(cwd,['rev-parse','--show-object-format']),options)).get(rel);}
 export async function updateIndexRows(cwd,index,rows){if(!rows.length)return;const format=await str(cwd,['rev-parse','--show-object-format']);const zero='0'.repeat(format==='sha256'?64:40);await gitStream(cwd,['update-index','-z','--index-info'],{input:Readable.from((function*(){for(const {rel,mode,oid} of rows)yield (oid?mode+' '+oid:'0 '+zero)+'\t'+rel+'\0';})())},{GIT_INDEX_FILE:index});}
 export async function acceptanceCommit(repo,tree,parent,message,directory,attempt={},persist=async()=>{},{filesystem=defaultFilesystemAdapter}={}){
  const configured=await str(repo,['config','--get','core.hooksPath']).catch(()=>null),hooks=configured?path.resolve(repo,configured):path.resolve(repo,await str(repo,['rev-parse','--git-path','hooks']));
@@ -89,6 +100,17 @@ export async function acceptanceCommit(repo,tree,parent,message,directory,attemp
   fail('HOOK_REJECTED','接受提交钩子失败；候选已保留：'+(error.stderr||error.stdout||error.message));
  }
  return verify(await str(shadow,['rev-parse','HEAD']));
+}
+export async function qualifyWorktreePaths(cwd,directory){
+ if(process.platform!=='win32')return;
+ const root=await fs.realpath(cwd);let top;
+ try{top=await str(root,['rev-parse','--show-toplevel']);}
+ catch(error){if(await fs.lstat(path.join(root,'.git')).catch(e=>{if(e.code==='ENOENT')return null;throw e;}))throw error;}
+ if(top&&await fs.realpath(top)!==root)fail('REPO_BOUNDARY','所选项目位于另一个仓库内，请选择仓库根目录');
+ const commonDir=top?await fs.realpath(path.resolve(root,await str(root,['rev-parse','--git-common-dir']))):path.join(root,'.git');
+ const pointer=await fs.lstat(path.join(directory,'.git')).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+ const gitDir=pointer?await fs.realpath(await str(directory,['rev-parse','--absolute-git-dir'])):undefined;
+ await assertGitWorktreeDirectory(commonDir,directory,{gitDir});
 }
 export async function repository(cwd){
  const root=await fs.realpath(cwd);let top;try{top=await str(root,['rev-parse','--show-toplevel']);}catch{fail('REPOSITORY_REQUIRED','项目Git尚未初始化');}

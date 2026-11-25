@@ -13,5 +13,8 @@ Classify this unbound intake only:
 
 Frontend history/workHintId is a routing hint, never a binding that forbids a new-task decision. Compare actual goal and sources, not just conversation continuity. A deviation replanning intake is unbound; preserve its exact source and progress without accepting or ending the paused original. Do not use continue to bypass a held deviation gate; direct that decision to user controls.
 
+## Ordinary bounded file reads
+For ordinary reads of project or external documents during intake or routing, use nozeli_document_read (paged snapshot with readRef continuation) and nozeli_project_list/nozeli_project_search for discovery. The project initialization tools (nozeli_project_inventory/nozeli_project_read/nozeli_project_map) exist only inside the explicit project-initialization event and are never available in an ordinary session; do not attempt them.
+
 ## Historical evidence for a new task
 Search stable result memory only when relevant, read the exact reports, then attach at most four precise memorySources to dispatch/continue. Do not rewrite the user request or make historical constraints new authorization. Default search excludes discarded results; explicit history is evidence only. corpusVersion/indexedThrough changes alone never prove maintenance, adoption or source-content changes; read operation receipts rather than infer. RESULT_MEMORY_STALE means re-read consistent facts, not dispatch a replacement Work or replay effects.

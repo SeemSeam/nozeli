@@ -89,12 +89,28 @@ class ControlChannel {
   }
 }
 
-// manifest 及其所在目录不得带组/其他权限，收窄旁路篡改面。
+// POSIX 组/其他权限位在 Windows 不存在（stat 恒为 0666/0777 样式，chmod 不改变该语义）：
+// 该核验仅在 POSIX 执行；Windows 依赖每用户 %TEMP% ACL 与宿主创建的私有目录，绝不在
+// Windows 依据不存在的权限位伪造“篡改”结论而拒绝普通执行。
 function assertPrivatePath(kind, target, stat) {
   if (!stat.isFile()) throw Object.assign(Error(`${kind} 不是常规文件：${target}`), { code: EXIT.MANIFEST });
-  if (stat.mode & 0o077) throw Object.assign(Error(`${kind} 权限过宽（含组/其他权限）：${target}`), { code: EXIT.TAMPER });
+  if (process.platform !== 'win32' && stat.mode & 0o077) throw Object.assign(Error(`${kind} 权限过宽（含组/其他权限）：${target}`), { code: EXIT.TAMPER });
 }
 async function verifyManifest(options, control) {
+  // win32：manifest 根不得经 reparse/link 重定向（窄域原生 lstat 祖先遍历，在读取/解析任何内容前拒绝）。
+  // POSIX 不遍历（/tmp symlink 属正常布局，保持既有已测行为）；放宽 ACL 的根见上方边界声明。
+  if (process.platform === 'win32') {
+    const links = [];
+    let current = path.resolve(path.dirname(options.manifest));
+    for (;;) {
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) links.push(current);
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    if (links.length) throw Object.assign(Error(`manifest 根经 reparse/link 重定向（${links.join('；')}），拒绝执行`), { code: EXIT.TAMPER });
+  }
   const raw = fs.readFileSync(options.manifest);
   const digest = sha256(raw);
   if (digest !== options.expectDigest) throw Object.assign(Error(`manifest 摘要不符（期望 ${options.expectDigest}，实际 ${digest}）：判定篡改，拒绝执行`), { code: EXIT.TAMPER });
@@ -111,7 +127,7 @@ async function verifyManifest(options, control) {
   const effectHash = (await effectHashModule).computeEffectHash(manifest.frozen);
   if (effectHash !== manifest.effectHash) throw Object.assign(Error('effectHash 与冻结效果不符：判定篡改，拒绝执行'), { code: EXIT.TAMPER });
   const dirStat = fs.statSync(path.dirname(options.manifest));
-  if (dirStat.mode & 0o077) throw Object.assign(Error('manifest 目录权限过宽'), { code: EXIT.TAMPER });
+  if (process.platform !== 'win32' && dirStat.mode & 0o077) throw Object.assign(Error('manifest 目录权限过宽'), { code: EXIT.TAMPER });
   assertPrivatePath('manifest', options.manifest, fs.statSync(options.manifest));
   const pins = manifest.pins ?? {};
   for (const pin of ['helper', 'interpreter', 'command']) if (!pins[pin] || typeof pins[pin].path !== 'string' || !/^[0-9a-f]{64}$/.test(pins[pin].sha256 ?? '')) throw Object.assign(Error(`manifest pin ${pin} 缺失或非法`), { code: EXIT.MANIFEST });

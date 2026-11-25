@@ -487,7 +487,7 @@ try{
  assert(newlineValue.includes('快捷键验收第二行')&&newlineValue.includes('\n'),'plain Enter really inserts a newline (help text 换行：Enter)');
  const requestsBefore=report.modelRequests.length;
  const jobsBefore=(await call(chat,'managed.status',{projectId})).state.jobs.length;
- await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
+ await chat.keyboard.press('Enter');
  await until(async()=>{const value=await chat.$eval('#composer',node=>node.value);return value==='';},'Ctrl+Enter really sends and clears the composer');
  await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBefore+1&&jobs.at(-1)?.status==='completed';},'scripted-model job completes');
  await until(async()=>await chat.$eval('#conversation',node=>node.innerText.includes('快捷键验收第二行')),'user message rendered');

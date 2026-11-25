@@ -4,15 +4,17 @@ import {statusLine,disclosure,roleLabel} from './management-presentation.mjs';
 import {STATUS_REFRESH_MS,STATUS_STALE_MS,snapshotStale,timingDisplay,prioritizeRows,statusCounts} from './collaboration-timing.mjs';
 const make=(tag,text,className)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;if(className)node.className=className;return node;};
 const shortModel=value=>{const id=value?.model??value;return typeof id==='string'?id.split('/').slice(1).join('/')||id:'未记录';};
-export function mountCollaborationStatus({root,after,call,current,onSelect,toast=()=>{}}){
+export function mountCollaborationStatus({root,after,call,current,onSelect,toast=()=>{},workTarget}){
  const section=make('section',null,'collaboration-status');section.id='managed-collaboration';section.dataset.executionStrip='';section.setAttribute('aria-label','Agent 模型与状态');section.hidden=true;
  const summary=make('span',null,'collaboration-counts'),fault=make('span',null,'collaboration-fault'),all=make('button','状态详情','collaboration-details'),refreshButton=make('button','刷新状态'),chips=make('div',null,'collaboration-chips'),note=make('p',null,'collaboration-note'),freshness=make('span',null,'collaboration-freshness');
  all.type=refreshButton.type='button';all.setAttribute('aria-haspopup','dialog');freshness.dataset.agentFreshness='';section.append(chips,all);if(after?.parentNode===root)root.insertBefore(section,after.nextSibling);else root.append(section);
+ if(workTarget){section.removeAttribute('id');section.classList.add('collaboration-single-agent');all.remove();}
  let disposed=false,inViewport=true,heartbeat=null,ticker=null,staleTimer=null,readError=null;
  const list=make('dialog',null,'collaboration-dialog collaboration-agent-dialog'),listTitle=make('h2','Agent 状态'),listRows=make('div'),listClose=make('button','关闭'),heading=make('div',null,'collaboration-heading');heading.append(summary,fault,freshness,refreshButton);listClose.type='button';list.setAttribute('aria-label','Agent 状态');const explanation=make('p','本轮经过是 Job 的墙钟时间，不代表模型思考或 CPU 用时；等待、审核与暂停不继续计时。'),help=disclosure({key:'status-help',label:'状态说明',content:explanation}),agentSearch=make('input'),filterCount=make('p');agentSearch.type='search';agentSearch.placeholder='查找任务或助手';agentSearch.setAttribute('aria-label','查找任务或助手');agentSearch.hidden=true;filterCount.hidden=true;list.append(listTitle,heading,note,agentSearch,filterCount,listRows,help,listClose);document.body.append(list);
  const dialog=make('dialog',null,'collaboration-dialog collaboration-model-dialog'),dialogTitle=make('h2'),scopeNote=make('p'),facts=make('dl'),search=make('input'),options=make('div'),result=make('p'),footer=make('div',null,'collaboration-model-actions'),modelBody=make('div',null,'collaboration-dialog-body');search.type='search';search.placeholder='搜索模型或来源';search.setAttribute('aria-label','查找可用模型');result.setAttribute('role','status');dialog.setAttribute('aria-label','Agent 模型选择');modelBody.append(dialogTitle,scopeNote,facts,search,options);dialog.append(modelBody,result,footer);document.body.append(dialog);
  const confirm=make('button','保存选择'),cancelPending=make('button','撤销待切换'),inherit=make('button','恢复角色默认'),close=make('button','取消');for(const button of [confirm,cancelPending,inherit,close])button.type='button';footer.append(cancelPending,inherit,close,confirm);
  const modelConnection=make('button','管理连接');modelConnection.type='button';modelConnection.hidden=true;modelConnection.onclick=()=>{dialog.close();if(list.open)list.close();window.dispatchEvent(new CustomEvent('nozeli-open-settings',{detail:'settings-provider'}));};footer.prepend(modelConnection);
+ if(workTarget)modelConnection.remove();
  let project=null,generation=0,flight=null,pending=false,frame=null,rows=new Map(),menu=null,choice=null,submitting=false,menuSerial=0,requestKey=null;
  const chipNodes=new Map(),workerLabels=new Map(),listNodes=new Map(),modelNodes=new Map(),modelGroups=new Map();
  let menuFlight=null,menuAgain=false,menuDirty=false,menuForce=false,requestAction=null,modelQuery='',initialModelProvider=null;
@@ -77,7 +79,7 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
  function paint(){
   if(!frame)return;
   const values=prioritizeRows(rows.values(),selected()),counts=statusCounts(values);summary.textContent=[counts.active?'处理中 '+counts.active:null,counts.queued?'排队 '+counts.queued:null,counts.review?'待审阅 '+counts.review:null].filter(Boolean).join(' · ');summary.hidden=!summary.textContent;fault.textContent=counts.fault?'异常 '+counts.fault:'';fault.hidden=!counts.fault;fault.dataset.hasFault=String(counts.fault>0);
-  syncRows(listRows,values,listNodes);agentSearch.hidden=values.length<=8&&!agentSearch.value;filterAgents();
+  if(!workTarget){syncRows(listRows,values,listNodes);agentSearch.hidden=values.length<=8&&!agentSearch.value;filterAgents();}
   note.textContent=readError?'读取受阻：'+readError+'；保留上次快照，自动重试。':frame.freshness==='recorded'?'历史状态只读；查看不会启动 Agent。':'';note.hidden=!note.textContent;section.hidden=false;paintFreshness();paintChips();schedule();
  }
  function paintOverflow(){
@@ -93,7 +95,7 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
   for(const [index,row]of inline.entries()){
    let node=chipNodes.get(row.target);if(!node){node=make('button',null,'collaboration-chip');node.type='button';node.setAttribute('aria-haspopup','dialog');const dot=make('span',null,'collaboration-dot');dot.setAttribute('aria-hidden','true');node.append(dot,make('span',null,'collaboration-role'),make('span',null,'collaboration-chip-state'));chipNodes.set(row.target,node);}
    const stale=!!readError||snapshotStale(frame)||row.freshness?.stale||row.freshness?.known===false,unknown=stale||row.primaryState==='unknown',state=row.stateLabel??row.primaryState;
-   node.dataset.agentTarget=row.target;node.dataset.state=row.primaryState;node.dataset.freshness=unknown?'stale':'live';node.querySelector('.collaboration-role').textContent=({frontdesk:'前台',orchestrator:'主控'}[row.role]??workerLabels.get(row.target)??'Agent');node.lastChild.textContent=unknown?'待核实':state;
+   node.dataset.agentTarget=row.target;node.dataset.state=row.primaryState;node.dataset.freshness=unknown?'stale':'live';node.querySelector('.collaboration-role').textContent=workTarget?'工作助手':({frontdesk:'前台',orchestrator:'主控'}[row.role]??workerLabels.get(row.target)??'Agent');node.lastChild.textContent=unknown?'待核实':state;
    node.title=[row.role,row.workName||row.displayName,unknown?'状态待核实 · 上次：'+state:state,row.manualControl?.paused?'后续已暂停':null,row.activityText,row.blockReason,row.model?.effective?'实际模型：'+shortModel(row.model.effective):'上次模型：'+shortModel(row.model?.lastEffective),row.model?.syncState==='failed'?'模型切换失败':row.model?.desired?'模型待生效':null,'点击切换后续回合模型'].filter(Boolean).join(' · ');node.setAttribute('aria-label',node.title);node.onclick=()=>void openModel(row);
    if(chips.children[index]!==node)chips.insertBefore(node,chips.children[index]??null);
   }
@@ -110,13 +112,13 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
  }
  function visibilityChanged(){paintClocks();schedule();if(visible())void refresh();}
  const observer=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{const next=entries[0]?.isIntersecting??false;if(next===inViewport)return;inViewport=next;visibilityChanged();}):null;observer?.observe(section);document.addEventListener('visibilitychange',visibilityChanged);
- async function refresh(){const agents=refreshAgents();return Promise.all([agents,refreshRepairs()]);}
+ async function refresh(){const agents=refreshAgents();return workTarget?agents:Promise.all([agents,refreshRepairs()]);}
  async function refreshAgents(){
   const id=current()?.projectId;if(!id){clear();return;}if(project!==id){clear();project=id;}
   if(flight){pending=true;return flight.promise;}
   const gen=generation,forceModel=menuForce,token={};menuForce=false;flight=token;schedule();
   token.promise=(async()=>{const incoming=new Map();let latest=null,pages=0,revision=null;try{
-   let cursor=null;const cursors=new Set();do{const value=await call('collaboration.status',{...(cursor?{cursor}:{})},id);if(!still(id,gen))return;if(value.projectId!==id||value.schema!==1||(pages&&value.revision!==revision))throw Error('Agent 快照版本已变化');revision=value.revision;latest=value;pages++;for(const row of value.agents)incoming.set(row.target,row);cursor=value.nextCursor;if(cursor){if(cursors.has(cursor))throw Error('Agent 分页游标重复');cursors.add(cursor);}}while(cursor);
+   let cursor=null;const cursors=new Set();do{const value=await call('collaboration.status',workTarget?{target:workTarget}:cursor?{cursor}:{},id);if(!still(id,gen))return;if(value.projectId!==id||value.schema!==1||(pages&&value.revision!==revision))throw Error('Agent 快照版本已变化');revision=value.revision;latest=value;pages++;for(const row of value.agents)incoming.set(row.target,row);cursor=value.nextCursor;if(cursor){if(cursors.has(cursor))throw Error('Agent 分页游标重复');cursors.add(cursor);}}while(cursor);
    if(!still(id,gen))return;rows=incoming;frame=latest;readError=null;paint();void refreshMenu(forceModel);
   }catch(error){if(still(id,gen)){readError=error.message;if(frame)paint();else{note.textContent='状态读取受阻：'+error.message;summary.textContent='状态待核实';fault.textContent='读取异常';fault.dataset.hasFault='true';section.hidden=false;paintFreshness();paintOverflow();schedule();}void refreshMenu(true);}}
   finally{if(flight===token){flight=null;if(pending){pending=false;if(current()?.projectId)void refresh();}}}})();return token.promise;
@@ -136,7 +138,7 @@ export function mountCollaborationStatus({root,after,call,current,onSelect,toast
   facts.replaceChildren(make('dt',info.effective?'当前模型':'上次使用'),make('dd',shortModel(info.effective??info.recorded)));
   if(info.desired||info.override||!info.effective)facts.append(make('dt','下次使用'),make('dd',info.desired?shortModel(info.desired)+' · '+({saved:'待生效',pending:'待生效',failed:'切换失败',unknown:'待核实'}[info.state]??info.state):info.override?shortModel(info.override)+' · 本 Agent 选择':'继承角色默认 / 原生选择'));
   cancelPending.hidden=!info.desired||!['saved','pending','failed'].includes(info.state);cancelPending.disabled=submitting||!info.available;inherit.hidden=!info.override;inherit.disabled=submitting||!info.available;
-  paintOptions();if(!info.models?.length)scopeNote.textContent+=' 没有可选模型；请管理连接并核对模型目录。';paintModelAvailability();
+  paintOptions();if(!info.models?.length)scopeNote.textContent+=workTarget?' 没有可选模型；请在主窗口管理连接。':' 没有可选模型；请管理连接并核对模型目录。';paintModelAvailability();
  }
  function paintModelAvailability(){modelConnection.hidden=!!menu?.info?.models?.length;const error=menu?.info?.error;if(error)scopeNote.textContent+=' '+(error.message??error.code??'模型切换失败');}
  function paintOptions(){

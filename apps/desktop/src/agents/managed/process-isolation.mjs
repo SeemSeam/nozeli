@@ -18,9 +18,14 @@ export function isolationCapability(deps={}){
     :{capability:selection.capability,platform:selection.platform,state:'unavailable',status:selection.status,reason:selection.reason,failureSemantics:'managed execution that requires isolation is refused with ISOLATION_UNSUPPORTED, never spawned unsandboxed'};
 }
 
-export async function isolatedLaunch(spec,deps={}){
+export function requireIsolationSupport(deps={}){
   const selection=deps.selection??select();
   if(selection.state!=='available')throw Object.assign(Error('受管Agent进程读/写隔离尚未在此平台实现；基础阅读仍可使用。'),{code:'ISOLATION_UNSUPPORTED',capability:isolationCapability({selection})});
+  return selection;
+}
+
+export async function isolatedLaunch(spec,deps={}){
+  const selection=requireIsolationSupport(deps);
   return selection.implementation.launch(spec);
 }
 

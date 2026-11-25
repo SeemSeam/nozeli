@@ -1,6 +1,7 @@
 import {openPackage,patchPackage} from './xlsx-package.mjs';
 import {mountContextMenu} from './context-menu.mjs';
-let channel,original,baseline,initial,editor,ready=false,root,lastContent,lastLayout,readOnly=false;
+import {initializeWorkbook} from './sheet-readiness.mjs';
+let channel,original,baseline,initial,editor,ready=false,root,lastContent,lastLayout,readOnly=false,recoveredSnapshot=false;
 const contents=sheets=>JSON.stringify(sheets.map(s=>({id:s.id,cells:(s.data||[]).map(row=>row.map(c=>c?.f?{f:c.f}:{v:c?.v??null}))})));
 const send=(type,extra={})=>parent.postMessage({nozeliSheet:channel,type,...extra},location.origin);
 // Unsupported formatting/structure changes are rejected, never silently discarded on save.
@@ -14,22 +15,20 @@ function shape(sheets){return sheets.map(s=>{
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 const layout=sheets=>JSON.stringify(canonical(shape(sheets)));
 let workbookKey=0;
+let initialization;
+// Fortune's first mount always rebuilds its matrix from celldata, even when
+// supplied a saved runtime data matrix. Convert every retained cell explicitly.
+function recoveryInput(sheets){return structuredClone(sheets).map(sheet=>{
+ if(Array.isArray(sheet.data)){
+  sheet.celldata=[];sheet.data.forEach((row,r)=>row?.forEach((v,c)=>{if(v!==null&&v!==undefined)sheet.celldata.push({r,c,v});}));delete sheet.data;
+ }
+ return sheet;
+});}
 function renderWorkbook(sheets,restore=null){
- const firstMount=!ready;let initializing=false;
+ const firstMount=!ready;
  root.render(React.createElement(react.Workbook,{key:workbookKey,data:structuredClone(sheets),allowEdit:!readOnly,showToolbar:false,cellContextMenu:['copy'],headerContextMenu:['copy'],sheetTabContextMenu:[],hooks:{beforeAddSheet:()=>false},onChange:data=>{if(ready&&!readOnly){const next=contents(data),structure=layout(data);if(next!==lastContent||structure!==lastLayout){lastContent=next;lastLayout=structure;send('changed');}}},ref:ref=>{
   if(!ref)return;editor=ref;window.nozeliSheetEditor=editor;
-  // The first imperative ref still exposes Fortune's empty pre-effect context.
-  // Timers do not guarantee React has committed the imported workbook.
-  if(firstMount&&!ready&&!initializing){
-   const loaded=ref.getAllSheets();
-   if(loaded.length>0&&loaded.length===sheets.length&&loaded.every((sheet,index)=>sheet.id===sheets[index].id)){
-    initializing=true;
-    setTimeout(()=>{
-     ReactDOM.flushSync(()=>editor.calculateFormula());
-     initial=structuredClone(editor.getAllSheets());lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');
-    },0);
-   }
-  }
+  if(firstMount&&!ready&&!initialization)initialization=initializeWorkbook({current:()=>editor,expected:sheets,onReady:snapshot=>{if(ready)return;initial=snapshot;lastContent=contents(initial);lastLayout=layout(initial);ready=true;document.querySelector('#sheet').inert=false;send('ready');}});
   if(restore){const saved=restore;restore=null;requestAnimationFrame(()=>restoreSheetReadingPosition(saved,true));}
  }}));
 }
@@ -66,7 +65,8 @@ addEventListener('message',async event=>{
   if(data.type==='open'&&!channel){
    readOnly=data.readOnly===true;
    channel=data.nozeliSheet;applyAppearance(data.theme,data.palette);original=data.bytes;baseline=await openPackage(original);root=ReactDOM.createRoot(document.querySelector('#sheet'));
-   renderWorkbook(baseline);
+   recoveredSnapshot=Array.isArray(data.recoverySheets)&&data.recoverySheets.length>0;
+   renderWorkbook(recoveredSnapshot?recoveryInput(data.recoverySheets):baseline);
   }else if(data.nozeliSheet===channel&&data.type==='appearance'){
    applyAppearance(data.theme,data.palette);
   }else if(data.nozeliSheet===channel&&data.type==='context-close'){
@@ -76,6 +76,7 @@ addEventListener('message',async event=>{
   }else if(data.nozeliSheet===channel&&data.type==='snapshot'){
    send('exported',{requestId:data.requestId,bytes:new TextEncoder().encode(JSON.stringify({schema:'nozeli-sheet-recovery-v1',name:data.name,sheets:editor.getAllSheets(),original:Array.from(original)}))});
   }else if(data.nozeliSheet===channel&&data.type==='export'){
+   if(recoveredSnapshot)throw Error('当前显示完整表格恢复快照；请在本机恢复中导出完整表格编辑快照，尚不支持将全部格式写回 XLSX。');
    if(!ready)throw Error('电子表格尚未就绪');const current=structuredClone(editor.getAllSheets());
    // Cell content edits can change inferred type/display; compare styles separately from ct.
    if(layout(initial)!==layout(current))throw Error('当前仅支持内容与公式保存；请使用 Ctrl+Z 撤销格式或行列结构变更后再保存。');

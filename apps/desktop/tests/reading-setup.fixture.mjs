@@ -7,6 +7,25 @@ export async function waitForDesktopPage(browser) {
   return page;
 }
 
+export async function waitForReadingDocument(browser, projectId, relPath) {
+  const deadline = Date.now() + 30000;
+  do {
+    for (const target of browser.targets()) {
+      if (target.type() !== 'page' || !target.url().startsWith('http://127.0.0.1:')) continue;
+      const page = await target.page().catch(() => null);
+      if (!page) continue;
+      const ready = await page.evaluate(({projectId, relPath}) => {
+        const scope = window.__workspaceScope;
+        return scope?.kind === 'document' && scope.projectId === projectId && scope.relPath === relPath &&
+          window.__nozeliReady && document.querySelector('#file-path')?.textContent === relPath;
+      }, {projectId, relPath}).catch(() => false);
+      if (ready) return page;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(`Document surface did not become ready: ${relPath}`);
+}
+
 // Call only after a pick that the fixture expects to succeed, never after cancel.
 export async function waitForReadingProject(page, directory) {
   const ready = await page.waitForFunction(async directory => {

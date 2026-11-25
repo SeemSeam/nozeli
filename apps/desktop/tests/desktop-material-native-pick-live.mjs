@@ -416,7 +416,7 @@ const reread=await raw(chat,'material.read',{projectId,instanceId:refA.instanceI
  /* ---------- F. path-select materials ride one send as host-verified fileAttachments ---------- */
  await realClick(chat,'#composer','composer for material send leg');
  const jobsBeforeF=(await call(chat,'managed.status',{projectId})).state.jobs.length;
- await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
+ await chat.keyboard.press('Enter');
  await until(async()=>{const value=await draftNow();return value==='';},'Ctrl+Enter sends the draft plus the three frozen materials and clears the composer');
  await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBeforeF+1&&jobs.at(-1)?.status==='completed';},'material send job completes on the scripted model');
  await until(async()=>(await chipsNow()).length===0,'the accepted send consumes the pending material chips');
@@ -454,7 +454,7 @@ const reread=await raw(chat,'material.read',{projectId,instanceId:refA.instanceI
  await realClick(chat,'#composer','composer for follow-up send');
  await chat.keyboard.type(FOLLOWUP_MARKER);
  const jobsBeforeH=(await call(chat,'managed.status',{projectId})).state.jobs.length;
- await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');
+ await chat.keyboard.press('Enter');
  await until(async()=>{const value=await draftNow();return value==='';},'follow-up Ctrl+Enter sends and clears the composer');
  await until(async()=>{const jobs=(await call(chat,'managed.status',{projectId})).state.jobs;return jobs.length===jobsBeforeH+1&&jobs.at(-1)?.status==='completed';},'follow-up job completes');
  await until(async()=>await chat.$eval('#conversation',(node,marker)=>node.innerText.includes(marker),FOLLOWUP_MARKER),'follow-up user message rendered');

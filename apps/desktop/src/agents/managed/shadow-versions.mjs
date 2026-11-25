@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ensureGit, runGit } from './git-runtime.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { FileChanges } from '../../domain/file-changes.mjs';
-import { writablePath as workPath, safeBytes } from './file-stream.mjs';
+import { writablePath as workPath, createFileStream } from './file-stream.mjs';
 
 const zero = '0'.repeat(40);
 const REF = 'refs/heads/nozeli/versions';
@@ -22,7 +22,7 @@ async function pathExists(target) { try { await fs.access(target); return true; 
 // admitted: each path needs a file-changes ledger whose digest and last event
 // match the frozen bytes.
 export class ShadowVersions {
-  constructor({ projectRoot, projectId, storage, actor = null }) {
+  constructor({ projectRoot, projectId, storage, actor = null, filesystem }) {
     this.projectRoot = path.resolve(projectRoot);
     this.projectId = projectId; this.storage = storage;
     this.gitDir = path.join(this.projectRoot, '.nozeli', 'versions.git');
@@ -30,6 +30,10 @@ export class ShadowVersions {
     this.identity = { name: actor?.name || 'Nozeli 影子版本', email: actor?.email || 'nozeli-versions@localhost' };
     this._serial = Promise.resolve();
     this.adoptChecked = false;
+    // Scoped project reads: an explicitly injected adapter (the registered
+    // native Windows one in production) anchors the same bounded read through
+    // that adapter; every other caller keeps the shared platform default.
+    this.stream = createFileStream(filesystem ? { filesystem } : {});
   }
 
   // Isolated environment: drop every inherited GIT_* variable (index/common
@@ -49,9 +53,13 @@ export class ShadowVersions {
       GIT_COMMITTER_NAME: this.identity.name,
       GIT_COMMITTER_EMAIL: this.identity.email,
       GIT_DIR: this.gitDir,
-      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_COUNT: process.platform === 'win32' ? '2' : '1',
       GIT_CONFIG_KEY_0: 'core.hooksPath',
       GIT_CONFIG_VALUE_0: devNull,
+      // The private profile + instance + frozen blob path can exceed MAX_PATH
+      // even with UUID-only scratch names. Keep this local to isolated Git;
+      // never modify the user's global or project configuration.
+      ...(process.platform === 'win32' ? { GIT_CONFIG_KEY_1: 'core.longpaths', GIT_CONFIG_VALUE_1: 'true' } : {}),
     }, extra);
     return runGit(this.projectRoot, args, { env, maxBuffer: 64 * 1024 * 1024, timeout: 60000 });
   }
@@ -112,7 +120,9 @@ export class ShadowVersions {
     const env = {};
     for (const [key, value] of Object.entries(process.env)) if (!key.startsWith('GIT_')) env[key] = value;
     const devNull = process.platform === 'win32' ? 'NUL' : '/dev/null';
-    Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull });
+    Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull,
+      ...(process.platform === 'win32' ? { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.longpaths', GIT_CONFIG_VALUE_0: 'true' } : {}),
+    });
     return env;
   }
 
@@ -127,7 +137,7 @@ export class ShadowVersions {
   // Read project bytes exactly once, refusing symlinks/escapes/oversize
   // (reuses the execution-copy boundary tools: workPath + O_NOFOLLOW + 32MiB).
   async readProjectBytes(rel) {
-    const bytes = await safeBytes(this.projectRoot, rel);
+    const bytes = await this.stream.safeBytes(this.projectRoot, rel);
     if (bytes === null) fail('NOT_FOUND', '文件不存在：' + rel);
     return bytes;
   }

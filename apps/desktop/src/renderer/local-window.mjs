@@ -27,7 +27,7 @@ export function localWindowRect(state, measured) {
   const x = state.placement.mode === 'manual' ? state.placement.x : d.x, y = state.placement.mode === 'manual' ? state.placement.y : d.y;
   return {x:Math.max(b.x,Math.min(x,b.x+b.width-width)),y:Math.max(b.y,Math.min(y,b.y+b.height-height)),width,height};
 }
-export function mountLocalWindow({layer,key,title,body,actions,state=defaultLocalWindowView(),environment=viewportWindowEnvironment(layer),commitView,beforeHide,onError=()=>{}}) {
+export function mountLocalWindow({layer,key,title,body,actions,state=defaultLocalWindowView(),environment=viewportWindowEnvironment(layer),commitView,beforeHide,requestClose,onError=()=>{}}) {
   const doc = layer.ownerDocument, win = doc.defaultView, reg = registry(doc), token = Symbol(), cleanups = [];
   let view = validLocalWindowView(state) ? structuredClone(state) : defaultLocalWindowView(), durable = structuredClone(view), measured, rect, confirmed = null;
   let gesture = null, frame = 0, sequence = 0, disposed = false, composing = false, entry = null, dirty = false, conflict = null, failure = null, operationFailure = null, keyboardTimer = 0;
@@ -38,7 +38,8 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
   header.dataset.localWindowHeader='';
   const caption = doc.createElement('span'); caption.className = 'local-window-title'; if (typeof title === 'string') caption.textContent = title; else if (title) caption.append(title);
   const button = (label,action) => { const b=doc.createElement('button'); b.type='button'; b.textContent=label; b.addEventListener('click',()=>{void Promise.resolve().then(action).catch(reportOperation);}); return b; };
-  const fold = button('收起',()=>api.collapse(!view.collapsed)), close = button('关闭',()=>api.hide());
+  const requestHide=()=>requestClose?.()??api.hide();
+  const fold = button('收起',()=>api.collapse(!view.collapsed)), close = button('关闭',requestHide);
   fold.dataset.localWindowCollapse='';close.dataset.localWindowHide='';
   setActionButton(fold,'collapse',{label:'收起窗口'});setActionButton(close,'close-view',{label:'关闭窗口'});
   header.append(caption,fold,close);
@@ -107,26 +108,40 @@ export function mountLocalWindow({layer,key,title,body,actions,state=defaultLoca
     const start=environment.toLocal(event.clientX,event.clientY,event); gesture={id:event.pointerId,pointerType:event.pointerType,target:event.currentTarget,mode,start,rect:{...rect},original:structuredClone(view),moved:false};
     event.currentTarget.setPointerCapture(event.pointerId);node.style.zIndex=String(++reg.z);event.preventDefault();
   }
-  function moving(event) {
-    const g=gesture;if(!g||g.id!==event.pointerId)return;
-    if(g.pointerType==='mouse') {
-      if(!(event.buttons&1)){cancel();return;}
-      // Losing capture is not pointercancel. Continue a held mouse gesture
-      // through document events and reacquire capture before moving again.
-      if(!g.target.hasPointerCapture(g.id))g.target.setPointerCapture(g.id);
-    }
-    const point=environment.toLocal(event.clientX,event.clientY,event),dx=point.x-g.start.x,dy=point.y-g.start.y;if(!g.moved&&Math.hypot(dx,dy)<3)return;g.moved=true;
+  function track(g,event) {
+    const point=environment.toLocal(event.clientX,event.clientY,event),dx=point.x-g.start.x,dy=point.y-g.start.y;
+    if(!g.moved&&Math.hypot(dx,dy)<3)return false;
+    g.moved=true;
     view.placement=placement('manual',g.rect.x+(g.mode==='move'?dx:0),g.rect.y+(g.mode==='move'?dy:0));
     if(g.mode==='resize')view.size={width:Math.max(160,g.rect.width+dx),height:Math.max(100,g.rect.height+dy)};
-    schedule();event.preventDefault();
+    return true;
   }
-  function up(event) { if(!gesture||event.pointerId!==gesture.id)return;const {moved,mode}=gesture;release();if(frame){win.cancelAnimationFrame(frame);frame=0;}if(moved){paint();void persist(mode).catch(()=>{});} }
+  function moving(event) {
+    const g=gesture;if(!g||g.id!==event.pointerId)return;
+    // Native surfaces can emit hover samples during re-hit-testing. A hover
+    // is not a release and must not roll back a still-active drag.
+    if(g.pointerType==='mouse') {
+      if(!(event.buttons&1))return;
+      if(!g.target.hasPointerCapture(g.id))g.target.setPointerCapture(g.id);
+    }
+    if(track(g,event)){schedule();event.preventDefault();}
+  }
+  function up(event) {
+    const g=gesture;if(!g||g.id!==event.pointerId||g.pointerType==='mouse'&&event.button!==0)return;
+    const next=environment.measure();
+    if(next.epoch!==measured.epoch||next.visible===false){cancel();return;}
+    track(g,event);release();
+    if(frame){win.cancelAnimationFrame(frame);frame=0;}
+    if(g.moved){paint();void persist(g.mode).catch(()=>{});}
+  }
   function keys(event,mode) { if(event.target!==event.currentTarget||event.isComposing||composing)return;if(event.key==='Home'){event.preventDefault();void api.reset().catch(()=>{});return;}if(!event.key.startsWith('Arrow'))return;event.preventDefault();const step=event.shiftKey?1:10,dx=event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,dy=event.key==='ArrowUp'?-step:event.key==='ArrowDown'?step:0;view.placement=placement('manual',rect.x+(mode==='move'?dx:0),rect.y+(mode==='move'?dy:0));if(mode==='resize')view.size={width:Math.max(160,rect.width+dx),height:Math.max(100,rect.height+dy)};paint();dirty=true;clearTimeout(keyboardTimer);keyboardTimer=setTimeout(()=>{keyboardTimer=0;void persist('move');},180); }
   function listen(target,type,fn,options) { target.addEventListener(type,fn,options);cleanups.push(()=>target.removeEventListener(type,fn,options)); }
   for(const [target,mode] of [[header,'move'],[resize,'resize']]){listen(target,'pointerdown',e=>down(e,mode));listen(target,'keydown',e=>keys(e,mode));listen(target,'lostpointercapture',()=>{if(gesture?.pointerType!=='mouse')cancel();});}
+  // If a platform dropped the release entirely, the next press starts clean.
+  listen(doc,'pointerdown',event=>{if(gesture?.id===event.pointerId&&event.button===0)cancel();},true);
   listen(doc,'pointermove',moving,true);listen(doc,'pointerup',up,true);listen(doc,'pointercancel',e=>{if(gesture?.id===e.pointerId)cancel();},true);listen(win,'blur',()=>cancel());
   listen(node,'compositionstart',()=>{composing=true;});listen(node,'compositionend',()=>{composing=false;});
-  listen(node,'keydown',event=>{if(event.key!=='Escape'||event.isComposing||composing||event.defaultPrevented)return;if(gesture){event.preventDefault();event.stopPropagation();cancel();return;}if([...doc.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(overlay=>overlay.getClientRects().length&&!overlay.contains(node)))return;event.preventDefault();event.stopPropagation();void api.hide().catch(()=>{});});
+  listen(node,'keydown',event=>{if(event.key!=='Escape'||event.isComposing||composing||event.defaultPrevented)return;if(gesture){event.preventDefault();event.stopPropagation();cancel();return;}if([...doc.querySelectorAll('dialog[open],[aria-modal="true"]:not([hidden]),.nozeli-context-menu:not([hidden])')].some(overlay=>overlay.getClientRects().length&&!overlay.contains(node)))return;event.preventDefault();event.stopPropagation();void Promise.resolve().then(requestHide).catch(reportOperation);});
   listen(node,'pointerdown',()=>{node.style.zIndex=String(++reg.z);});
   let unsubscribe=environment.subscribe?.(schedule);
   function transition(run) {const next=visibility.catch(()=>{}).then(run);visibility=next;return next;}

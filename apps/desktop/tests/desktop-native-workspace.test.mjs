@@ -20,13 +20,18 @@ import {DesktopHost} from '../src/main/host.mjs';
 import {layoutGroups,findView} from '../src/domain/workspace-layout.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {readManagedState} from '../src/agents/managed/managed-storage.mjs';
+import {createWindowsDesktopWorkspaceIO} from '../src/platform/windows/experimental-workspace-io.mjs';
 import {staticReport} from './static-report.fixture.mjs';
 import {measureResponsiveness,summarizeResponsiveness,observeProcessMemory} from './responsiveness-metrics.fixture.mjs';
 import {observeProcessResources} from './process-resources.fixture.mjs';
+import {prepareReading} from './reading-setup.fixture.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
 const out=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-single-content-'));
 const configRoot=path.join(out,'.Nozeli'),profile=path.join(configRoot,'desktop');
+// The Windows profile adapter provisions beneath an existing immediate parent.
+await fs.mkdir(configRoot);
+console.log('Native workspace fixture:',out);
 const host=new DesktopHost(profile),projects=[];
 for(const name of ['Project B','Project A']){
  const dir=path.join(out,name);
@@ -48,14 +53,17 @@ const dualPhase=async(contentPage,contentLabel,rootLabel,action)=>{await phase('
 const nextFramesOn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 // Current storage-v2 convention: the accepted work runtime lives in the project's
 // storage instance directory, not in a hand-written profile path.
-const history=await Workspace.open(path.join(await host.storage.localDirectory(a.id),'execution'),path.join(out,a.name),{storage:host.storage,projectId:a.id});
-const accepted=await history.submit('Previously accepted request; never replay on layout changes','fixture',{name:'Historical accepted work'});
-await history.activate(accepted.id);
-await history.publish(accepted.id,1,'result',staticReport('# Existing saved result\n'),'fixture-existing-receipt');
-await history.settle(accepted.id);
-await history.close();
-const business=async()=>{const value=await readManagedState(host.storage,a.id);return {works:value.works.map(w=>({id:w.id,revision:w.revision,status:w.status})),receipts:value.receipts.map(r=>({id:r.id,objectId:r.objectId})),jobs:(value.jobs??[]).map(j=>({id:j.id,status:j.status}))};};
-const beforeBusiness=await business();
+const storage=host.storage;
+const workspaceIO=process.platform==='win32'?createWindowsDesktopWorkspaceIO({storage}):undefined;
+const history=await Workspace.open(path.join(await storage.localDirectory(a.id),'execution'),path.join(out,a.name),{storage,projectId:a.id,workspaceIO});
+try{
+ const accepted=await history.submit('Previously accepted request; never replay on layout changes','fixture',{name:'Historical accepted work'});
+ await history.activate(accepted.id);
+ await history.publish(accepted.id,1,'result',staticReport('# Existing saved result\n'),'fixture-existing-receipt');
+ await history.settle(accepted.id);
+}finally{await history.close();}
+const business=async storage=>{const value=await readManagedState(storage,a.id);return {works:value.works.map(w=>({id:w.id,revision:w.revision,status:w.status})),receipts:value.receipts.map(r=>({id:r.id,objectId:r.objectId})),jobs:(value.jobs??[]).map(j=>({id:j.id,status:j.status}))};};
+const beforeBusiness=await business(host.storage);
 async function call(p,op,payload={}){const r=await p.evaluate((op,payload)=>nozeli.invoke(op,payload),op,payload);assert(r.ok,op+': '+JSON.stringify(r));return r.value;}
 async function until(fn,label){const end=Date.now()+30000;do{const value=await fn();if(value)return value;if(child?.exitCode!==null&&child?.exitCode!==undefined)throw Error(log);await pause(50);}while(Date.now()<end);throw Error('Timed out: '+label);}
 async function scoped(test){return until(async()=>{for(const p of await browser.pages()){if(!p.url().startsWith('http://127.0.0.1:'))continue;const scope=await p.evaluate(async()=>{const r=await nozeli.invoke('workspace.bootstrap',{});return r.value;}).catch(()=>null);if(scope&&test(scope)&&await p.evaluate(()=>window.__nozeliReady===true))return {page:p,scope};}return null;},'registered ready content');}
@@ -75,13 +83,15 @@ const summarizeProcessMemory=stopResult=>{
  return {...stopResult,liveSummaries:{samples:live.length,firstSumRssKiB:live[0]??null,maxSumRssKiB:live.length?Math.max(...live):null,lastSumRssKiB:live.at(-1)??null,note:'finite live sum-RSS samples only; post-exit exited records excluded; shared pages double-counted; process-tree trend, no leak verdict'}};
 };
 try{
+// Release the seeding worker's Windows IO pins before the isolated child opens the same profile.
+assert(!(await host.storage.db.close()).some(value=>value?.closed===false));
  child=spawn(process.env.NOZELI_TEST_BINARY||createRequire(import.meta.url)('electron'),[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(root,'src/main/main.cjs')]),'--ozone-platform='+(process.env.NOZELI_OZONE||'wayland')],{cwd:root,env:{...process.env,NOZELI_TEST_INSTANCE:'1',NOZELI_CONFIG_ROOT:configRoot,NOZELI_USER_DATA:profile,NOZELI_DEBUG_PORT:String(port),NOZELI_SHOT_DIR:out,NOZELI_HIDDEN:'0'},stdio:['ignore','pipe','pipe']});
  for(const s of [child.stdout,child.stderr])s.on('data',c=>log+=c);
  memorySampler=observeProcessMemory(child.pid);
  if(REGULAR_RESOURCES)resourceSampler=observeProcessResources(child.pid);
  await until(async()=>{try{browser=await puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null});return true;}catch{return false;}},'debug');
  shell=(await scoped(s=>s.role==='shell')).page;shell.on('pageerror',e=>report.errors.push(e.message));
- if(await shell.$('#configuration-setup[open]')){await shell.click('#configuration-cancel');await shell.waitForFunction(()=>!document.querySelector('#configuration-setup').open);}
+ await prepareReading(shell);
  const configuration=await call(shell,'config.status',{});
  assert.equal(configuration.initialized,false,'independent configuration stays uninitialized; no provider, model or session exists');
  await shell.waitForSelector('[data-project-id="'+a.id+'"]',{visible:true});await shell.click('[data-project-id="'+a.id+'"]');
@@ -97,7 +107,7 @@ try{
   await first.page.evaluate(()=>__nozeliInput.focus());await first.page.waitForFunction(()=>document.hasFocus());
   await first.page.keyboard.down('Control');await first.page.keyboard.press('End');await first.page.keyboard.up('Control');
   const beforeTyping=await first.page.evaluate(()=>__nozeliInput.text()),typed='\nRegular use: reading notes, checking details, then saving the local document.';
-  await phase('content',first.page,'regular physical typing',()=>first.page.keyboard.type(typed,{delay:45}));
+  await phase('content',first.page,'regular CDP typing',()=>first.page.keyboard.type(typed,{delay:45}));
   assert.equal(await first.page.evaluate(()=>__nozeliInput.text()),beforeTyping+typed);
   await phase('content',first.page,'regular explicit save',async()=>{await first.page.keyboard.down('Control');await first.page.keyboard.press('s');await first.page.keyboard.up('Control');await until(async()=>await fs.readFile(path.join(out,a.name,'a.txt'),'utf8')===beforeTyping+typed,'typed document saved');});
   await regularIdle('idle-after-reading-editing',20);resourceSampler.mark('file-switches-and-split');
@@ -221,17 +231,56 @@ try{
  report.checks.push('floating an opened record again and using title context menu return restores one-file workspace pane');
  if(REGULAR_RESOURCES)resourceSampler.mark('window-roundtrips');
  // Eight measured detach/dock cycles on the live a.txt document: same renderer
- // DOM, editor text and real keyboard undo/redo survive every explicit float and
+ // DOM, editor text and CDP keyboard undo/redo survive every explicit float and
  // return, with native visibility verified detached and docked.
  await shell.locator(fileRow(firstId)).click();
  first=await scoped(s=>s.role==='surface'&&s.viewId===firstId&&s.projectId===a.id);
  const docPage=first.page,docBaseline=await fs.readFile(path.join(out,a.name,'a.txt'),'utf8');
  assert.equal(await docPage.evaluate(()=>__nozeliInput.text()),docBaseline,'a.txt flush completed before detach cycles');
+ await docPage.evaluate(()=>{
+  // Test-only access to the installed CodeMirror view; never dispatch an edit
+  // from the observer or add a renderer/IPC diagnostic surface.
+  const view=document.querySelector('#text-host .cm-content')?.cmTile?.root?.view;
+  if(!view)throw Error('CodeMirror view unavailable for history observation');
+  const depth=branch=>branch.length-Number(Boolean(branch.length&&!branch[0].changes));
+  const stateInfo=(state=view.state)=>{
+   const history=state.values.find(value=>Array.isArray(value?.done)&&Array.isArray(value?.undone));
+   return {undo:history?depth(history.done):null,redo:history?depth(history.undone):null,readOnly:state.readOnly,length:state.doc.length,tail:state.doc.sliceString(Math.max(0,state.doc.length-96))};
+  };
+  const transactions=[];
+  const dispatch=view.dispatchTransactions;
+  view.dispatchTransactions=function(batch,...args){
+   for(const tr of batch)if(tr.docChanged||tr.reconfigured)transactions.push({at:performance.now(),userEvent:tr.annotation(tr.constructor.userEvent),addToHistory:tr.annotation(tr.constructor.addToHistory),before:stateInfo(tr.startState),after:stateInfo(tr.state)});
+   return dispatch.call(this,batch,...args);
+  };
+  window.__cycleEditorProbe={transactions,snapshot:()=>({...stateInfo(),composing:view.composing,inert:!!view.contentDOM.closest('[inert]'),save:document.querySelector('#save-status')?.dataset.state})};
+ });
  await docPage.bringToFront();await docPage.evaluate(()=>{__nozeliInput.focus();__nozeliInput.insert('\nDetached-cycle marker');});
  const docEdited=docBaseline+'\nDetached-cycle marker';
  await docPage.waitForFunction(edited=>__nozeliInput.text()===edited,{},docEdited);
  await docPage.evaluate(()=>{const node=document.querySelector('#text-host .cm-editor');if(!node)throw Error('Missing editor DOM for detach/dock identity');window.__nativeDriverIdentity={document,node};});
  const sameDriver=()=>docPage.evaluate(()=>window.__nativeDriverIdentity.document===document&&window.__nativeDriverIdentity.node===document.querySelector('#text-host .cm-editor'));
+ const shortcut = async (cycle, key, expected) => {
+  const events = [];
+  const before=await docPage.evaluate(() => {
+   window.__cycleKeys = [];
+   const record = event => __cycleKeys.push({at:performance.now(),phase:event.eventPhase,type:event.type,key:event.key,inputType:event.inputType,ctrl:event.ctrlKey,shift:event.shiftKey,alt:event.altKey,meta:event.metaKey,isComposing:event.isComposing,trusted:event.isTrusted,target:event.target.className,prevented:event.defaultPrevented,editor:__cycleEditorProbe.snapshot()});
+   const types=['keydown','keyup','beforeinput','input'];
+   window.__stopCycleKeys = () => {for(const type of types)for(const capture of [true,false])window.removeEventListener(type,record,capture);};
+   for(const type of types)for(const capture of [true,false])window.addEventListener(type,record,capture);
+   return __cycleEditorProbe.snapshot();
+  });
+  try {
+   await docPage.keyboard.down('Control');
+   try {await docPage.keyboard.press(key);} finally {await docPage.keyboard.up('Control');}
+   await nextFramesOn(docPage);
+   await docPage.waitForFunction(text=>__nozeliInput.text()===text,{},expected);
+  } finally {
+   events.push(...await docPage.evaluate(()=>{__stopCycleKeys();return __cycleKeys;}));
+   report.cycleShortcuts??=[];
+   report.cycleShortcuts.push({cycle,key,before,events,state:await docPage.evaluate(()=>({text:__nozeliInput.text(),focus:document.hasFocus(),active:document.activeElement?.className,...__cycleEditorProbe.snapshot(),transactions:__cycleEditorProbe.transactions.splice(0)}))});
+  }
+ };
  let dragCancelChecked=false;
  const cycle=async n=>{
   await shell.bringToFront();
@@ -256,11 +305,8 @@ try{
   }
   await docPage.bringToFront();await docPage.click('#text-host .cm-content');await docPage.evaluate(()=>__nozeliInput.focus());
   await docPage.waitForFunction(()=>document.hasFocus()&&Boolean(document.activeElement?.closest('#text-host .cm-editor')));
-  await docPage.keyboard.down('Control');await docPage.keyboard.press('KeyZ');await docPage.keyboard.up('Control');
-  await nextFramesOn(docPage);
-  await docPage.waitForFunction(base=>__nozeliInput.text()===base,{},docBaseline);
-  await docPage.keyboard.down('Control');await docPage.keyboard.press('KeyY');await docPage.keyboard.up('Control');
-  await docPage.waitForFunction(edited=>__nozeliInput.text()===edited,{},docEdited);
+  await shortcut(n,'KeyZ',docBaseline);
+  await shortcut(n,'KeyY',docEdited);
   await cycleDetached.page.locator('.workspace-pane-header').click({button:'right'});
   const dock='#workspace-title-menu:not([hidden]) [data-command="dock"]';
   await cycleDetached.page.waitForSelector(dock,{visible:true});await cycleDetached.page.click(dock);
@@ -270,7 +316,7 @@ try{
   assert.equal(await sameDriver(),true,'same live editor DOM after dock');
  };
  for(let n=1;n<=8;n++)await dualPhase(docPage,'native document detach/dock cycle (content surface)','native document detach/dock cycle (root renderer)',()=>cycle(n));
- report.checks.push('eight measured native detach/dock cycles: explicit float and title-menu return retain the same live editor DOM, editor text and real keyboard undo/redo, with native visibility verified detached and docked');
+ report.checks.push('eight measured native detach/dock cycles: explicit float and title-menu return retain the same live editor DOM, editor text and CDP keyboard undo/redo, with native visibility verified detached and docked');
  // Unsent b.txt edit survives float, project hide/restore and dock as the same
  // live surface with a durable workspace draft (or its flushed save), never
  // submitted, with no managed history change.
@@ -279,7 +325,8 @@ try{
  const secondPage=second.page,draft='Unsent Project A draft; never submit during layout changes';
  await secondPage.bringToFront();await secondPage.evaluate(draft=>{__nozeliInput.focus();__nozeliInput.insert('\n'+draft);},draft);
  await secondPage.waitForFunction(draft=>__nozeliInput.text().includes(draft),{},draft);
- await until(async()=>{const value=await host.readState(a.id);return (value.state?.workspace?.draft??'').includes(draft)||(await fs.readFile(path.join(out,a.name,'b.txt'),'utf8')).includes(draft);},'unsent b.txt edit durable as workspace draft or flushed save');
+ const draftPersisted=async()=>{const value=await call(shell,'state.read',{projectId:a.id});return (value.state?.workspace?.draft??'').includes(draft)||(await fs.readFile(path.join(out,a.name,'b.txt'),'utf8')).includes(draft);};
+ await until(draftPersisted,'unsent b.txt edit durable as workspace draft or flushed save');
  await secondPage.evaluate(()=>{const node=document.querySelector('#text-host .cm-editor');if(!node)throw Error('Missing editor DOM for draft identity');window.__nativeDriverIdentity={document,node};});
  const sameDraftDriver=()=>secondPage.evaluate(()=>window.__nativeDriverIdentity.document===document&&window.__nativeDriverIdentity.node===document.querySelector('#text-host .cm-editor'));
  await context(secondId,'float');
@@ -313,14 +360,14 @@ try{
  await nativeVisible(secondId);
  await until(async()=>draftDetached.page.isClosed(),'draft float closes after dock');
  const rootSize=await shell.evaluate(()=>({width:innerWidth,height:innerHeight}));
- const staleDock=await call(shell,'workspace.bounds',{projectId:a.id,windowId:'main',viewport:rootSize,layoutRevision:beforeDockLayout.revision,groups:[],overlay:false,overlayRects:[]});
+ const staleDock=await call(shell,'workspace.bounds',{projectId:a.id,windowId:'main',navigationGeneration:await shell.evaluate(()=>window.__workspaceScope.generation),viewport:rootSize,layoutRevision:beforeDockLayout.revision,groups:[],overlay:false,overlayRects:[]});
  assert.equal(staleDock.stale,true);
  await secondPage.screenshot({path:path.join(out,'docked-draft-visible.png')});
  assert.equal(await shell.$eval('.workspace-pane.is-focused [data-view-id]',n=>n.dataset.viewId),secondId,'docking focuses the moved document in narrow mode');
  await call(shell,'session.resize',mainSize);await shell.waitForFunction(({width,height})=>innerWidth===width&&innerHeight===height,{},mainSize);
  assert.equal(await sameDraftDriver(),true,'restore keeps the same live draft editor DOM');
  assert.equal(await secondPage.evaluate(value=>__nozeliInput.text().includes(value),draft),true,'restore keeps the unsent draft text');
- await until(async()=>{const value=await host.readState(a.id);return (value.state?.workspace?.draft??'').includes(draft)||(await fs.readFile(path.join(out,a.name,'b.txt'),'utf8')).includes(draft);},'unsent draft remains durable after dock and restore');
+ await until(draftPersisted,'unsent draft remains durable after dock and restore');
  report.checks.push('document draft floats and returns as the same live editor; project hide/restore and narrow dock keep its unsent durable draft without submission');
  if(REGULAR_RESOURCES){
   await shell.bringToFront();await regularIdle('idle-after-full-use',45);
@@ -331,10 +378,8 @@ try{
   await regularIdle('idle-single-document',30);
   report.regularResources=await resourceSampler.stop();resourceSampler=null;
  }
- assert.deepEqual(await business(),beforeBusiness);
  await noConversationSurfaces();
  assert.equal((await call(shell,'config.status',{})).initialized,false,'still uninitialized; nothing dispatched');
- report.checks.push('pane switching, split, divider gestures, floating and project hide/restore do not replay accepted work, duplicate receipts or dispatch anything');
  await context(REGULAR_RESOURCES?secondId:firstId,'float');await scoped(s=>s.role==='detached'&&s.projectId===a.id);
  await shell.click('[data-project-id="'+b.id+'"]');await shell.waitForFunction(id=>document.querySelector('#recent [aria-current=true]')?.dataset.projectId===id,{},b.id);
  const exited=new Promise(resolve=>child.once('exit',(code,signal)=>resolve({code,signal})));
@@ -342,6 +387,11 @@ try{
  await until(async()=>child.exitCode!==null||await shell.$eval('#quit-choice',n=>n.open).catch(()=>false),'clean exit or native process shutdown confirmation');
  if(child.exitCode===null)await shell.click('#quit-cancel');
  assert.deepEqual(await Promise.race([exited,pause(15000).then(()=>null)]),{code:0,signal:null});
+ // Verify persisted managed history with a fresh worker only after Electron exits.
+ const verifier=new DesktopHost(profile);
+ try{assert.deepEqual(await business(verifier.storage),beforeBusiness);}
+ finally{assert(!(await verifier.storage.db.close()).some(value=>value?.closed===false));}
+ report.checks.push('pane switching, split, divider gestures, floating and project hide/restore do not replay accepted work, duplicate receipts or dispatch anything');
  report.checks.push('closing the last visible project window, with explicit native shutdown confirmation when required, flushes hidden project floats and exits cleanly');
  report.responsiveness={note:'frames/input-to-next-frame are bounded renderer observations per surface; Node elapsedMs includes CDP and wait overhead and is not paint latency; full both-axis divider coverage with minimum bounds is measured in desktop-native-project.test.mjs',root:summarizeResponsiveness(rootRecords),content:summarizeResponsiveness(contentRecords)};
  assert.deepEqual(report.errors,[]);report.ok=true;console.log(JSON.stringify({out,ok:report.ok,checks:report.checks,responsiveness:report.responsiveness,errors:report.errors},null,2));

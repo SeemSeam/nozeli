@@ -12,6 +12,55 @@ const exec = promisify(execFile);
 const runtime = new URL('../src/agents/managed/git-runtime.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
 
+test('Windows Git refuses an unsupported working directory before provisioning or spawn', {skip:process.platform!=='win32'}, async()=>{
+  const {runGit}=await import(runtime.href);
+  const cwd=path.join(os.tmpdir(),...Array.from({length:9},()=> '中文目录'+'x'.repeat(25)));
+  await assert.rejects(runGit(cwd,['init']),error=>error.code==='UNSUPPORTED_GIT_WORKING_DIRECTORY'&&error.utf8Bytes>=260);
+  const prefix=path.join(os.tmpdir(),'cwd-');
+  await assert.rejects(runGit(prefix+'x'.repeat(259-prefix.length),['--version']),error=>error.code==='UNSUPPORTED_GIT_WORKING_DIRECTORY'&&error.utf16Units===259);
+});
+
+test('Windows Git working-directory qualification preserves supported Chinese paths above 260 UTF-8 bytes', {skip:process.platform!=='win32'}, async t=>{
+ const {runGit}=await import(runtime.href),root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-git-unicode-'));
+ t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ const prefix=path.join(root,'中'.repeat(35)),cwd=prefix+'x'.repeat(220-prefix.length);await fs.mkdir(cwd);
+ assert.equal(cwd.length,220);assert.ok(Buffer.byteLength(cwd,'utf8')>260);
+ const env={...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:path.join(root,'no-global-config')};
+ await runGit(cwd,['init','--initial-branch=main'],{env});
+ assert.equal((await runGit(cwd,['rev-parse','--absolute-git-dir'],{env,encoding:'utf8'})).trim().replaceAll('/',path.sep),path.join(cwd,'.git'));
+});
+
+test('Windows bundled Git checks out long Unicode file paths without changing config', {skip:process.platform!=='win32'}, async t => {
+  const {runGit}=await import(runtime.href);
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-git-long-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const env={...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'NUL',GIT_AUTHOR_NAME:'Synthetic test',GIT_AUTHOR_EMAIL:'test@localhost',GIT_COMMITTER_NAME:'Synthetic test',GIT_COMMITTER_EMAIL:'test@localhost'};
+  for(const key of Object.keys(env))if(key.toLowerCase()==='path')env[key]='';
+  const git=(cwd,args)=>runGit(cwd,args,{env,encoding:'utf8'});
+  const repo=path.join(root,'repo');await fs.mkdir(repo);
+  await git(repo,['init','--initial-branch=main']);
+  await git(repo,['config','core.longpaths','false']);
+  const relative=path.join(...Array.from({length:7},(_,i)=>'long-'+i+'-'.repeat(30)),'正文.md');
+  assert.ok(path.join(repo,relative).length>300);
+  await fs.mkdir(path.dirname(path.join(repo,relative)),{recursive:true});
+  await fs.writeFile(path.join(repo,relative),'nested original\n');
+  await fs.writeFile(path.join(repo,'正文.md'),'original\n');
+  await git(repo,['add','--','.']);await git(repo,['-c','core.hooksPath='+path.join(root,'no-hooks'),'commit','-m','Synthetic baseline']);
+  const config=await fs.readFile(path.join(repo,'.git','config'));
+  const deep=path.join(root,'执行目录 中文 空格','worker');
+  await git(repo,['worktree','add','-b','worker',deep]);
+  assert.equal(await fs.readFile(path.join(deep,relative),'utf8'),'nested original\n');
+  assert.equal(await fs.readFile(path.join(deep,'正文.md'),'utf8'),'original\n');
+  assert.equal((await git(deep,['symbolic-ref','HEAD'])).trim(),'refs/heads/worker');
+  await fs.writeFile(path.join(deep,'正文.md'),'worker candidate\n');
+  await git(deep,['add','--','正文.md']);await git(deep,['-c','core.hooksPath='+path.join(root,'no-hooks'),'commit','-m','Synthetic candidate']);
+  assert.equal(await git(repo,['show','worker:正文.md']),'worker candidate\n');
+  assert.equal(await fs.readFile(path.join(repo,'正文.md'),'utf8'),'original\n');
+  assert.deepEqual(await fs.readFile(path.join(repo,'.git','config')),config);
+  await git(repo,['worktree','remove',deep]);
+  assert.equal(await fs.stat(deep).catch(e=>{if(e.code==='ENOENT')return null;throw e;}),null);
+});
+
 // This deliberately runs real dugite binaries. No system Git, echo substitutes,
 // or mocked subprocesses can satisfy the commit/object/transport assertions.
 test('bundled Git creates commits and resolves transport helpers without system PATH', async t => {

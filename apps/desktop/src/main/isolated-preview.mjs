@@ -244,8 +244,8 @@ export class IsolatedPreviewManager{
     applyViewGeometry(slot.container,{x:parent.x+x,y:parent.y+y,width,height},visible);
   }
   snapshot(slot){const unsaved=[...slot.files.values()].some(f=>f.dirty);return {key:slot.key,generation:slot.generation,profile:slot.profile,projectId:slot.projectId,entryPath:slot.entry,origin:slot.origin,files:[...slot.files].map(([path,f])=>({path,digest:f.digest,version:f.version,dirty:f.dirty})),dirty:unsaved,unsaved};}
-  // Enum-only appearance injection for live static reports: values come from the
-  // fixed accent map; the frozen object and its export bytes never change.
+  // Static report screen colors are host-owned; publication and export bytes
+  // stay untouched. Never apply this user stylesheet to development previews.
   setAppearance(value) {
     this.appearance = { palette: value?.palette === 'slate' ? 'slate' : 'sage', mode: value?.mode === 'dark' ? 'dark' : 'light' };
     for (const slot of this.slots.values()) if (slot.profile === 'staticReport' && slot.view && !slot.closed) void this.injectReportAppearance(slot);
@@ -365,10 +365,8 @@ export class IsolatedPreviewManager{
         slot.view=new this.WebContentsView({webPreferences:{session:ses,javascript:p.profile==='offlineDevelopment',nodeIntegration:false,nodeIntegrationInWorker:false,nodeIntegrationInSubFrames:false,contextIsolation:true,sandbox:true,webSecurity:true,allowRunningInsecureContent:false,webviewTag:false,disableDialogs:true,safeDialogs:true,devTools:false,navigateOnDragDrop:false}});
         slot.container=new this.View();slot.container.setBorderRadius(0);slot.container.addChildView(slot.view);
         const wc=slot.view.webContents;wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');wc.setWindowOpenHandler(()=>({action:'deny'}));wc.on('will-attach-webview',e=>e.preventDefault());wc.on('will-redirect',e=>e.preventDefault());
-        // Static reports follow the app theme natively: nativeTheme.themeSource
-        // drives prefers-color-scheme and the host baseline declares
-        // color-scheme:light dark, so no pin may override it. Development
-        // previews keep their original explicit pin.
+        // Development previews keep their explicit theme pin. Static reports
+        // get the host screen palette without changing their print stylesheet.
         if(slot.profile==='offlineDevelopment'&&['light','dark'].includes(p.theme))wc.on('did-finish-load',()=>{void wc.insertCSS(':root{color-scheme:'+p.theme+'!important}',{cssOrigin:'user'}).catch(error=>this.emit(slot,'error',{message:error.message}));});
         if(slot.profile==='staticReport')wc.on('did-finish-load',()=>{void this.injectReportAppearance(slot);});
         const navigation=(event,url)=>{

@@ -90,6 +90,9 @@ class Audit:
                       f'Nozeli-{version}-source.tar.gz', 'USAGE.zh-CN.md']
         if any(str(item).startswith('macos') for item in declared):
             self.names += [f'Nozeli-{version}-macos-arm64.zip', 'USAGE-macos.zh-CN.md']
+        self.windows = any(str(item) in ('windows-x64', 'win32-x64') for item in declared)
+        if self.windows:
+            self.names += [f'Nozeli-{version}-windows-x64.zip', 'USAGE-windows.zh-CN.md', 'WINDOWS-SMOKE.json']
         release = inventory.get('release', {})
         url = f'https://github.com/{self.repo}/releases/tag/{self.tag}'
         self.check(inventory.get('productVersion') == version and release.get('tag') == self.tag
@@ -163,6 +166,8 @@ class Audit:
         if jobs.get('total_count', len(jobs['jobs'])) > 100:
             raise Failure('CI job list exceeds bounded response; cannot verify complete gate')
         required = {'Linux unit', 'Linux integration', 'Linux clean build and smoke', 'macOS native safety', 'CI gate'}
+        if self.windows:
+            required.add('Windows native safety')
         rows = jobs['jobs']
         complete = all(len([j for j in rows if j.get('name') == name and j.get('conclusion') == 'success']) == 1 for name in required)
         self.check(complete, 'intended SHA has successful CI gate and all required qualification jobs')
@@ -302,6 +307,35 @@ class Audit:
             self.check(record.get('codesign') == 'ad-hoc' and record.get('notarized') is False
                        and record.get('developerId') is False,
                        'mac zip RELEASE.json records ad-hoc signing without notarization')
+        windows_zip = f'Nozeli-{self.version}-windows-x64.zip'
+        if windows_zip in self.names:
+            prefix = f'Nozeli-{self.version}-windows-x64/'
+            with zipfile.ZipFile(directory / windows_zip) as archive:
+                names = archive.namelist()
+                self.check(len(names) == len(set(names)), 'Windows ZIP has no duplicate entries')
+                for name in ['Nozeli.exe', 'RELEASE.json', 'WINDOWS-CANDIDATE.json']:
+                    self.check(names.count(prefix + name) == 1, f'Windows ZIP contains exactly one {name}')
+                record = json.loads(archive.read(prefix + 'RELEASE.json'))
+                candidate = json.loads(archive.read(prefix + 'WINDOWS-CANDIDATE.json'))
+                release_entry = [e for e in candidate.get('entries', []) if e.get('path') == 'RELEASE.json']
+                self.check(len(release_entry) == 1 and release_entry[0].get('sha256') == hashlib.sha256(archive.read(prefix + 'RELEASE.json')).hexdigest(),
+                           'Windows candidate manifest binds RELEASE.json bytes')
+            commit = getattr(self, 'tag_sha', None) or self.git('rev-parse', 'HEAD')
+            self.check(record.get('application') == 'Nozeli' and record.get('version') == self.version and record.get('commit') == commit,
+                       'Windows ZIP RELEASE.json binds Nozeli version and intended commit')
+            self.check(record.get('platform') == 'win32' and record.get('arch') == 'x64' and candidate.get('platform') == 'win32' and candidate.get('arch') == 'x64' and candidate.get('version') == self.version,
+                       'Windows ZIP and candidate declare win32 x64 and current version')
+            self.check(record.get('codesign') == 'unsigned' and record.get('authenticode') is False and record.get('autoUpdate') == 'unsupported' and candidate.get('automaticUpdater') == 'unsupported',
+                       'Windows metadata discloses unsigned and unsupported updater')
+            provenance = candidate.get('nativeProvenance') or {}
+            self.check(provenance.get('schema') == 1 and bool(provenance.get('files')) and bool(provenance.get('buildInputs')) and provenance.get('commit') == commit,
+                       'Windows native provenance binds build inputs, binaries and commit')
+            smoke = json.loads((directory / 'WINDOWS-SMOKE.json').read_text(encoding='utf-8'))
+            hosts = smoke.get('smoke') or {}
+            self.check(smoke.get('commit') == commit and smoke.get('version') == self.version and smoke.get('archive') == windows_zip and smoke.get('archiveSha256') == sums.get(windows_zip)
+                       and hosts.get('node', {}).get('node') == '22.23.4' and hosts.get('node', {}).get('electron') is None
+                       and hosts.get('electron', {}).get('electron') == '44.9.1' and str(hosts.get('git', '')).startswith('git version '),
+                       'Windows native smoke binds exact archive, commit and pinned hosts')
         print('INFO Local hashes do not prove remote tar bytes; download published assets separately and verify before reporting release complete.')
 
 

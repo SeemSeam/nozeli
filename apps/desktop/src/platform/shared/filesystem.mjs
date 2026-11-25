@@ -8,12 +8,14 @@
 // with FS_PLATFORM_UNSUPPORTED and structured evidence — never a silent
 // identity or durability downgrade, never a placeholder adapter.
 //
-// Adapter surface (implemented by platform/linux/filesystem.mjs and
-// platform/darwin/filesystem.mjs):
-//  - openAnchoredFile(root, rel) → null | { stat, stream(), verify(),
-//    close() }: pin every ancestor, open the entry without following links;
-//    null exactly when the entry or an ancestor is missing; verify() reports
-//    which identity fact changed.
+// Adapter surface (implemented by platform/{linux,darwin}/filesystem.mjs):
+//  - openAnchoredFile(root, rel) → null | { stat, stream(), fdSourcePath?(),
+//    verify(), close() }: pin every ancestor, open the entry without
+//    following links; null exactly when the entry or an ancestor is
+//    missing; verify() reports which identity fact changed.
+//    stream() restarts at offset zero for every invocation. fdSourcePath is
+//    required only with capabilities.gitFdSourcePaths=true; other adapters
+//    feed pinned byte streams to Git without reconstructing source paths.
 //  - openWriteParent(root, rel) → { openExclusive(name,{mode}),
 //    writeExclusive(name,data,{mode}), renameOver(from,to), remove(name),
 //    close() }: single-component operations inside one pinned directory.
@@ -22,6 +24,17 @@
 //    on the open descriptor (fchmod), never a path re-resolution. Every
 //    operation rejects with EBADF after close so a recycled descriptor
 //    number is never touched.
+// Optional operation, used only when capabilities.versionedWrite=true:
+//  - writeVersioned(root, rel, bytes, {expectedSha256, expectedNewSha256}) pins
+//    the base through conditional publication (null base means create-only),
+//    checks the approved candidate digest and retains committed/uncertain facts.
+//    This is not a grant of the separate durable-persistence capability.
+//  - capabilities.versionedWriteStream + writeVersionedStream(root,rel,source,
+//    options): same contract with a lazy iterable of byte chunks; rejects
+//    unsupported requested Git modes before consuming the source.
+//  - capabilities.versionedRemove + removeVersioned(root,rel,{expectedSha256}):
+//    remove the same locked base; a base digest is mandatory. Never fall back
+//    to path-based unlink when either optional method is absent.
 //  - chain.openFileSync(directory,name) → {statSync,readFileSync,closeSync},
 //    chain.renameSync(fromDirectory,fromName,toDirectory,toName), and
 //    chain.syncSync(directory): non-yielding pinned operations for bounded

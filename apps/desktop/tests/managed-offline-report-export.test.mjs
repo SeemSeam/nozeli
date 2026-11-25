@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {isDeepStrictEqual} from 'node:util';
 import {DesktopHost} from '../src/main/host.mjs';
 import {Workspace} from '../src/agents/managed/workspace.mjs';
 import {ManagedProjects} from '../src/agents/managed-projects.mjs';
@@ -10,13 +11,18 @@ import {ManagedReportExporter} from '../src/main/managed-report-export.mjs';
 import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
 import {reportDescriptor,decodeReportState} from '../src/agents/managed/report-descriptor.mjs';
 import {managedRuntime,readManagedState} from '../src/agents/managed/managed-storage.mjs';
-import {writeTestState} from './project-storage.fixture.mjs';
+import {createWindowsDesktopWorkspaceIO} from '../src/platform/windows/experimental-workspace-io.mjs';
 
 async function setup(t,{html=false}={}) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-offline-report-'));
-  t.after(async()=>{await host.storage.db.close();await fs.rm(root,{recursive:true,force:true});});
+  let host,store;
+  t.after(async()=>{
+    if(store&&!store.closed)await store.close();
+    if(host)assert(!(await host.storage.db.close()).some(result=>result?.closed===false));
+    await fs.rm(root,{recursive:true,force:true});
+  });
   const project=path.join(root,'项目');await fs.mkdir(project);
-  const profile=path.join(root,'profile'),host=new DesktopHost(profile);
+  const profile=path.join(root,'profile');host=new DesktopHost(profile);
   const projectId=(await host.pick(project)).project.id;
   let opens=0,connects=0,starts=0,stops=0;
   const sourceRoot=path.join(root,'private-pi'),piSource={private:true,root:sourceRoot,agentDir:path.join(sourceRoot,'agent')};
@@ -25,7 +31,8 @@ async function setup(t,{html=false}={}) {
   }});
   const connect=managed.connect.bind(managed);managed.connect=(...args)=>{connects++;return connect(...args);};
   const runtime=await managedRuntime(host.storage,projectId);
-  const store=await Workspace.open(runtime,project,{storage:host.storage,projectId});
+  const workspaceIO=process.platform==='win32'?createWindowsDesktopWorkspaceIO({storage:host.storage}):undefined;
+  store=await Workspace.open(runtime,project,{storage:host.storage,projectId,workspaceIO});
   const work=await store.submit('original','brief');await store.activate(work.id);
   const oldBody=html?staticReport('历史版本'):'# 历史版本\r\n\r\n历史 Markdown 原字节。\r\n',latestBody=html?staticReport('当前版本'):'# 当前版本\n';
   const old=await store.publish(work.id,1,'result',staticReport('历史版本'),'first');await store.settle(work.id);
@@ -47,7 +54,14 @@ async function setup(t,{html=false}={}) {
   };
   return {root,profile,project,projectEntries,projectId,host,managed,runtime,store,old:baseline.receipts[0],latest:baseline.receipts[1],oldBody,latestBody,baseline,source,exporter,input,invariant,
     resetCalls:()=>{opens=connects=starts=stops=0;},calls:()=>({opens,connects,starts,stops}),
-    rewrite:async fn=>{const state=structuredClone(baseline);fn(state);await writeTestState(store,state);}};
+    // Mutate only the durable rows under test, without reopening the cold Workspace.
+    rewrite:async fn=>{
+      const state=structuredClone({schema:baseline.schema,receipts:baseline.receipts});fn(state);
+      if(state.schema!==baseline.schema)await host.storage.putProject(projectId,'managed_settings','schema',state.schema);
+      if(!isDeepStrictEqual(state.receipts,baseline.receipts))await host.storage.replaceProjectCollections(projectId,{
+        managed_receipts:state.receipts.map(value=>({id:value.id,value})),
+      });
+    }};
 }
 
 test('cold offline exports historical and current exact versions without starting provider or changing runtime',async t=>{
@@ -72,10 +86,16 @@ for(const [name,mutate] of [
   ['duplicate object ownership',s=>s.rewrite(v=>{v.receipts.push({...v.receipts[0],id:'duplicate-receipt'});})],
   ['missing object',s=>fs.unlink(s.source)],
   ['tampered object',s=>fs.writeFile(s.source,'tampered')],
-  ['linked object',async s=>{const outside=path.join(s.root,'outside.md');await fs.writeFile(outside,s.oldBody);await fs.unlink(s.source);await fs.symlink(outside,s.source);}],
+  ['linked object',async(s,t)=>{
+    const outside=path.join(s.root,'outside.md');await fs.writeFile(outside,s.oldBody);await fs.unlink(s.source);
+    try{await fs.symlink(outside,s.source);}catch(error){
+      if(process.platform==='win32'&&['EPERM','EACCES'].includes(error.code)){t.skip('Windows file-symlink creation requires an explicitly enabled link privilege');return false;}
+      throw error;
+    }
+  }],
   ['oversize object',s=>fs.truncate(s.source,256*1024*1024+1)],
 ]) test(`offline rejects ${name} without publishing or repairing`,async t=>{
-  const s=await setup(t);await mutate(s);
+  const s=await setup(t);if(await mutate(s,t)===false)return;
   const before=await readManagedState(s.host.storage,s.projectId);
   await assert.rejects(s.exporter.export(s.input()),e=>/^(REPORT_|MATERIAL_|INVALID_MATERIAL$|INVALID_DIRECTORY$)/.test(e.code));
   assert.deepEqual(await fs.readdir(s.project),s.projectEntries);assert.deepEqual(await readManagedState(s.host.storage,s.projectId),before);
@@ -103,7 +123,13 @@ for(const change of ['object','state','active source','project'])test(`staged of
   const s=await setup(t),replace=s.host.replaceFile.bind(s.host);
   s.host.replaceFile=(abs,bytes,options)=>replace(abs,bytes,{...options,beforeCommit:async()=>{
     if(change==='object')await fs.writeFile(s.source,'external changed');
-    if(change==='state')await s.rewrite(v=>{v.receipts[0].kind='problem';});
+    if(change==='state'){
+      // Inject the change while the copy is staged but its final name is still absent.
+      const entries=await fs.readdir(s.project);
+      assert(!entries.includes(path.basename(abs)));
+      assert(entries.some(entry=>!s.projectEntries.includes(entry)),'Expected staged copy before final report revalidation');
+      await s.host.storage.putProject(s.projectId,'managed_receipts',s.old.id,{...s.old,kind:'problem'});
+    }
     if(change==='active source')s.managed.controllers.set(s.projectId,{store:{root:s.runtime,state:s.store.state}});
     if(change==='project') {const require=s.host.requireProject.bind(s.host);s.host.requireProject=async id=>({...await require(id),root:s.root});}
     await options.beforeCommit();

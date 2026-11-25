@@ -9,9 +9,17 @@ import {ManagedReportExporter} from '../src/main/managed-report-export.mjs';
 import {staticReport,historicalMarkdownState} from './static-report.fixture.mjs';
 import {managedRuntime} from '../src/agents/managed/managed-storage.mjs';
 import {managedReportSource,managedArtifact,managedHistory} from '../src/agents/managed-report-source.mjs';
+import {createWindowsDesktopWorkspaceIO} from '../src/platform/windows/experimental-workspace-io.mjs';
 
 // Real Host registry/drafts/atomic writes and real Workspace publication/object.
 // The binding lookup has no Provider; this is file safety, not CLI acceptance.
+async function createFixtureSymlink(t,target,link){
+  try{await fs.symlink(target,link);return true;}catch(error){
+    if(process.platform==='win32'&&['EPERM','EACCES'].includes(error.code)){t.skip('Windows file-symlink creation requires an explicitly enabled link privilege');return false;}
+    throw error;
+  }
+}
+
 async function setup(t,{html=false}={}) {
   // Workspace pins store.root to the realpath; the runtime identity check in
   // managed-report-source compares it verbatim, so the temp root must be
@@ -19,12 +27,14 @@ async function setup(t,{html=false}={}) {
   const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'nozeli-report-export-')));
   const project=path.join(root,'project');await fs.mkdir(project);
   const host=new DesktopHost(path.join(root,'profile')),projectId=(await host.pick(project)).project.id,storage=host.storage,binding=await storage.requireRegistered(projectId),runtime=await managedRuntime(storage,projectId);
-  let store=await Workspace.open(runtime,project,{storage,projectId});
+  const open=()=>Workspace.open(runtime,project,{storage,projectId,workspaceIO:process.platform==='win32'?createWindowsDesktopWorkspaceIO({storage}):undefined});
+  let store=await open();
+  t.after(async()=>{if(!store.closed)await store.close();assert(!(await storage.db.close()).some(result=>result?.closed===false));await fs.rm(root,{recursive:true,force:true});});
   const work=await store.submit('request','brief',{name:'真实报告'});await store.activate(work.id);
   let text=html?staticReport('Unicode 中文、空行与尾换行。'):'# 原始报告\r\n\r\nUnicode 中文、空行与尾换行。\r\n\r\n[原文件](source.md)\r\n';
   await fs.mkdir(path.join(project,'reports'));await fs.writeFile(path.join(project,'reports/generated.md'),'# Frozen artifact\n\n中文内容\n');
   let receipt=await store.publish(work.id,1,'result',html?text:staticReport('Historical seed'),'receipt-1',{files:[{relPath:'reports/generated.md'}]});await store.settle(work.id);
-  if(!html){await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));store=await Workspace.open(runtime,project,{storage,projectId});receipt=store.state.receipts[0];}
+  if(!html){await historicalMarkdownState(store,new Map([[receipt.objectId,text]]));store=await open();receipt=store.state.receipts[0];}
   if(html)text=(await store.readObject(receipt.report.digest)).toString('utf8');
   await fs.unlink(path.join(await storage.recoveryDirectory(projectId),'objects','sha256',receipt.report.digest));
   const projectEntries=await fs.readdir(project);
@@ -32,9 +42,9 @@ async function setup(t,{html=false}={}) {
   const artifactController={store};managedAgents.artifactRead=async(id,{objectId,relPath})=>managedArtifact({project:await storage.requireRegistered(id),storage,runtime,controller:artifactController,currentController:()=>artifactController},{objectId,relPath});
   let holds=0,releases=0;
   const exporter=new ManagedReportExporter({host,managedAgents,beforeOperation:async()=>{holds++;return ()=>{releases++;};}});
-  t.after(async()=>{await store.close();await storage.db.close();await fs.rm(root,{recursive:true,force:true});});
   const input=relPath=>({projectId,objectId:receipt.objectId,relPath});
-  const noTemps=async()=>assert.equal((await fs.readdir(project)).some(n=>n.startsWith('.nozeli-tmp-')),false);
+  const noTemps=async()=>assert.deepEqual((await fs.readdir(project)).filter(name=>
+    name.startsWith('.nozeli-tmp-')||/^\.nozeli-[a-f0-9-]{36}\.pending$/i.test(name)),[]);
   const objectPath=receipt=>path.join(binding.metadataRoot,'objects','sha256',receipt.report.digest);
   return {root,project,projectEntries,host,projectId,store,receipt,text,managedAgents,exporter,input,noTemps,objectPath,counts:()=>({holds,releases})};
 }
@@ -62,13 +72,19 @@ test('older report object remains exportable after a newer revision is published
   assert.equal(s.store.state.receipts.length,2);await s.noTemps();
 });
 
-test('refuses existing files, directories, links and unsafe portable names without touching them',async t=>{
+test('refuses existing files, directories and unsafe portable names without touching them',async t=>{
   const s=await setup(t);await fs.writeFile(path.join(s.project,'existing.md'),'untouched');await fs.mkdir(path.join(s.project,'directory.md'));
-  await fs.writeFile(path.join(s.root,'outside.md'),'outside');await fs.symlink(path.join(s.root,'outside.md'),path.join(s.project,'linked.md'));
-  for(const name of ['existing.md','directory.md','linked.md','../outside.md','sub/report.md','C:\\report.md','.nozeli.md','CON.md','nul.more.md','bad?.md','bad\n.md','report.txt','space .md',''])
+  for(const name of ['existing.md','directory.md','../outside.md','sub/report.md','C:\\report.md','.nozeli.md','CON.md','nul.more.md','bad?.md','bad\n.md','report.txt','space .md',''])
     await assert.rejects(()=>s.exporter.export(s.input(name)));
-  assert.equal(await fs.readFile(path.join(s.project,'existing.md'),'utf8'),'untouched');assert.equal(await fs.readFile(path.join(s.root,'outside.md'),'utf8'),'outside');
-  assert.equal((await fs.lstat(path.join(s.project,'linked.md'))).isSymbolicLink(),true);assert.deepEqual(s.counts(),{holds:0,releases:0});await s.noTemps();
+  assert.equal(await fs.readFile(path.join(s.project,'existing.md'),'utf8'),'untouched');
+  assert.deepEqual(s.counts(),{holds:0,releases:0});await s.noTemps();
+  await t.test('refuses a symlink destination without modifying its target',async t=>{
+    const outside=path.join(s.root,'outside.md'),link=path.join(s.project,'linked.md');await fs.writeFile(outside,'outside');
+    if(!await createFixtureSymlink(t,outside,link))return;
+    await assert.rejects(()=>s.exporter.export(s.input('linked.md')));
+    assert.equal(await fs.readFile(outside,'utf8'),'outside');assert.equal((await fs.lstat(link)).isSymbolicLink(),true);
+    assert.deepEqual(s.counts(),{holds:0,releases:0});await s.noTemps();
+  });
 });
 
 test('twenty concurrent same-name copies create exactly one full file',async t=>{
@@ -110,7 +126,7 @@ test('missing editing barrier, failed synchronization and staged source change p
   assert.deepEqual(await fs.readdir(s.project),s.projectEntries);await s.noTemps();
 });
 
-test('rejects cross-project, forged text, absent/corrupt source and symlinked original',async t=>{
+test('rejects cross-project, forged text and absent or corrupt report sources',async t=>{
   const s=await setup(t),other=path.join(s.root,'other');await fs.mkdir(other);const otherId=(await s.host.pick(other)).project.id,otherEntries=await fs.readdir(other);
   const second=new ManagedReportExporter({host:s.host,managedAgents:{reportSource:async()=>{throw Object.assign(Error('missing'),{code:'REPORT_MISSING'});}},beforeOperation:async()=>()=>{}});
   await assert.rejects(()=>second.export({...s.input('cross.md'),projectId:otherId}),e=>e.code==='REPORT_MISSING');
@@ -118,8 +134,11 @@ test('rejects cross-project, forged text, absent/corrupt source and symlinked or
   const source=s.objectPath(s.receipt);await fs.unlink(source);
   await assert.rejects(()=>s.exporter.export(s.input('absent.md')),e=>/^(REPORT_|MATERIAL_)/.test(e.code));
   await fs.writeFile(source,'corrupt');await assert.rejects(()=>s.exporter.export(s.input('corrupt.md')),e=>/^(REPORT_|MATERIAL_)/.test(e.code));
-  await fs.unlink(source);const external=path.join(s.root,'external-report.md');await fs.writeFile(external,s.text);await fs.symlink(external,source);
-  await assert.rejects(()=>s.exporter.export(s.input('linked-source.md')),e=>/^(REPORT_|MATERIAL_|INVALID_MATERIAL$|INVALID_DIRECTORY$)/.test(e.code));
+  await t.test('rejects a symlinked report source',async t=>{
+    await fs.unlink(source);const external=path.join(s.root,'external-report.md');await fs.writeFile(external,s.text);
+    if(!await createFixtureSymlink(t,external,source))return;
+    await assert.rejects(()=>s.exporter.export(s.input('linked-source.md')),e=>/^(REPORT_|MATERIAL_|INVALID_MATERIAL$|INVALID_DIRECTORY$)/.test(e.code));
+  });
   assert.deepEqual(await fs.readdir(s.project),s.projectEntries);assert.deepEqual(await fs.readdir(other),otherEntries);await s.noTemps();
 });
 
@@ -156,6 +175,10 @@ test('copies exact frozen Markdown artifact bytes without overwriting source fil
   const result=await s.exporter.exportArtifact(payload);
   assert.equal(result.copied,true);assert.equal(await fs.readFile(path.join(s.project,'generated-copy.md'),'utf8'),'# Frozen artifact\n\n中文内容\n');
   await assert.rejects(s.exporter.exportArtifact(payload),{code:'CONFLICT'});
+  const replace=s.host.replaceFile.bind(s.host);
+  s.host.replaceFile=(abs,bytes,options)=>replace(abs,bytes,{...options,beforeCommit:async()=>{await options.beforeCommit();await fs.writeFile(abs,'competing artifact',{flag:'wx'});}});
+  await assert.rejects(s.exporter.exportArtifact({...payload,relPath:'race.md'}),{code:'CONFLICT'});
+  assert.equal(await fs.readFile(path.join(s.project,'race.md'),'utf8'),'competing artifact');
   for(const relPath of ['../escape.md','CON.md','sub/copy.md','bad .md'])await assert.rejects(s.exporter.exportArtifact({...payload,relPath}),{code:'BAD_PATH'});
   assert.equal(await fs.readFile(path.join(s.project,'reports/generated.md'),'utf8'),'new live version');await s.noTemps();
 });
@@ -202,6 +225,23 @@ test('single-object history read pins receipt identity, not whole-state hash; ve
   }finally{s.store.storage.readObject=originalReadObject;}
   // controller身份变化（如重启换实例）仍必须拒绝，绝不跨实例返回正文。
   await assert.rejects(managedHistory({...opts(),currentController:()=>({store:s.store})},{objectId}),error=>error.code==='REPORT_CHANGED');
+});
+
+test('exact report reopens across controller handoff without accepting a different receipt',async t=>{
+  const s=await setup(t,{html:true}),storage=s.store.storage,project=await storage.requireRegistered(s.projectId);
+  const old={store:s.store},next={store:{root:s.store.root,state:structuredClone(s.store.state)}};
+  let current=old,resultReads=0;
+  const original=storage.readObject.bind(storage),objectId=s.receipt.objectId;
+  storage.readObject=(id,digest,...rest)=>{if(digest===s.receipt.report.digest){resultReads++;current=next;}return original(id,digest,...rest);};
+  const options={project,storage,runtime:s.store.root,controller:old,currentController:()=>current};
+  try{
+    const got=await managedHistory(options,{objectId});
+    assert.equal(got.objectId,objectId);assert.equal(got.report.digest,s.receipt.report.digest);assert.equal(resultReads,2);
+    current=old;resultReads=0;
+    next.store.state.receipts.find(row=>row.objectId===objectId).id='changed-receipt';
+    await assert.rejects(managedHistory(options,{objectId}),{code:'REPORT_CHANGED'});
+    assert.equal(resultReads,1);
+  }finally{storage.readObject=original;}
 });
 
 test('history items keep exact-object publication ordinals for same-revision republication',async t=>{

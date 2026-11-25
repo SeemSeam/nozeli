@@ -25,6 +25,20 @@ unset ELECTRON_RUN_AS_NODE NOZELI_TEST_PICK NOZELI_TEST_INSTANCE NOZELI_AGENT_FI
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 if [ -n "$DISPLAY" ]; then
+  # Tool-initiated launches may lack the desktop session's X11 IME variables.
+  # Copy only the three input settings, without evaluating session output.
+  if { [ -z "\${GTK_IM_MODULE+x}" ] || [ -z "\${QT_IM_MODULE+x}" ] || [ -z "\${XMODIFIERS+x}" ]; } && command -v systemctl >/dev/null && command -v timeout >/dev/null; then
+    ime_env=$(timeout 1s systemctl --user show-environment 2>/dev/null | grep -E '^(GTK_IM_MODULE|QT_IM_MODULE|XMODIFIERS)=')
+    while IFS= read -r setting; do
+      case "$setting" in
+        GTK_IM_MODULE=*) [ "\${GTK_IM_MODULE+x}" ] || export "$setting" ;;
+        QT_IM_MODULE=*) [ "\${QT_IM_MODULE+x}" ] || export "$setting" ;;
+        XMODIFIERS=*) [ "\${XMODIFIERS+x}" ] || export "$setting" ;;
+      esac
+    done <<EOF
+$ime_env
+EOF
+  fi
   exec ${quote(path.join(current,'nozeli'))} --ozone-platform=x11 "$@"
 elif [ -n "$WAYLAND_DISPLAY" ]; then
   exec ${quote(path.join(current,'nozeli'))} --ozone-platform=wayland "$@"

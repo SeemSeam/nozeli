@@ -1,6 +1,6 @@
 import {hasReadableText,isImportantEntry,isProcessEntry,hasProcessPayload,processLabel,turnPresentation,replyPresentation,processSummary,messageRole,closeoutPresentation} from './session-presentation.mjs';
 import React,{createContext,memo,useContext,useEffect,useLayoutEffect,useMemo,useRef,useState,useSyncExternalStore} from 'react';
-import {createPortal} from 'react-dom';
+import {createPortal,flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {renderTagMarkdown} from './tag-markdown.mjs';
 import {setActionButton} from './ui-actions.mjs';
@@ -19,7 +19,7 @@ export function createTaskReadingMemory(initial={},onChange=()=>{}){
  return {get:key=>values.get(key),has:key=>values.has(key),set(key,value){values.delete(key);values.set(key,value);while(values.size>400)values.delete(values.keys().next().value);publish();return this;},delete(key){const changed=values.delete(key);if(changed)publish();return changed;}};
 }
 function TaskCard(props){return h(TaskReader,props);}
-export function TaskReader({row,state,projectId,onResult,openFrozenChange,context,call,embedded=false,range,readingMemory}){
+export function TaskReader({row,state,projectId,onResult,openFrozenChange,context,call,embedded=false,range,readingMemory,pinnedObjectId}){
  const localMemory=useRef(new Map()),disclosures={memory:readingMemory||localMemory.current,scope:JSON.stringify([projectId,row.sourceJobId||row.workId,embedded?'review':'conversation'])},view=taskPresentation(row,state),tone=taskIdentityTone(taskIdentityKey(projectId,state,row));
  const bodyKey=disclosures.scope+':body',processKey=disclosures.scope+':process',bodyRef=useRef(null),toggleRef=useRef(null),processRef=useRef(null);
  const [open,setOpen]=useState(()=>disclosures.memory.get(bodyKey)??embedded),[processOpen,setProcessOpen]=useState(()=>disclosures.memory.get(processKey)??false),[location,setLocation]=useState(null);
@@ -36,6 +36,9 @@ export function TaskReader({row,state,projectId,onResult,openFrozenChange,contex
   if(view.returnKey!==lastReturn.current){lastReturn.current=view.returnKey;setReturnPulse(view.returnKey);}
  },[visible,view.returning,view.returnKey]);
  const [error,setError]=useState('');
+ const sections=taskReadingSections(row,state);
+ const shownResults=new Set(sections.map(section=>section.result?.objectId).filter(Boolean));
+ if(pinnedObjectId)shownResults.add(pinnedObjectId);
  return h(TaskDisclosures.Provider,{value:disclosures},h('article',{className:'session-task-card','data-workflow-id':row.id,'data-workflow-work':row.workId||undefined,'data-task-tone':tone,'data-state':view.status,'aria-label':view.name+' · '+view.label},
   h('header',null,h('button',{type:'button',ref:toggleRef,'data-task-toggle':'','aria-expanded':open,onClick:()=>disclose(!open)},h('span',{'aria-hidden':true},open?'▾':'▸'),embedded?'任务内容':view.name),h('span',{className:'session-task-status',role:'status'},view.label),!embedded&&view.publication&&h('button',{type:'button','data-task-action':'result',onClick:()=>Promise.resolve(onResult?.(view.publication)).catch(error=>setError(error.message))},'查看成果')),
   detail&&h('p',{className:'session-task-detail'},detail),
@@ -44,9 +47,9 @@ export function TaskReader({row,state,projectId,onResult,openFrozenChange,contex
   h('div',{ref:bodyRef,hidden:!open,'data-task-body':''},
   range&&h('p',{className:'session-task-history-note'},range),
   state.projection?.missingDecisionHistory&&h('p',{className:'session-task-history-note',role:'status'},'当前账本缺少早期决定／应用阶段的持久事件；下方仅呈现真实已记录转移，不用当前收尾状态回填历史。'),
-  h(TaskConversation,{row,state,context,call,onResult:onResult?receipt=>Promise.resolve(onResult(receipt)).catch(error=>setError(error.message)):null,onProcess:showProcess}),
+  h(TaskConversation,{sections,row,state,context,call,pinnedObjectId,onResult:onResult?receipt=>Promise.resolve(onResult(receipt)).catch(error=>setError(error.message)):null,onProcess:showProcess}),
   h('button',{type:'button',ref:processRef,'data-task-action':'process','aria-expanded':processOpen,onClick:()=>{if(!processOpen)showProcess();else{processRef.current?.focus({preventScroll:true});disclosures.memory.set(processKey,false);setProcessOpen(false);}}},processOpen?'收起执行过程':'执行过程'),
-  h('section',{'data-task-inline-process':'',hidden:!processOpen},h(InlineTaskProcess,{enabled:open&&processOpen,row,state,context,call,projectId,location,openFrozenChange,onResult:embedded?onResult:null}))),error&&h('small',{role:'alert'},error)));
+  h('section',{'data-task-inline-process':'',hidden:!processOpen},h(InlineTaskProcess,{enabled:open&&processOpen,row,state,context,call,projectId,location,openFrozenChange,onResult:embedded?onResult:null,excludedResults:shownResults}))),error&&h('small',{role:'alert'},error)));
 }
 const h=React.createElement;
 // Catalog action buttons: glyphs and default labels come from ui-actions.mjs.
@@ -179,19 +182,47 @@ export function taskReadingRows(row,state){
  return records.sort((a,b)=>(a.entry.sequence??0)-(b.entry.sequence??0)||a.entry.id.localeCompare(b.entry.id));
 }
 export function taskReadingSections(row,state){
- const originals=taskReadingRows(row,state),publications=new Set(originals.filter(item=>item.entry.publication&&item.entry.objectId).map(item=>item.entry.objectId)),records=originals.map(item=>item.entry.publication?{id:item.entry.id,sequence:item.entry.sequence??0,receipt:{...item.entry,kind:'发布 · '+item.entry.publication},original:item.entry}:{...item,id:item.entry.id,sequence:item.entry.sequence??0}),seen=new Set(records.map(item=>item.id));
+ const originals=taskReadingRows(row,state),publications=new Set(),records=[];
+ for(const item of originals){
+  const {entry}=item;
+  if(entry.publication&&entry.objectId){if(publications.has(entry.objectId))continue;publications.add(entry.objectId);}
+  records.push(entry.publication?{id:entry.id,sequence:entry.sequence??0,receipt:{...entry,kind:'发布 · '+entry.publication},original:entry}:{...item,id:entry.id,sequence:entry.sequence??0});
+ }
+ const seen=new Set(records.map(item=>item.id));
  for(const part of row.rows){
   if(part.delta&&!seen.has(part.delta.id)){seen.add(part.delta.id);records.push({id:part.delta.id,sequence:part.delta.sequence??part.sequence,delta:part.delta});}
   for(const receipt of part.receipts||[]){const id='receipt:'+(receipt.id||receipt.objectId);if(seen.has(id)||receipt.objectId&&publications.has(receipt.objectId))continue;seen.add(id);if(receipt.objectId)publications.add(receipt.objectId);records.push({id,sequence:receipt.sequence??Math.max(part.sequence??0,...(part.entries||[]).map(entry=>entry.sequence??0))+.01,receipt});}
   if(part.kind==='closeout')records.push({id:part.id,sequence:part.sequence,closure:closeoutPresentation(state.works?.find(work=>work.id===part.workId),part.revision)});
  }
  records.sort((a,b)=>a.sequence-b.sequence||a.id.localeCompare(b.id));
+ // Keep every lifecycle fact, but attach each frozen result to one record.
+ // Prefer the actual publication (or its receipt) over a later reference.
+ const receipts=row.workId?taskResultReceipts(state,row.workId):null;
+ const resultRecords=new Map();
+ for(const record of records){
+  const objectId=(record.receipt||record.delta)?.objectId;
+  if(!receipts?.has(objectId))continue;
+  const previous=resultRecords.get(objectId);
+  if(!previous||record.receipt&&!previous.receipt)resultRecords.set(objectId,record);
+ }
+ for(const [objectId,record] of resultRecords)record.result=receipts.get(objectId);
  const sections=[],rounds=new Map();
  for(const record of records){if(!record.entry){sections.push(record);continue;}const entry=record.entry,binding=entry.jobId||entry.requestId||entry.replacesId||entry.id;let round=rounds.get(binding);if(!round){round={id:'round:'+binding,sequence:record.sequence,binding,items:[]};rounds.set(binding,round);sections.push(round);}round.items.push(record);}
  return sections;
 }
-function TaskConversation({row,state,context,call,onResult,onProcess}){
- const list=taskReadingSections(row,state),lastRound=list.findLast(item=>item.items),identities=useRef(new Map());
+function taskResultReceipts(state,workId){
+ const receipts=new Map();
+ for(const receipt of state.receipts||[]){
+  if((!workId||receipt.workId===workId)&&receipt.objectId){const existing=receipts.get(receipt.objectId);if(!existing||!existing.publicationNumber&&receipt.publicationNumber)receipts.set(receipt.objectId,receipt);}
+ }
+ return receipts;
+}
+function resultLabel(receipt){
+ const name=receipt.kind==='result'?'报告':receipt.kind==='problem'?'问题报告':'冻结成果';
+ return '查看'+name+(receipt.publicationNumber?` V${receipt.publicationNumber}`:receipt.revision!=null?` · 工作修订 ${receipt.revision}`:'');
+}
+function TaskConversation({sections:list,row,state,context,call,onResult,onProcess,pinnedObjectId}){
+ const lastRound=list.findLast(item=>item.items),identities=useRef(new Map());
  const keyOf=entry=>{const keys=identities.current,key=keys.get(entry.id)||keys.get(entry.replacesId)||entry.replacesId||entry.id;keys.set(entry.id,key);return key;};
  return h('section',{className:'session-task-conversation','aria-label':'任务对话与讨论'},
   !list.some(item=>item.items?.some(({entry})=>entry.speaker==='user'))&&h('p',{className:'session-task-history-note'},'此范围没有原始用户输入；请读取更早记录或进入固定任务过程，不以当前任务摘要补造历史。'),
@@ -204,8 +235,8 @@ function TaskConversation({row,state,context,call,onResult,onProcess}){
    }
    if(section.closure){const view=section.closure;return h('article',{key:section.id,className:'session-closeout','data-closeout-state':view.status},h('strong',null,'Nozeli · '+view.label),h('p',null,view.summary),view.reason&&h('p',{role:'alert'},view.reason),h(Fold,{label:'收尾依据 · '+view.label},view.steps.map(step=>h('p',{key:step.id,'data-step-state':step.status},step.label+' · '+step.status))));}
    const fact=section.delta||section.receipt;if(!fact)return null;
-   const receipt=(state.receipts||[]).find(receipt=>receipt.objectId===fact.objectId&&receipt.workId===row.workId);
-   return h('article',{key:section.id,className:'session-host-delta','data-host-delta':section.id,'data-message':section.original?.id},h('strong',null,'Nozeli · '+(fact.kind||'宿主记录')),section.original?.availability==='read-required'?h(ReadOriginal,{entry:section.original,context,call}):h(Content,{value:fact.text||(fact.objectId?'冻结成果 · '+fact.objectId:'宿主事实'),context}),fact.objectId&&h('button',{type:'button',disabled:!onResult||!receipt,onClick:()=>onResult(receipt)},section.delta?'查看来源成果':'查看此版成果'));
+   const receipt=section.result;
+   return h('article',{key:section.id,className:'session-host-delta','data-host-delta':section.id,'data-message':section.original?.id,'data-publication-object':section.receipt?.objectId,tabIndex:receipt?-1:undefined},h('strong',null,'Nozeli · '+(fact.kind||'宿主记录')),section.original?.availability==='read-required'?h(ReadOriginal,{entry:section.original,context,call}):h(Content,{value:fact.text||(fact.objectId?'冻结成果 · '+fact.objectId:'宿主事实'),context}),receipt&&onResult&&h('button',{type:'button','data-result-object':receipt.objectId,'data-pinned-result':receipt.objectId===pinnedObjectId?'':undefined,onClick:()=>onResult(receipt)},resultLabel(receipt)));
   }));
 }
 function FrozenFiles({receipt,call,openFrozenChange,projectId}){
@@ -263,8 +294,18 @@ function Timeline({store,state,context,call,openFrozenChange,projectId,onTask,on
   createPortal((historyPage||!atBottom)?h('button',{type:'button',className:'session-jump-latest',onClick:latest},h('span',{'aria-hidden':true},'↓ '),historyPage?'返回最新消息':'回到最新'):null,navigationContainer));
 }
 export function mountSessionTimeline(container,props){const root=createRoot(container),readingMemory=props.readingMemory||createTaskReadingMemory(props.initialReading,props.onReadingChange);return {render(next){const merged={...props,...next};root.render(h(Timeline,{...merged,readingMemory,key:merged.projectId}));},destroy(){root.unmount();}};}
-export function mountTaskReader(container,props){const root=createRoot(container),readingMemory=props.readingMemory||createTaskReadingMemory(props.initialReading,props.onReadingChange);return {render(next){const merged={...props,...next},rows=groupSessionWorkflows(merged.snapshot,merged.state.receipts,merged.state),work=merged.state.works?.find(work=>work.id===merged.workId),source=merged.state.jobs?.find(job=>job.id===work?.sourceJob),sourceJobId=source?intakeLineage(merged.state,source)[0]?.id:work?.sourceJob,matched=rows.filter(row=>row.kind==='workflow'&&(row.workId===merged.workId||!row.workId&&row.sourceJobId===sourceJobId)),row={kind:'workflow',id:'workflow:work:'+merged.workId,workId:merged.workId,sourceJobId,rows:matched.flatMap(row=>row.rows)};root.render(h(TaskReader,{...merged,row,readingMemory,embedded:true}));},destroy(){root.unmount();}};}
-function InlineTaskProcess({enabled,row,state,context,call,projectId,location,openFrozenChange,onResult}){
+export function mountTaskReader(container,props){
+ const root=createRoot(container),readingMemory=props.readingMemory||createTaskReadingMemory(props.initialReading,props.onReadingChange);
+ return {render(next){
+  const merged={...props,...next},rows=groupSessionWorkflows(merged.snapshot,merged.state.receipts,merged.state),work=merged.state.works?.find(work=>work.id===merged.workId),source=merged.state.jobs?.find(job=>job.id===work?.sourceJob);
+  const sourceJobId=merged.sourceJobId??(source?intakeLineage(merged.state,source)[0]?.id:work?.sourceJob);
+  const matched=rows.filter(row=>row.kind==='workflow'&&(merged.workId&&row.workId===merged.workId||!row.workId&&sourceJobId&&row.sourceJobId===sourceJobId));
+  const row={kind:'workflow',id:merged.workId?'workflow:work:'+merged.workId:'workflow:request:'+sourceJobId,workId:merged.workId,sourceJobId,rows:matched.flatMap(row=>row.rows)};
+  // The imperative review window measures and scrolls immediately after render.
+  flushSync(()=>root.render(h(TaskReader,{...merged,row,readingMemory,embedded:true})));
+ },destroy(){root.unmount();}};
+}
+function InlineTaskProcess({enabled,row,state,context,call,projectId,location,openFrozenChange,onResult,excludedResults}){
  const store=useContext(TaskDisclosures),scope=useRef(null),currentScope=row.workId?{workId:row.workId}:{sourceJobId:row.sourceJobId},pageKey=value=>store.scope+':process-page:'+JSON.stringify(value),saved=store.memory.get(pageKey(currentScope)),root=useRef(null),request=useRef(0),composing=useRef(false),pendingLocation=useRef(null);
  const [page,setPage]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[dirty,setDirty]=useState(false);
  const version=useRef(state);
@@ -282,10 +323,10 @@ function InlineTaskProcess({enabled,row,state,context,call,projectId,location,op
  useLayoutEffect(()=>{const id=pendingLocation.current;if(!id)return;pendingLocation.current=null;const element=[...root.current.querySelectorAll('[data-process-entry]')].find(node=>node.dataset.processEntry===id);if(element){element.tabIndex=-1;element.scrollIntoView({block:'nearest'});element.focus({preventScroll:true});}},[page]);
  useEffect(()=>{if(enabled&&!page&&!loading)void load(saved?.cursor);},[enabled]);
  useEffect(()=>{if(enabled&&location)void load(null,location.id,currentScope);},[location]);
- return h('div',{ref:root},dirty&&h('p',{role:'status'},'有新过程记录；当前已读页保持不变，请显式读取最新。'),h('p',null,'执行过程 · 已加载 '+(page?.entries.length||0)+' 条原记录'),h(TaskProcess,{snapshot:page||{entries:[],deltas:[]},state,context,call,projectId,openFrozenChange,onResult,loading,error,onPage:cursor=>load(cursor),onLatest:()=>load(undefined,undefined,currentScope)}));
+ return h('div',{ref:root},dirty&&h('p',{role:'status'},'有新过程记录；当前已读页保持不变，请显式读取最新。'),h('p',null,'执行过程 · 已加载 '+(page?.entries.length||0)+' 条原记录'),h(TaskProcess,{snapshot:page||{entries:[],deltas:[]},state,context,call,projectId,openFrozenChange,onResult,excludedResults,loading,error,onPage:cursor=>load(cursor),onLatest:()=>load(undefined,undefined,currentScope)}));
 }
-function TaskProcess({snapshot,state,context,call,openFrozenChange,onResult,projectId,onPage,onLatest,loading,error}){
- const pageReceipts=(state.receipts||[]).filter(receipt=>snapshot.entries.some(entry=>Boolean(receipt.objectId)&&entry.objectId===receipt.objectId||Boolean(receipt.jobId||receipt.sourceJobId)&&entry.jobId===(receipt.jobId||receipt.sourceJobId)));
+function TaskProcess({snapshot,state,context,call,openFrozenChange,onResult,excludedResults,projectId,onPage,onLatest,loading,error}){
+ const pageReceipts=[...taskResultReceipts(state).values()].filter(receipt=>(!onResult||!excludedResults?.has(receipt.objectId))&&snapshot.entries.some(entry=>entry.objectId===receipt.objectId||Boolean(receipt.jobId||receipt.sourceJobId)&&entry.jobId===(receipt.jobId||receipt.sourceJobId)));
  const records=[...snapshot.entries.map(entry=>({id:entry.id,sequence:entry.sequence,entry})),...(snapshot.deltas||[]).map(delta=>({id:delta.id,sequence:delta.sequence,delta}))].sort((a,b)=>(a.sequence??0)-(b.sequence??0)||a.id.localeCompare(b.id));
  return h('div',{'data-task-process':true},
   h('nav',{'aria-label':'任务过程分页'},snapshot.hasMore&&h('button',{type:'button','data-task-page':'earlier',disabled:loading,onClick:()=>onPage(snapshot.nextCursor)},'更早一页'),h('button',{type:'button','data-task-page':'latest',disabled:loading,onClick:onLatest},'读取最新')),
@@ -295,6 +336,6 @@ function TaskProcess({snapshot,state,context,call,openFrozenChange,onResult,proj
    h(HistoricalModel,{entry}),entry.availability==='read-required'?h(ReadOriginal,{entry,call,context}):h(NativeBody,{entry,context}),
    entry.attachments?.length>0&&h('div',{className:'message-attachments'},entry.attachments.map((attachment,index)=>h('button',{key:attachment.digest||index,type:'button',disabled:!attachment.digest||!context?.onMaterial&&!window.__openMaterialAttachment,title:'发送时冻结的材料',onClick:()=>context?.onMaterial?context.onMaterial(attachment,entry,index):window.__openMaterialAttachment?.(attachment)},attachment.name||'冻结材料'))),
    (entry.materialSources?.length>0||entry.drawingSources?.length>0)&&h(Fold,{label:'冻结选区与材料来源'},h(Content,{value:{materialSources:entry.materialSources,drawingSources:entry.drawingSources},context,plain:true})))),
-  pageReceipts.map(receipt=>onResult?h('button',{key:receipt.id||receipt.objectId,type:'button',onClick:()=>onResult(receipt)},'查看此版冻结成果'):h(FrozenFiles,{key:receipt.id||receipt.objectId,receipt,call,openFrozenChange,projectId})));
+  pageReceipts.map(receipt=>onResult?h('button',{key:receipt.objectId,type:'button','data-result-object':receipt.objectId,onClick:()=>onResult(receipt)},resultLabel(receipt)):h(FrozenFiles,{key:receipt.objectId,receipt,call,openFrozenChange,projectId})));
 }
 export function mountTaskProcess(container,props){const root=createRoot(container);return {render(next){root.render(h(TaskProcess,{...props,...next}));},destroy(){root.unmount();}};}

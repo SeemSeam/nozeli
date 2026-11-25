@@ -35,6 +35,7 @@ import { generateThreadTitle, type GenerateThreadTitleOptions } from "./thread-t
 export interface PiSdkDriverConfig extends PiSdkDriverOptions, RuntimeSupervisorOptions {}
 
 export class PiSdkDriver implements SessionDriver {
+  private readonly createModelRuntime?: RuntimeSupervisorOptions["createModelRuntime"];
   private readonly supervisor: SessionSupervisor;
   private readonly agentDir: string;
   private readonly generateThreadTitleOverride:
@@ -48,6 +49,7 @@ export class PiSdkDriver implements SessionDriver {
   constructor(options: PiSdkDriverConfig = {}) {
     const deps = createRuntimeDependencies(options);
     this.agentDir = deps.agentDir;
+    this.createModelRuntime = options.createModelRuntime;
     this.generateThreadTitleOverride = options.generateThreadTitleOverride;
 
     this.supervisor = new SessionSupervisor({ ...options, agentDir: deps.agentDir });
@@ -203,11 +205,13 @@ export class PiSdkDriver implements SessionDriver {
             ? override
             : generateThreadTitle(workspace, options, {
                 agentDir: this.agentDir,
+                createModelRuntime: this.createModelRuntime,
               }),
       );
     }
     return generateThreadTitle(workspace, options, {
       agentDir: this.agentDir,
+      createModelRuntime: this.createModelRuntime,
     });
   }
 }

@@ -51,13 +51,14 @@ export function parseFileClipboard(entries, platform = process.platform) {
       const offset = bytes.readUInt32LE(0);
       if (offset < 20 || offset % 2 || offset > bytes.length - 4 || (bytes.length-offset)%2 || bytes.readUInt32LE(16) !== 1) invalid();
       let payload;try{payload=new TextDecoder('utf-16le',{fatal:true}).decode(bytes.subarray(offset));}catch{invalid();}
-      if (!payload.endsWith('\0\0')) invalid();
-      values = payload.slice(0,-2).split('\0');
+      const end=payload.indexOf('\0\0');
+      if(end<0||/[^\0]/.test(payload.slice(end)))invalid();
+      values = payload.slice(0,end).split('\0');
     } else if (format === 'FileNameW') {
       if (bytes.length % 2) invalid();
       let payload;try{payload=new TextDecoder('utf-16le',{fatal:true}).decode(bytes);}catch{invalid();}
       if (!payload.endsWith('\0')) invalid();
-      values = [payload.slice(0,-1)];
+      const end=payload.indexOf('\0');if(/[^\0]/.test(payload.slice(end)))invalid();values = [payload.slice(0,end)];
     } else if (format === 'NSFilenamesPboardType') {
       if(bytes.subarray(0,8).toString()==='bplist00'){values=parseFilenameBinaryPlist(bytes);}
       else {
@@ -86,8 +87,9 @@ export const sameFileIdentity = (a,b) => a && b && Object.keys(a).every(key=>a[k
 // Absolute paths never cross IPC. A ticket is tied to one shell, project and
 // exact native clipboard snapshot; imports never interpret renderer paths.
 export class NativeFileClipboard {
-  constructor(clipboard, {platform=process.platform,ClipboardItem}={}) { this.clipboard=clipboard;this.ClipboardItem=ClipboardItem;this.platform=platform;this.internal=null;this.tickets=new Map(); }
+  constructor(clipboard, {platform=process.platform,ClipboardItem,nativeFiles}={}) { this.clipboard=clipboard;this.ClipboardItem=ClipboardItem;this.platform=platform;this.nativeFiles=nativeFiles;this.internal=null;this.tickets=new Map(); }
   async snapshot() {
+    if(this.nativeFiles)return this.nativeFiles.snapshot();
     const entries=new Map(),hash=createHash('sha256');let total=0;
     const items=await this.clipboard.read();
     if(items.length>64)invalid();
@@ -117,9 +119,9 @@ export class NativeFileClipboard {
     const nativeEntries=action==='copy'?serializeFileClipboard(paths,this.platform):new Map();
     nativeEntries.set('application/x-nozeli-file-clipboard',Buffer.from(nonce));
     const values=Object.fromEntries([...nativeEntries].map(([format,bytes])=>[raw(format),new Blob([bytes])]));
-    const item=new this.ClipboardItem(values);
+    const item=this.nativeFiles?null:new this.ClipboardItem(values),previous=this.nativeFiles?await this.snapshot():null;
     await beforeWrite?.();
-    await this.clipboard.write([item]);
+    if(this.nativeFiles)await this.nativeFiles.write(nativeEntries,previous.generation);else await this.clipboard.write([item]);
     const {entries,generation}=await this.snapshot();
     if(entries.get('application/x-nozeli-file-clipboard')?.toString()!==nonce)throw Error('剪贴板已变化，请重新复制。');
     this.internal={generation,owner,projectId};this.tickets.clear();return {generation};
@@ -130,16 +132,23 @@ export class NativeFileClipboard {
     if(this.internal?.generation!==generation)this.internal=null;
     const paths=parseFileClipboard(snapshot.entries,this.platform);
     if(!paths.length)return {kind:'empty',generation};
-    const items=await Promise.all(paths.map(async source=>({source,name:path.basename(source),identity:fileIdentity(await fs.lstat(source))})));
+    return this.issue(paths,owner,projectId,generation,'clipboard');
+  }
+  async drop(paths,owner,projectId){
+    if(!Array.isArray(paths)||!paths.length||paths.length>1024)invalid();
+    return this.issue([...new Set(paths.map(value=>absolute(value,this.platform)))],owner,projectId,randomUUID(),'drop');
+  }
+  async issue(paths,owner,projectId,generation,origin){
+    const items=await Promise.all(paths.map(async source=>({source,name:path.basename(source),identity:fileIdentity(await fs.lstat(source)),...(this.platform==='win32'&&process.platform==='win32'?{nativeIdentity:await (await import('../platform/windows/clipboard-source.mjs')).windowsClipboardIdentity(source)}:{})})));
     const ticket=randomUUID();
     for(const [id,value] of this.tickets)if(value.owner===owner||value.expires<Date.now())this.tickets.delete(id);
     if(this.tickets.size>=64)this.tickets.delete(this.tickets.keys().next().value);
-    this.tickets.set(ticket,{owner,projectId,generation,items,expires:Date.now()+5*60*1000});
-    return {kind:'external',ticket,generation,items:items.map(({name})=>({name}))};
+    this.tickets.set(ticket,{owner,projectId,generation,items,origin,expires:Date.now()+5*60*1000});
+    return {kind:'external',ticket,generation,origin,items:items.map(({name})=>({name}))};
   }
   async take(ticket,owner,projectId) {
     const value=this.tickets.get(ticket);this.tickets.delete(ticket);
-    if(!value||value.owner!==owner||value.projectId!==projectId||value.expires<Date.now()||value.generation!==(await this.snapshot()).generation)throw Error('剪贴板已变化或粘贴凭据过期，请重新复制后粘贴。');
+    if(!value||value.owner!==owner||value.projectId!==projectId||value.expires<Date.now()||value.origin!=='drop'&&value.generation!==(await this.snapshot()).generation)throw Error('剪贴板已变化或粘贴凭据过期，请重新复制后粘贴。');
     return value.items;
   }
 }

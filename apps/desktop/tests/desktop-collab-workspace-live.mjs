@@ -120,7 +120,7 @@ async function compose(text, background = false) {
   await chat.keyboard.sendCharacter(text);
   assert.equal(await chat.$eval('#composer',node=>node.value),text,'Physical task input must remain in composer before dispatch');
   if(background){operations.push({layer:'programmatic-background',driver:'__agentSend',at:Date.now()});await chat.evaluate(()=>window.__agentSend({background:true}));}
-  else {operations.push({layer:'real-dom-keyboard',key:'Control+Enter',at:Date.now()});await chat.keyboard.down('Control');await chat.keyboard.press('Enter');await chat.keyboard.up('Control');}
+  else {operations.push({layer:'real-dom-keyboard',key:'Enter',at:Date.now()});await chat.keyboard.press('Enter');}
   return wait(async()=>{const s=await state();return s.jobs.find(job=>!previousJobs.has(job.id)&&(job.text===text||job.text.startsWith(text+'\n\n')));},'exact input durable admission',30000);
 }
 async function timeline() {
@@ -442,7 +442,7 @@ try {
   await shellPage.evaluate(()=>window.__nozeliInput.select(0,Math.min(30,window.__nozeliInput.text().length)));
   await shellPage.click('#selection-discuss');await shellPage.waitForSelector('.tag-editor',{visible:true});
   await shellPage.focus('.tag-editor');await shellPage.keyboard.sendCharacter('请只解释这个选区中retained的字符串值，不修改任何文件，不转后台。标记TAG_KEYBOARD_REAL。');
-  await shellPage.keyboard.down('Control');await shellPage.keyboard.press('Enter');await shellPage.keyboard.up('Control');
+  await shellPage.keyboard.press('Enter');
   await wait(async()=>(await state()).jobs.length===beforeTag+1,'selection keyboard unique admission');
   await settled('selection tag real keyboard response');
   check('Selection Ctrl+Enter gets one real native reply without altering the source',await shellPage.$eval('.tag-transcript',n=>n.textContent.includes('OWNED_READER'))&&await fs.readFile(project+'/reader.js','utf8')==='const retained = "OWNED_READER";\n');

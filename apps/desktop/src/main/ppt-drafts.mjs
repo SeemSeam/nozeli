@@ -7,6 +7,7 @@ const digestOf=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function digestFile(file){const hash=createHash('sha256');for await(const chunk of createReadStream(file))hash.update(chunk);return hash.digest('hex');}
 async function versions(host,projectId,relPath){const record=await host.storage.getRecovery(projectId,indexOf(relPath));if(!record)return [];if(record.schema!==1||record.relPath!==relPath||!Array.isArray(record.versions))throw Error('PPTX 草稿索引异常；原草稿保留');return record.versions;}
 function compatible(record){if(record&&(record.schema!=='nozeli-pptist-draft-v1'||record.engine!==engine||!Array.isArray(record.model?.slides)||!record.model.slides.length))throw Error('PPTX 草稿版本不兼容，原草稿已保留');return record;}
+export function validatePptDraftRecord(record){if(!record)throw Error('PPTX 已索引草稿缺失；原草稿保留');return compatible(record);}
 export async function savePptDraft({host,projectId,relPath,digest,absolute,model}){
  return host.fileLock(projectId,relPath)(async()=>{
   const record={schema:'nozeli-pptist-draft-v1',engine,sourceDigest:digest,model,updatedAt:new Date().toISOString()},encoded=JSON.stringify(record);

@@ -1,16 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { processStamp, ownerAlive } from './process-ownership.mjs';
 import {platformPersistence} from '../../platform/shared/persistence.mjs';
+import { randomUUID } from 'node:crypto';
+import {legacyWorkspaceIO,isWorkspaceIO} from './workspace-io.mjs';
 import {artifactSnapshot,digest} from './report-review.mjs';
 import {reconcileTodos} from '../../domain/todo-management.mjs';
 import {mergeConsentRequirement,sameMergeConsentBinding,mergeConsentBindingFields,explicitNeverCommitStatement,mergeConstraintChoices} from '../../domain/work-disposition.mjs';
-import {inspectFile,withSafeFile,readSafeBytes} from './file-stream.mjs';
+import {createFileStream} from './file-stream.mjs';
 import {recordBusinessTimeline} from './session-index.mjs';
 import {prepareHtmlReport,HTML_REPORT_OBJECT_MAX_BYTES,HTML_REPORT_LIMITS} from './html-report.mjs';
 import {decodeReportState,reportDescriptor,reportExtension,readStoredReport,MAX_REPORT_BYTES} from './report-descriptor.mjs';
-import {readManagedState,saveManagedState,readManagedObject,listManagedPending,reconcileManagedPending,retainManagedNativeProjection} from './managed-storage.mjs';
+import {readManagedState,saveManagedState,readManagedObject,listManagedPending,reconcileManagedPending,retainManagedNativeProjection,hasUnconfirmedManagedCommit} from './managed-storage.mjs';
 export async function atomicJson(file,value){
   const tmp=`${file}.${randomUUID()}.tmp`;const handle=await fs.open(tmp,'wx',0o600);
   try{await handle.writeFile(JSON.stringify(value,null,2)+'\n');await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}
@@ -46,36 +46,45 @@ export function workSlotFacts(works=[]){
   return facts;
 }
 export class Workspace {
-  static async open(runtimeRoot,contentRoot,{recoverStale=false,checkpoint=async()=>{},storage,projectId,offline=false}={}){
+  static async open(runtimeRoot,contentRoot,{recoverStale=false,checkpoint=async()=>{},storage,projectId,offline=false,workspaceIO=legacyWorkspaceIO,filesystem}={}){
     if(!storage||!projectId)throw Error('Project storage binding required');
+    if(!isWorkspaceIO(workspaceIO))throw Object.assign(Error('Original workspace I/O contract required'),{code:'WORKSPACE_IO_INVALID'});
     const project=await storage.requireRegistered(projectId);
-    await fs.mkdir(runtimeRoot,{recursive:true,mode:0o700});
-    const runtime=await fs.realpath(runtimeRoot),content=project.root;
-    if(inside(runtime,content)||inside(content,runtime))throw new Error('runtime and content roots overlap');
-    const lock=path.join(runtime,'host.lock');let handle;
-    try{handle=await fs.open(lock,'wx',0o600);}catch(error){
-      if(error.code!=='EEXIST')throw error;
-      if(!recoverStale)throw new Error('workspace owned or stale lock requires recovery');
-      const gate=path.join(runtime,'recovery.lock');const guard=await fs.open(gate,'wx',0o600);
-      try{const before=await fs.readFile(lock,'utf8');const old=JSON.parse(before);if(await ownerAlive(old))throw new Error('workspace owned by live host');if(await fs.readFile(lock,'utf8')!==before)throw new Error('workspace owner changed');await fs.unlink(lock);handle=await fs.open(lock,'wx',0o600);}
-      finally{await guard.close();await fs.unlink(gate);}
-    }
-    const owner=JSON.stringify({pid:process.pid,hostId:randomUUID(),stamp:await processStamp(process.pid)});
-    await handle.writeFile(owner);await handle.close();
-    const store=new Workspace(runtime,content,lock,owner);Object.assign(store,{checkpoint,storage,projectId,offline,operationId:randomUUID(),objectRoot:path.join(project.metadataRoot,'objects','sha256')});
+    if(inside(path.resolve(runtimeRoot),project.root)||inside(project.root,path.resolve(runtimeRoot)))throw new Error('runtime and content roots overlap');
+    const custody=await workspaceIO.acquire({project,storage,projectId,runtimeRoot,recoverStale});
+    const {runtime,content,lock,owner}=custody;
+    const store=new Workspace(runtime,content,lock,owner,{workspaceIO,filesystem:filesystem??workspaceIO.filesystem});Object.assign(store,{custody,hostLease:custody.hostLease,checkpoint,storage,projectId,projectInstanceId:project.instanceId,offline,operationId:randomUUID(),objectRoot:path.join(project.metadataRoot,'objects','sha256')});
     try{
+      await custody.check?.();
+      store.hasColdCommitPending=await hasUnconfirmedManagedCommit(storage,projectId);
       store.state=decodeReportState(await readManagedState(storage,projectId,{offline,onCollections:collections=>{store.committedCollections=collections;}}));
-      for(const dir of ['agents','evidence'])await fs.mkdir(path.join(runtime,dir),{recursive:true,mode:0o700});
+      for(const dir of ['agents','evidence'])await workspaceIO.ensureDirectory(path.join(runtime,dir));
       store.plan=path.join(project.metadataRoot,'memory','plantree','index.md');
-      if(!offline){await storage.requireOnline(projectId);await fs.mkdir(path.dirname(store.plan),{recursive:true,mode:0o700});await fs.writeFile(store.plan,'# Plan Tree\n\nProject semantic memory.\n',{flag:'wx',mode:0o600}).catch(e=>{if(e.code!=='EEXIST')throw e;});}
+      if(!offline){await storage.requireOnline(projectId);await workspaceIO.ensurePlan(store.plan,Buffer.from('# Plan Tree\n\nProject semantic memory.\n'));}
+      await custody.check?.();
       return store;
-    }catch(error){await store.close();throw error;}
+    }catch(error){try{await store.close();}catch(cleanupError){error.cleanupError=cleanupError;error.retainedWorkspace=store;}throw error;}
   }
-  constructor(root,content,lock,owner){Object.assign(this,{root,content,lock,owner});this.serial=Promise.resolve();this.draftSerial=Promise.resolve();this.draftVersions=new Map();}
+  constructor(root,content,lock,owner,{filesystem,workspaceIO=legacyWorkspaceIO}={}){Object.assign(this,{root,content,lock,owner,filesystem,io:workspaceIO});this.files=createFileStream({filesystem});this.serial=Promise.resolve();this.draftSerial=Promise.resolve();this.draftVersions=new Map();}
+  retainFirstStorageFault(error){
+    if(this.firstStorageFault||!(error?.code==='STORAGE_RESULT_UNKNOWN'||error?.commitUnknown))return;
+    const codes=(cause,depth=0)=>!cause||depth>=8?null:{code:cause.code??null,win32Code:cause.win32Code??null,storageEvidence:cause.storageEvidence??null,cause:cause.cause!==cause?codes(cause.cause,depth+1):null};
+    const project=this.storage?.bindings?.get(this.projectId);
+    this.firstStorageFault={projectId:this.projectId,instanceId:project?.instanceId,sourceIdentity:project?{root:project.root,identity:project.identity,metadataRoot:project.metadataRoot,metadataIdentity:project.metadataIdentity}:null,error:codes(error)};
+    console.error('NOZELI_WORKSPACE_FIRST_FAULT:'+JSON.stringify(this.firstStorageFault));
+  }
+  async ownedCommit(operation){
+    if(this.commitUnknown||this.nativeCommitUnknown)throw Object.assign(Error('Workspace outcome requires explicit recovery'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown??this.nativeCommitUnknown,automaticReplay:false});
+    try{
+      await this.custody?.check?.();const result=await operation();
+      try{await this.custody?.check?.();}catch(cause){this.commitUnknown??={projectId:this.projectId,hostPostcheck:true};this.offline=true;throw Object.assign(Error('Workspace owner postcheck failed after storage effects'),{code:'STORAGE_RESULT_UNKNOWN',cause,automaticReplay:false,commitUnknown:this.commitUnknown});}
+      return result;
+    }catch(error){this.retainFirstStorageFault(error);throw error;}
+  }
   save(options){
     // A queued mutation or native exit callback may predate stop's ALS scope.
     // Only this managed store receives the actual, still-current hold object.
-    return this.lifecycleHold?this.storage.withLifecycleOwner(this.projectId,this.lifecycleHold,()=>saveManagedState(this,options)):saveManagedState(this,options);
+    return this.ownedCommit(()=>this.lifecycleHold?this.storage.withLifecycleOwner(this.projectId,this.lifecycleHold,()=>saveManagedState(this,options)):saveManagedState(this,options));
   }
   persistNativeFacts(){
     const jobs=(this.state.jobs??[]).map(job=>({id:job.id,target:job.target,local:Object.fromEntries(['collabAttempts','manualPromptId','sessionFile','transport'].filter(key=>job[key]!==undefined).map(key=>[key,job[key]]))}));
@@ -86,13 +95,15 @@ export class Workspace {
     const run=this.serial.then(async()=>{
       if(this.closed)throw Error('workspace closed');
       if(this.nativeCommitUnknown)throw Object.assign(Error('Native journal commit outcome requires explicit recovery'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.nativeCommitUnknown});
+      await this.custody?.check?.();
       const prior=structuredClone(this.state);
       try{
         const result=await fn();recordBusinessTimeline(prior,this.state);
         await retainManagedNativeProjection(this,(this.state.sessionIndex?.portableMessages??[]).filter(row=>!(prior.sessionIndex?.portableMessages??[]).some(old=>old.id===row.id)));
         // Native receipt ACKs depend only on this instance's recovery WAL, never on the removable project ledger.
-        await this.persistNativeFacts();return result;
+        await this.ownedCommit(()=>this.persistNativeFacts());return result;
       }catch(error){
+        this.retainFirstStorageFault(error);
         if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){this.nativeCommitUnknown=error.commitUnknown??{projectId:this.projectId,nativeFacts:true};this.commitUnknown=this.nativeCommitUnknown;error.commitUnknown=this.nativeCommitUnknown;throw error;}
         const drafts=this.state.drafts;this.state=prior;if(drafts!==undefined)this.state.drafts=drafts;throw error;
       }
@@ -100,10 +111,11 @@ export class Workspace {
     this.serial=run.catch(()=>{});return run;
   }
   persistDrafts(){
-    const run=this.draftSerial.catch(()=>{}).then(()=>this.storage.putRecovery(this.projectId,'managed:drafts',structuredClone(this.state.drafts??{})));
+    const run=this.draftSerial.catch(()=>{}).then(()=>this.ownedCommit(()=>this.storage.putRecovery(this.projectId,'managed:drafts',structuredClone(this.state.drafts??{}))));
     this.draftSerial=run;return run;
   }
   setDraft(target,value){
+    if(this.closed||this.closing)throw Error('workspace closed');
     this.state.drafts??={};this.state.drafts[target]=value;this.draftVersions.set(target,(this.draftVersions.get(target)??0)+1);return this.persistDrafts();
   }
   confirmDrafts(intents){
@@ -111,7 +123,7 @@ export class Workspace {
       const drafts=structuredClone(this.state.drafts??{}),confirmed=[];
       for(const intent of intents)if((this.draftVersions.get(intent.target)??0)===intent.version&&drafts[intent.target]===intent.value){drafts[intent.target]='';confirmed.push(intent);}
       if(!confirmed.length)return;
-      await this.storage.putRecovery(this.projectId,'managed:drafts',drafts);
+      await this.ownedCommit(()=>this.storage.putRecovery(this.projectId,'managed:drafts',drafts));
       for(const intent of confirmed)if((this.draftVersions.get(intent.target)??0)===intent.version&&this.state.drafts?.[intent.target]===intent.value)this.state.drafts[intent.target]='';
     });
     this.draftSerial=run;return run;
@@ -124,7 +136,7 @@ export class Workspace {
     try{return (await this.storage.promoteRecoveryObject(this.projectId,objectDigest)).digest;}catch(error){this.offline=true;await this.storage.putRecovery(this.projectId,'managed:object-pending:'+objectDigest,{operationId:this.operationId,digest:objectDigest,status:'pending',error:{code:error.code,message:error.message}});return objectDigest;}
   }
   async putFileObject(root,entry){
-    const retained=await withSafeFile(root,entry.relPath,file=>this.storage.putRecoveryObjectStream(this.projectId,file.stream(),{digest:entry.digest}));
+    const retained=await this.files.withSafeFile(root,entry.relPath,file=>this.storage.putRecoveryObjectStream(this.projectId,file.stream(),{digest:entry.digest}));
     if(!retained||retained.byteLength!==entry.size)throw Error('artifact changed during publication');
     const objectDigest=retained.digest;
     await this.storage.putRecovery(this.projectId,'managed:recovery-object:'+objectDigest,{digest:objectDigest,byteLength:retained.byteLength,operationId:this.operationId});
@@ -133,8 +145,22 @@ export class Workspace {
     return objectDigest;
   }
   async readObject(digest,options){return readManagedObject(this.storage,this.projectId,digest,options);}
-  async requireOnline(){if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});await this.storage.requireOnline(this.projectId);this.offline=false;}
-  async close(){if(this.closed)return;this.closing=true;await this.serial;await this.draftSerial;if(await fs.readFile(this.lock,'utf8')!==this.owner)throw new Error('workspace owner changed');await fs.unlink(this.lock);this.closed=true;}
+  async requireOnline(){if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});await this.assertColdCommitSettled();await this.storage.requireOnline(this.projectId);this.offline=false;}
+  async assertColdCommitSettled(){
+    if(!this.hasColdCommitPending)return;
+    // A reconciliation may replace project collections. Only a newly opened
+    // workspace can read those authoritative collections and admit work.
+    throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation and reopening'),{code:'STORAGE_RESULT_UNKNOWN'});
+  }
+  close(){
+    if(this.closed)return Promise.resolve(this.hostRelease);if(this.closeFlight)return this.closeFlight;this.closing=true;
+    const flight=(async()=>{await this.serial;await this.draftSerial;
+      if(this.hostLease&&(this.commitUnknown||this.nativeCommitUnknown))throw Object.assign(Error('Workspace result UNKNOWN; host custody retained'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown??this.nativeCommitUnknown,automaticReplay:false});
+      if(this.custody)this.hostRelease=await this.custody.release();
+      else{if(await fs.readFile(this.lock,'utf8')!==this.owner)throw Error('workspace owner changed');await fs.unlink(this.lock);}
+      this.closed=true;return this.hostRelease;
+    })();this.closeFlight=flight;flight.catch(()=>{if(this.closeFlight===flight)this.closeFlight=null;});return flight;
+  }
   used(){return workSlotFacts(this.state.works).used;}
   workSlotFacts(){return workSlotFacts(this.state.works);}
   find(id){const w=this.state.works.find(w=>w.id===id);if(!w)throw new Error('unknown work');return w;}
@@ -165,6 +191,8 @@ export class Workspace {
     const run=this.serial.then(async()=>{
       if(this.closed)throw new Error('workspace closed');
       if(this.commitUnknown)throw Object.assign(Error('Workspace commit outcome requires explicit reconciliation'),{code:'STORAGE_RESULT_UNKNOWN',commitUnknown:this.commitUnknown});
+      await this.custody?.check?.();
+      await this.assertColdCommitSettled();
       const prior=structuredClone(this.state);
       const rollback=[],draftIntents=[];
       const tx={onRollback:async hook=>{if(typeof hook!=='function')throw new Error('rollback hook must be a function');rollback.push(hook);},consumeDraft:(target,value)=>{
@@ -179,6 +207,7 @@ export class Workspace {
         if(error.code==='STORAGE_RESULT_UNKNOWN'||error.commitUnknown){
           this.commitUnknown=error.commitUnknown??{projectId:this.projectId,pendingId:error.pendingId};
           error.commitUnknown=this.commitUnknown;this.offline=true;
+          this.retainFirstStorageFault(error);
           // The project may already reference retained Git candidates and objects. Never compensate an unknown commit.
           throw error;
         }
@@ -223,7 +252,7 @@ export class Workspace {
     const facts=workSlotFacts(this.state.works);
     if(facts.verificationRequired)throw Object.assign(Error('存在待核查的历史结束工作资源；先核对后再激活新任务，不伪造已释放槽位'),{code:'RESOURCE_VERIFICATION_REQUIRED',pendingVerification:facts.pendingVerification});
     if(facts.used>=this.state.limit)throw new Error('quota full');
-    await fs.mkdir(this.agentHome(w.id),{recursive:true,mode:0o700});w.status='running';w.revision++;
+    await this.io.ensureDirectory(this.agentHome(w.id));w.status='running';w.revision++;
     for(const t of this.state.todos)if(t.workId===w.id&&t.kind==='queue')t.status='resolved';
     initialize?.(w);return structuredClone(w);
   }
@@ -246,7 +275,7 @@ export class Workspace {
     const active=()=>{if(w.revision!==revision||!(w.status==='running'||diagnostic&&w.status==='paused')||!isActive())throw new Error('stale or inactive run');};active();
     const objectId=randomUUID(),directory=w.execution?.directory||this.content;
     const paths=[...files.map(f=>f.relPath),...(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.relPath),...(w.execution?.candidate?.files||[])];
-    const frozenFiles=await artifactSnapshot(directory,paths);
+    const frozenFiles=await artifactSnapshot(directory,paths,{filesystem:this.filesystem});
     const assetPath=value=>{if(typeof value!=='string'||value.includes('\\')||value.includes('\u0000')||path.posix.isAbsolute(value)||value.split('/').some(p=>!p||p==='.'||p==='..'))throw Error('invalid report resource path');return value;};
     const referencePath=href=>{const clean=href.split('#')[0];let rel;try{rel=decodeURIComponent(clean);}catch{throw Error('invalid report reference');}const line=/:\d+(?::\d+)?$/.exec(rel);if(line)rel=rel.slice(0,line.index);return assetPath(rel);};
     const declared=new Set(files.map(file=>file.relPath));
@@ -254,13 +283,13 @@ export class Workspace {
     const prepared=format==='html-static'?await prepareHtmlReport(body,{readAsset:async rel=>{
       rel=assetPath(rel);const entry=frozenFiles.find(file=>file.relPath===rel);
       if(!entry||entry.digest===null||!declared.has(rel))throw Object.assign(Error('Report image must be included in files: '+rel),{code:'REPORT_RESOURCE_NOT_DECLARED'});
-      const captured=await readSafeBytes(directory,rel,{maxBytes:HTML_REPORT_LIMITS.assetBytes}),bytes=captured?.bytes;
+      const captured=await this.files.readSafeBytes(directory,rel,{maxBytes:HTML_REPORT_LIMITS.assetBytes}),bytes=captured?.bytes;
       if(!bytes||digest(bytes)!==entry.digest)throw Error('artifact changed during publication');
       return {bytes,digest:entry.digest};
     },resolveReference:async href=>{
       if(/^https?:\/\//i.test(href)){const url=new URL(href);if(url.username||url.password)throw Error('invalid external reference');return {kind:'external',url:url.href};}
       const relPath=referencePath(href);let entry=frozenFiles.find(f=>f.relPath===relPath);
-      if(!entry){const file=await inspectFile(directory,relPath);if(file===null)throw Error('missing report reference: '+relPath);entry={relPath,digest:file.digest,size:file.size};frozenFiles.push(entry);}
+      if(!entry){const file=await this.files.inspectFile(directory,relPath);if(file===null)throw Error('missing report reference: '+relPath);entry={relPath,digest:file.digest,size:file.size};frozenFiles.push(entry);}
       if(entry.digest===null)throw Error('missing report reference: '+relPath);
       return {kind:'artifact',relPath,digest:entry.digest,byteLength:entry.size,mediaType:'application/octet-stream'};
     }}):null;
@@ -270,7 +299,7 @@ export class Workspace {
     const report=prepared?reportDescriptor(bytes,{format,objectId,title:prepared.title,excerpt:prepared.excerpt,manifestDigest:digest(manifestBytes)}):reportDescriptor(bytes,{format,objectId});
     const snapshot={reportDigest:report.digest,candidate:w.execution?.candidate?{commit:w.execution.candidate.commit,tree:w.execution.candidate.tree,jobId:w.execution.candidate.jobId}:null,files:frozenFiles,operationIds:(this.state.fileOperations||[]).filter(o=>o.workId===id).map(o=>o.id)};
     await this.storage.putRecovery(this.projectId,'managed:publication:'+receipt,{operationId:this.operationId,workId:id,revision,receiptId:receipt,objectId,report,files:frozenFiles,status:'prepared'});
-    for(const entry of frozenFiles)if(entry.digest!==null){const current=await inspectFile(directory,entry.relPath);if(current?.digest!==entry.digest)throw Error('artifact changed during publication');}
+    for(const entry of frozenFiles)if(entry.digest!==null){const current=await this.files.inspectFile(directory,entry.relPath);if(current?.digest!==entry.digest)throw Error('artifact changed during publication');}
     if(retainCandidate!=null){
       if(typeof retainCandidate!=='function')throw new Error('retainCandidate must be a function');
       const retained=await retainCandidate();
@@ -487,8 +516,8 @@ export class Workspace {
   // 不stale任何发布、不新建Work；Worker 纯文本回答无需重新发布，实际改动则
   // 必须发布新快照（否则接受被 CANDIDATE_DRIFT 阻断）。接受输入幂等落账：
   // 同requestKey+同摘要重放回执，不同摘要即碰撞拒绝。
-  reviewDiscussionSendState(id,{requestKey,objectId,reviewVersion,payloadDigest,textDigest,jobText}){
-    return this.mutate(()=>{
+  reviewDiscussionSendState(id,{requestKey,objectId,reviewVersion,payloadDigest,textDigest,jobText,registerChat,pinSkill}){
+    return this.mutate(async()=>{
       const w=this.find(id);
       if(['closing','ended'].includes(w.status))throw Object.assign(Error('决定已记录；不能发起报告讨论'),{code:'WORK_ENDED'});
       if(w.readOnly)throw Object.assign(Error('历史执行资源只读'),{code:'HISTORICAL_SESSION_READ_ONLY'});
@@ -501,21 +530,25 @@ export class Workspace {
       // running状态继续入队（durable串行队列，FIFO逐回合执行）；其他在飞
       // 输入或状态变化仍拒绝。
       const busy=(this.state.jobs||[]).filter(j=>(j.target===id||j.context?.boundWorkId===id)&&['queued','running'].includes(j.status));
+      if(busy.some(j=>!j.context?.reviewDiscussion&&!(j.chat&&j.status==='queued')))throw Object.assign(Error('此工作有待执行的其他输入；不能同时讨论'),{code:'WORK_BUSY'});
       const discussionBusy=busy.filter(j=>j.context?.reviewDiscussion);
       // 事务内复核当前发布绑定：入队消息必须仍绑定最新结果对象与修订。
       if((w.result?.objectId??null)!==objectId||w.result?.revision!==w.revision)throw Object.assign(Error('此报告已被取代；请在最新发布上讨论'),{code:'REVIEW_CANDIDATE_STALE'});
       if(w.status==='running'){
-        if(busy.length!==discussionBusy.length)throw Object.assign(Error('此工作有待执行的其他输入；不能同时讨论'),{code:'WORK_BUSY'});
-        if(discussionBusy.some(j=>(j.revision??null)!==w.revision||j.context.reviewDiscussion.objectId!==objectId))throw Object.assign(Error('讨论回合已产生新发布；请刷新到最新报告后再继续排队'),{code:'REVIEW_CANDIDATE_STALE'});
-      }else if(w.status!=='review')throw Object.assign(Error('当前状态不能发起报告讨论'),{code:'WORK_STATE'});
+        if(discussionBusy.some(j=>!j.chat&&((j.revision??null)!==w.revision||j.context.reviewDiscussion.objectId!==objectId)))throw Object.assign(Error('讨论回合已产生新发布；请刷新到最新报告后再继续排队'),{code:'REVIEW_CANDIDATE_STALE'});
+      }else if(w.status!=='review'&&!(registerChat&&w.status==='paused'))throw Object.assign(Error('当前状态不能发起报告讨论'),{code:'WORK_STATE'});
+      const importedSkill=await pinSkill?.();
       const at=new Date().toISOString();
       w.review??={drafts:{},history:{},continuations:[]};
       w.review.discussions??=[];
       // 原生用户条目=用户原文（context.userInput.text，逐字），非宿主交接。
-      const job={id:randomUUID(),key:'review-discussion:'+requestKey,target:id,type:'manual',text:jobText,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),userInput:{text:jobText},reviewDiscussion:{requestKey,objectId,reviewVersion,at}},status:'queued',promptStartedAt:null,at,revision:w.revision,explicitInput:true};
+      const job={id:randomUUID(),key:'review-discussion:'+requestKey,target:id,type:'manual',text:jobText,context:{boundWorkId:id,manual:true,permissionTaskId:randomUUID(),userInput:{text:jobText},reviewDiscussion:{requestKey,objectId,reviewVersion,at},...(importedSkill?{importedSkill}:{})},status:'queued',promptStartedAt:null,at,revision:w.revision,explicitInput:true};
       this.state.jobs.push(job);
-      w.status='running';
-      this.state.messages.push({id:randomUUID(),target:id,speaker:'user',text:jobText,jobId:job.id,reviewDiscussion:requestKey});
+      if(registerChat)registerChat(job,w);
+      else{
+        w.status='running';
+        this.state.messages.push({id:randomUUID(),target:id,speaker:'user',text:jobText,jobId:job.id,reviewDiscussion:requestKey});
+      }
       w.review.discussions.push({requestKey,at,objectId,reviewVersion,payloadDigest,textDigest,jobId:job.id,revision:w.revision});
       return {jobId:job.id,revision:w.revision};
     });
@@ -554,23 +587,46 @@ export class Workspace {
   }
   async updateArchiveState(w){
     const report=w.closure?.report;if(!report)return;
-    platformPersistence.requireSupported();
+    this.io.requirePersistence();
     await this.requireOnline();
     const directory=path.dirname(this.plan),metadataPath=`project.sqlite#managed_works:${w.id}`;
-    const previous=await fs.readFile(this.plan,'utf8'),marker=`<!-- report:${w.id} -->`,end=`<!-- /report:${w.id} -->`;
+    const previous=new TextDecoder('utf-8',{fatal:true}).decode(await this.io.readFile(this.plan,{maxBytes:32*1024*1024})),marker=`<!-- report:${w.id} -->`,end=`<!-- /report:${w.id} -->`;
     const clean=text=>String(text||'').replace(/[\r\n]+/g,' ').replace(/[<>\[\]]/g,'').slice(0,240);
     const fact=w.closure.git?.status||'technical closure '+w.closure.phase;
     const block=`${marker}\n- [${clean(w.name)||w.id}](${report.relPath}) — user ${w.outcome||'legacy outcome unknown'}; ${report.kind}; ${clean(fact)}. [Host facts](${metadataPath}); source: ${report.source}; revision ${w.revision}.${report.summary?' Worker report excerpt: '+clean(report.summary):''}\n${end}`;
     let next;const start=previous.indexOf(marker),close=start<0?-1:previous.indexOf(end,start);
     if(start<0)next=previous+'\n'+block+'\n';else if(close>=0)next=previous.slice(0,start)+block+previous.slice(close+end.length);else throw Error('Incomplete report index marker; preserve root for recovery');
-    if(next!==previous){const temporary=`${this.plan}.${randomUUID()}.tmp`;const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(next);await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}if(await fs.readFile(this.plan,'utf8')!==previous){await fs.rm(temporary,{force:true});throw Error('Plan Tree changed during archival; retry without overwriting user edits');}await fs.rename(temporary,this.plan);}
-    await platformPersistence.syncDirectory(directory);
+    if(next!==previous)await this.io.writeVersioned(this.plan,Buffer.from(next),{expectedSha256:digest(Buffer.from(previous))});
+    await this.io.syncDirectory(directory);
   }
   updateClosureArchive(id){return this.mutate(()=>this.updateArchiveState(this.find(id)));}
   async cleanupWorkerHome(id){
     const w=this.find(id);if(!w.closure?.stopped||!w.closure.report||!w.closure.git?.complete)throw Error('Worker home cleanup prerequisites missing');
     const home=this.agentHome(id),parent=path.join(this.root,'history','workers'),dest=path.join(parent,id);
     if(!inside(path.join(this.root,'agents'),home)||home===path.join(this.root,'agents'))throw Error('Worker home outside owned directory');
+    if(this.io.openWorkerHome){
+      const fail=(code,message)=>Object.assign(Error(message),{code});
+      await this.custody.check();const owner=await this.io.verifyWorkerRetirement({workId:id,home});await this.io.ensureDirectory(parent);
+      let source,archived;
+      try{
+        const intent=w.closure.workerHomeIntent;
+        if(intent&&(intent.home!==home||intent.destination!==dest))throw fail('WORKER_ARCHIVE_BINDING_CHANGED','Worker archive intent belongs to another directory');
+        source=await this.io.openWorkerHome(home,{expectedIdentity:intent?.identity});archived=await this.io.openWorkerHome(dest);
+        if(!intent){
+          if(archived)throw fail('WORKER_ARCHIVE_CONFLICT','Unrecorded Worker archive retained');
+          if(!source){if(owner)throw fail('WORKER_ARCHIVE_MISSING','Retired Worker home is missing; retain closure');await this.mutate(()=>{w.closure.workerHome={cleaned:true,scope:'no-recorded-owner-or-home',at:new Date().toISOString()};});return;}
+          const manifest=source.manifest;
+          await this.mutate(()=>{w.closure.workerHomeIntent={schema:1,home,destination:dest,identity:manifest.rootIdentity,manifestSha256:manifest.sha256,entryCount:manifest.entryCount};});
+        }
+        const expected=w.closure.workerHomeIntent,check=tree=>{if(tree.manifest.rootIdentity!==expected.identity||tree.manifest.sha256!==expected.manifestSha256)throw fail('WORKER_ARCHIVE_CHANGED','Worker archive differs from the retained original tree');};
+        if(source){if(archived)throw fail('WORKER_ARCHIVE_CONFLICT','Both active and archived Worker homes exist');check(source);await source.publishTo(dest,{beforeCommit:async()=>{await this.custody.check();await this.io.verifyWorkerRetirement({workId:id,home});}});await source.verify();}
+        else{if(!archived)throw fail('WORKER_ARCHIVE_MISSING','Original and archived Worker homes are missing');check(archived);await archived.sync();}
+        await this.io.verifyWorkerRetirement({workId:id,home});
+        await this.mutate(()=>{w.closure.workerHome={cleaned:true,historyPath:dest,scope:'complete-private-owner-home',identity:expected.identity,manifestSha256:expected.manifestSha256,at:new Date().toISOString()};});
+        return;
+      }finally{archived?.close();source?.close();}
+    }
+    if(this.hostLease)throw Object.assign(Error('Native Worker home archival is unavailable'),{code:'WORKSPACE_CLEANUP_UNSUPPORTED'});
     const stat=await fs.lstat(home).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
     const present=async file=>fs.lstat(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
     if(stat){

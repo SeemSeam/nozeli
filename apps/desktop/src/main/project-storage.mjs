@@ -5,23 +5,21 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {StorageDatabase} from './storage-database.mjs';
 import {MaterialStore} from '../domain/material-store.mjs';
 import {assertRecoverySourceStopped} from './project-recovery-owner.mjs';
+import {createProjectStorageIO} from './project-storage-io.mjs';
+import {createWindowsDesktopProjectStorageIO} from '../platform/windows/desktop-project-storage.mjs';
 import {platformPersistence} from '../platform/shared/persistence.mjs';
 import {permanentResetScope,permanentReset} from './permanent-project-reset.mjs';
 const fail=(code,message)=>Object.assign(Error(message),{code});
 async function checkedClose(db,file){const outcome=await db.request(file,'close');if(outcome?.closed===false)throw Object.assign(fail('STORAGE_RESULT_UNKNOWN','存储线程停止未确认；禁止清理或移动数据库'),{file,operationIds:outcome.operationIds??[],commitUnknown:{file},closeOutcome:outcome});}
 const same=(a,b)=>a&&b&&a.dev===b.dev&&a.ino===b.ino;
 async function present(file){try{return await fs.lstat(file)}catch(e){if(e.code==='ENOENT')return null;throw e}}
-async function directoryIdentity(root,expected){const stat=await fs.lstat(root);if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(root)!==root)throw fail('PROJECT_IDENTITY_CONFLICT','项目目录不是已登记的真实目录');const identity={dev:String(stat.dev),ino:String(stat.ino)};if(expected&&!same(expected,identity))throw fail('PROJECT_IDENTITY_CONFLICT','项目目录实体已变化');return identity;}
-async function checkedMetadata(directory,db){const stat=await present(directory);if(!stat||!stat.isDirectory()||stat.isSymbolicLink())throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，未自动重建');for(const file of ['project.json','project.sqlite','project.sqlite-journal','project.sqlite-wal','project.sqlite-shm']){const entry=await present(path.join(directory,file));if((!entry&&['project.json','project.sqlite'].includes(file))||(entry&&(!entry.isFile()||entry.isSymbolicLink())))throw fail('PROJECT_METADATA_CONFLICT','项目元数据不是普通文件');}let manifest;try{manifest=JSON.parse(await fs.readFile(path.join(directory,'project.json'),'utf8'))}catch{throw fail('PROJECT_METADATA_CONFLICT','项目身份清单损坏');}if(manifest.schema!==1||typeof manifest.projectId!=='string')throw fail('PROJECT_METADATA_CONFLICT','项目身份格式不符');const identity=await db.request(path.join(directory,'project.sqlite'),'get',{collection:'identity',id:'project',mustExist:true});if(identity?.schema!==1||identity.projectId!==manifest.projectId)throw fail('PROJECT_METADATA_CONFLICT','项目数据库与清单身份不符');return manifest;}
-async function rejectLinks(directory){for(const entry of await fs.readdir(directory,{withFileTypes:true})){const full=path.join(directory,entry.name),stat=await fs.lstat(full);if(stat.isSymbolicLink()||(!stat.isDirectory()&&!stat.isFile()))throw fail('PROJECT_METADATA_CONFLICT','项目元数据包含链接或特殊文件');if(stat.isDirectory())await rejectLinks(full);}}
-async function durableJson(file,value){const handle=await fs.open(file,'w',0o600);try{await handle.writeFile(JSON.stringify(value));await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}}
-async function syncTree(directory){for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())await syncTree(file);else if(entry.isFile()){const handle=await fs.open(file,'r');try{await platformPersistence.syncFileHandle(handle);}finally{await handle.close();}}else throw fail('PROJECT_METADATA_CONFLICT','项目元数据包含链接或特殊文件');}await syncDirectory(directory);}
-async function syncDirectory(directory){
- // Shared persistence barrier: an unverified platform fails explicitly instead of silently skipping the directory sync.
- await platformPersistence.syncDirectory(directory);
-}
+async function syncDirectory(directory){await platformPersistence.syncDirectory(directory);}
 export class ProjectStorage {
- constructor(userDataDir){this.root=path.join(userDataDir,'nozeli','storage-v2');this.catalog=path.join(this.root,'catalog.sqlite');this.db=new StorageDatabase();this.bindings=new Map();this.initFlight=null;this.registrations=new Map();this.generations=new Map();this.unavailable=new Map();this.lifecycleHolds=new Map();}
+ constructor(userDataDir,{experimentalWindowsRoot,experimentalWindowsInitialization=false,windowsDesktopProjects=false}={}){this.root=path.join(userDataDir,'nozeli','storage-v2');this.experimentalWindowsRoot=experimentalWindowsRoot;if(windowsDesktopProjects&&(experimentalWindowsRoot!==undefined||experimentalWindowsInitialization))throw new TypeError('Choose scoped desktop projects or a single experimental root');this.io=windowsDesktopProjects?createWindowsDesktopProjectStorageIO(path.resolve(userDataDir)):createProjectStorageIO({experimentalWindowsRoot,experimentalWindowsInitialization});this.catalog=path.join(this.root,'catalog.sqlite');this.db=new StorageDatabase({experimentalWindowsRoot,...(windowsDesktopProjects?{windowsRootForFile:this.io.rootForPath,onClosed:()=>this.io.close()}:{})});this.bindings=new Map();this.initFlight=null;this.registrations=new Map();this.generations=new Map();this.unavailable=new Map();this.lifecycleHolds=new Map();}
+ nativeRootForPath(file){return this.io.rootForPath?.(file)??this.experimentalWindowsRoot;}
+ async privateDirectory(directory,options){
+  return this.io.privateDirectory(directory,options);
+ }
  lifecycleOwner=new AsyncLocalStorage();
  operationOwner=new AsyncLocalStorage();
  projectOperations=new Map();
@@ -44,7 +42,7 @@ export class ProjectStorage {
  assertLocalOpen(id){const hold=this.lifecycleHolds.get(id);if(hold?.localClosed&&!(hold.recoveringReset&&this.lifecycleOwner.getStore()===hold))throw fail('PROJECT_LIFECYCLE_ACTIVE','本机状态已经封闭；仅可保留独立恢复内容。');}
  withLifecycleOwner(id,hold,run){if(this.lifecycleHolds.get(id)!==hold)throw fail('PROJECT_LIFECYCLE_ACTIVE','生命周期令牌不匹配。');return this.lifecycleOwner.run(hold,run);}
  async persistProjectHold(id,hold){await this.db.request(this.catalog,'put',{collection:'lifecycle_holds',id,value:{operationId:hold.operationId,instanceId:hold.instanceId,action:hold.action,root:hold.root}});}
- async ready(){this.initFlight??=(async()=>{await fs.mkdir(this.root,{recursive:true,mode:0o700});for(const {id,value} of await this.db.request(this.catalog,'list',{collection:'lifecycle_holds'}))this.lifecycleHolds.set(id,{...value,pendingCount:0,needsStopCheck:true,localClosed:false});})();await this.initFlight;}
+ async ready(){this.initFlight??=(async()=>{await this.privateDirectory(this.root);for(const {id,value} of await this.db.request(this.catalog,'list',{collection:'lifecycle_holds'}))this.lifecycleHolds.set(id,{...value,pendingCount:0,needsStopCheck:true,localClosed:false});})();await this.initFlight;}
  async requireRegistered(id){await this.ready();const p=this.bindings.get(id)??await this.db.request(this.catalog,'get',{collection:'instances',id});if(!p)throw fail('UNKNOWN_PROJECT','项目未登记');this.bindings.set(id,p);return p;}
  async list(){await this.ready();return (await this.db.request(this.catalog,'list',{collection:'instances'})).map(r=>r.value);}
  async requireOnline(id){
@@ -53,11 +51,12 @@ export class ProjectStorage {
   if(p.removed)throw fail('PROJECT_RETIRED','项目登记已退役；历史仅可只读查看，不能访问当前目录。');
   if(this.unavailable.has(id))throw this.unavailable.get(id);
   try{
-   try{await directoryIdentity(p.root,p.identity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_ROOT_MISSING','原项目目录不可用；草稿仍可保留在本机');throw e;}
+   await this.io.authorizeProject?.(p.root,p.identity);
+   try{await this.io.directoryIdentity(p.root,p.identity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_ROOT_MISSING','原项目目录不可用；草稿仍可保留在本机');throw e;}
    if(!p.metadataIdentity)throw fail('PROJECT_METADATA_CONFLICT','缺少已核验的元数据实体身份');
-   try{await directoryIdentity(p.metadataRoot,p.metadataIdentity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，未自动重建');throw e;}
+   try{await this.io.directoryIdentity(p.metadataRoot,p.metadataIdentity);}catch(e){if(e.code==='ENOENT')throw fail('PROJECT_METADATA_MISSING','项目元数据不可用，未自动重建');throw e;}
    if(!current())throw fail('PROJECT_RETIRED','项目身份在读取期间已退役或更换。');
-   const manifest=await checkedMetadata(p.metadataRoot,this.db);
+   const manifest=await this.io.checkedMetadata(p.metadataRoot,this.db);
    if(!current())throw fail('PROJECT_RETIRED','项目身份在读取期间已退役或更换。');
    if(manifest.projectId!==p.id)throw fail('PROJECT_IDENTITY_CONFLICT','项目身份或格式不符');
    this.assertActive(id);return p;
@@ -71,9 +70,12 @@ export class ProjectStorage {
   }
  }
  async register(input,options={}){const root=await fs.realpath(input),previous=this.registrations.get(root)??Promise.resolve();const run=previous.catch(()=>{}).then(()=>this.initialize(root,options));this.registrations.set(root,run);try{return await run;}finally{if(this.registrations.get(root)===run)this.registrations.delete(root);}}
- async initialize(input,{confirmRecovery}={}){
-  platformPersistence.requireSupported();
-  await this.ready();const root=await fs.realpath(input),identity=await directoryIdentity(root),all=await this.list();
+ async initialize(input,options={}){
+  this.io.requireInitialization();await this.io.authorizeProject?.(input);const lease=this.io.pinDirectory(input);
+  try{const project=await this.#initializePinned(input,options,lease);try{lease?.verify();}catch(error){error.committed=true;error.durability='uncertain';error.initialization={root:project.root,projectId:project.id};throw error;}return project;}finally{lease?.close();}
+ }
+ async #initializePinned(input,{confirmRecovery}={},rootLease){
+  await this.ready();const root=await fs.realpath(input),identity=await this.io.directoryIdentity(root),all=await this.list();
   if([...this.lifecycleHolds.values()].some(hold=>hold.action==='reset-project'&&hold.root===root))throw fail('PROJECT_LIFECYCLE_ACTIVE','该根目录永久清除尚未完成，禁止重建身份');
   for(const prior of all)if(prior.root===root&&same(prior.identity,identity))this.assertActive(prior.id);
   let existing=all.filter(p=>p.root===root&&same(p.identity,identity)).sort((a,b)=>Number(a.removed)-Number(b.removed)||String(b.openedAt).localeCompare(String(a.openedAt)))[0];
@@ -82,7 +84,7 @@ export class ProjectStorage {
   let recoverySource=null;
   if(existing&&(!intent||intent.phase==='complete')){
    this.assertActive(existing.id);
-  let actual=null;try{actual=await directoryIdentity(metadataRoot);}catch(error){if(error.code!=='ENOENT')throw error;}
+  let actual=null;try{actual=await this.io.directoryIdentity(metadataRoot);}catch(error){if(error.code!=='ENOENT')throw error;}
    if(existing.removed){
     const file=path.join(metadataRoot,'project.sqlite');
     if(same(actual,existing.metadataIdentity)&&(this.unavailable.has(existing.id)||this.db.quarantined.has(file))){
@@ -95,28 +97,28 @@ export class ProjectStorage {
      const settled=this.db.quarantined.get(file);
      if(settled?.operationIds?.length)throw settled;
      await this.retry(existing.id,{settledOnly:true});
-     await directoryIdentity(root,identity);
-     await directoryIdentity(metadataRoot,existing.metadataIdentity);
+     await this.io.directoryIdentity(root,identity);
+     await this.io.directoryIdentity(metadataRoot,existing.metadataIdentity);
      this.assertActive(existing.id);
     }
     if(!same(actual,existing.metadataIdentity))await assertRecoverySourceStopped(root);
     await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));
    }
-   const manifest=await checkedMetadata(metadataRoot,this.db);
+   const manifest=await this.io.checkedMetadata(metadataRoot,this.db);
    if(existing.removed&&(!same(actual,existing.metadataIdentity)||manifest.projectId!==existing.id)){
     const frozen={root,identity,metadataIdentity:actual,projectId:manifest.projectId,schema:manifest.schema,previousId:existing.id};
     await assertRecoverySourceStopped(root);
     if(!confirmRecovery||await confirmRecovery(frozen)!==true)throw fail('PROJECT_RECOVERY_CANCELLED','项目身份恢复已取消，目录及旧恢复记录保持不变。');
-    await directoryIdentity(root,identity);await directoryIdentity(metadataRoot,actual);
-    const confirmed=await checkedMetadata(metadataRoot,this.db);
+    await this.io.directoryIdentity(root,identity);await this.io.directoryIdentity(metadataRoot,actual);
+    const confirmed=await this.io.checkedMetadata(metadataRoot,this.db);
     if(confirmed.schema!==frozen.schema||confirmed.projectId!==frozen.projectId)throw fail('PROJECT_IDENTITY_CONFLICT','确认后项目身份已变化，未恢复。');
     await assertRecoverySourceStopped(root);this.assertActive(existing.id);
     recoverySource=frozen;intent=null;existing=null;
    }else{
+    if(!existing.removed){await this.requireOnline(existing.id);return existing;}
     // Explicit re-add has already verified the root, metadata and database identity.
     // Publish the active registration before the normal online admission check.
     const value={...existing,removed:false,lastOpenedAt:new Date().toISOString()};
-    if(!existing.removed)await this.requireOnline(existing.id);
     await this.db.request(this.catalog,'put',{collection:'instances',id:value.id,value});this.bindings.set(value.id,value);
     try{await this.requireOnline(value.id);return value;}
     catch(error){if(existing.removed){await this.db.request(this.catalog,'put',{collection:'instances',id:existing.id,value:existing});this.bindings.set(existing.id,existing);}throw error;}
@@ -126,16 +128,16 @@ export class ProjectStorage {
   if(existing&&existing.id!==intent?.id&&!(existing.removed&&existing.id===intent?.recoverySource?.previousId))throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化记录与登记身份冲突');
   const checkpoint=async patch=>{const next={...intent,...patch};await this.db.request(this.catalog,'put',{collection:'initializations',id:key,value:next});intent=next;};
   if(!intent){
-   let source=null;if(await present(metadataRoot))source=await checkedMetadata(metadataRoot,this.db);
+   let source=null;if(await present(metadataRoot)){await this.io.requireSourceStopped(root);source=await this.io.checkedMetadata(metadataRoot,this.db);}
    if(source){
     // Attaching an existing project is not a metadata migration. A new
     // profile owns only its local instance, never a replacement project UUID.
     if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(source.projectId))throw fail('PROJECT_METADATA_CONFLICT','项目身份编号无效');
     const prior=all.find(p=>p.id===source.projectId);
     if(prior&&(prior.root!==root||!same(prior.identity,identity)))throw fail('PROJECT_IDENTITY_CONFLICT','该项目ID已关联其他目录；未自动生成新ID或改写副本');
-    const metadataIdentity=await directoryIdentity(metadataRoot),now=new Date().toISOString();
-    await directoryIdentity(root,identity);await directoryIdentity(metadataRoot,metadataIdentity);
-    const confirmed=await checkedMetadata(metadataRoot,this.db);
+    const metadataIdentity=await this.io.directoryIdentity(metadataRoot),now=new Date().toISOString();
+    await this.io.directoryIdentity(root,identity);await this.io.directoryIdentity(metadataRoot,metadataIdentity);
+    const confirmed=await this.io.checkedMetadata(metadataRoot,this.db);
     if(confirmed.projectId!==source.projectId||confirmed.operationId!==source.operationId)throw fail('PROJECT_IDENTITY_CONFLICT','登记期间项目身份已变化');
     const value={id:source.projectId,instanceId:randomUUID(),semanticInitializationEligible:false,root,metadataRoot,identity,metadataIdentity,lineage:source.lineage?[source.lineage].flat():[],name:path.basename(root),openedAt:now,lastOpenedAt:now,removed:false};
     await this.db.request(this.catalog,'put',{collection:'instances',id:value.id,value});this.bindings.set(value.id,value);
@@ -145,74 +147,86 @@ export class ProjectStorage {
    await checkpoint({version:1,key,root,identity,id,instanceId,operationId,now,source,recoverySource,phase:'prepared',temporary:path.join(root,'.nozeli-init-'+operationId),swap:path.join(root,'.nozeli-source-'+operationId),backup:path.join(this.root,'initialization',operationId,'source')});
   }
   if(intent.version!==1||intent.root!==root||!same(intent.identity,identity))throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化记录身份冲突');
-  const verify=()=>directoryIdentity(root,identity);
-  const candidate=async directory=>{const manifest=await checkedMetadata(directory,this.db);if(manifest.projectId!==intent.id||manifest.operationId!==intent.operationId)throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化内容不属于本操作');return manifest;};
+  if(intent.source)await this.io.requireSourceStopped(root);
+  const verify=()=>{rootLease?.verify();return this.io.directoryIdentity(root,identity);};
+  const candidate=async directory=>{const manifest=await this.io.checkedMetadata(directory,this.db);if(manifest.projectId!==intent.id||manifest.operationId!==intent.operationId)throw fail('PROJECT_INITIALIZATION_CONFLICT','初始化内容不属于本操作');return manifest;};
   if(intent.phase==='prepared'||intent.phase==='staging'){
    await verify();
    if(await present(intent.temporary)){
     const tempStat=await fs.lstat(intent.temporary);if(!tempStat.isDirectory()||tempStat.isSymbolicLink())throw fail('PROJECT_INITIALIZATION_CONFLICT','临时元数据不是本操作目录');
-    const markerStat=await present(path.join(intent.temporary,'initialization.json'));if(!markerStat?.isFile()||markerStat.isSymbolicLink())throw fail('PROJECT_INITIALIZATION_PENDING','临时元数据归属未知，需要明确恢复');
-    const marker=path.join(intent.temporary,'initialization.json');let owned;try{owned=JSON.parse(await fs.readFile(marker,'utf8'))}catch{throw fail('PROJECT_INITIALIZATION_PENDING','临时元数据归属未知，需要明确恢复');}
-    if(owned.operationId!==intent.operationId)throw fail('PROJECT_INITIALIZATION_CONFLICT','临时元数据归属冲突');
-    await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));await fs.rm(intent.temporary,{recursive:true});
+    if(!this.io.retainsPartialTrees){
+     const markerStat=await present(path.join(intent.temporary,'initialization.json'));if(!markerStat?.isFile()||markerStat.isSymbolicLink())throw fail('PROJECT_INITIALIZATION_PENDING','临时元数据归属未知，需要明确恢复');
+     const marker=path.join(intent.temporary,'initialization.json');let owned;try{owned=await this.io.readJson(marker)}catch{throw fail('PROJECT_INITIALIZATION_PENDING','临时元数据归属未知，需要明确恢复');}
+     if(owned.operationId!==intent.operationId)throw fail('PROJECT_INITIALIZATION_CONFLICT','临时元数据归属冲突');
+    }
+    await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
+    const retained=await this.io.retireStage(intent.temporary,{operationId:intent.operationId,allocation:intent.candidateAllocation});
+    if(retained)await checkpoint({retainedCandidates:[...(intent.retainedCandidates??[]),retained],temporary:path.join(root,'.nozeli-init-'+intent.operationId+'-'+randomUUID())});
    }
-   await checkpoint({phase:'staging'});await fs.mkdir(intent.temporary,{mode:0o700});await durableJson(path.join(intent.temporary,'initialization.json'),{operationId:intent.operationId});
+   await checkpoint({phase:'staging'});let stagedCopy;
    if(intent.source){
-    const source=await checkedMetadata(metadataRoot,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份已变化');
-    await rejectLinks(metadataRoot);await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));
+    const source=await this.io.checkedMetadata(metadataRoot,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份已变化');
+    await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await this.io.rejectLinks(metadataRoot);
     for(const suffix of ['-journal','-wal','-shm'])if(await present(path.join(metadataRoot,'project.sqlite'+suffix)))throw fail('PROJECT_INITIALIZATION_PENDING','来源数据库尚有事务文件，需停止来源写入后重试');
-    for(const entry of await fs.readdir(metadataRoot)){if(entry==='initialization.json')continue;await fs.cp(path.join(metadataRoot,entry),path.join(intent.temporary,entry),{recursive:true,force:false,errorOnExist:true});}
+    stagedCopy=await this.io.createStage(intent.temporary,{source:metadataRoot,operationId:intent.operationId,onCreated:candidateAllocation=>checkpoint({candidateAllocation})});
+    if(stagedCopy?.sourceTree)await checkpoint({sourceTree:stagedCopy.sourceTree});
     const rows=await this.db.request(path.join(intent.temporary,'project.sqlite'),'all'),collections={};
     // Remap only live structured project ownership. Immutable historical facts
     // and object bytes keep their source identity and digest unchanged.
     const remap=value=>{if(Array.isArray(value))return value.map(remap);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,k==='projectId'&&v===intent.source.projectId?intent.id:['lineage','history','manifest','sourceManifest','receipt','provenance','snapshot','frozen','source'].includes(k)?v:remap(v)]));return value;};
     for(const row of rows){if(row.collection==='identity')continue;(collections[row.collection]??=[]).push({id:row.id,value:remap(row.value)});}
     await this.db.request(path.join(intent.temporary,'project.sqlite'),'replace',{collections});
-   }
-   await fs.mkdir(path.join(intent.temporary,'objects','sha256'),{recursive:true});await fs.mkdir(path.join(intent.temporary,'memory','plantree'),{recursive:true});await fs.writeFile(path.join(intent.temporary,'memory','plantree','index.md'),'# Plan Tree\n',{flag:'wx'}).catch(e=>{if(e.code!=='EEXIST')throw e;});
+   }else await this.io.createStage(intent.temporary,{operationId:intent.operationId,onCreated:candidateAllocation=>checkpoint({candidateAllocation})});
+   await this.privateDirectory(path.join(intent.temporary,'objects','sha256'),{anchor:root});await this.privateDirectory(path.join(intent.temporary,'memory','plantree'),{anchor:root});await this.io.writeExclusive(path.join(intent.temporary,'memory','plantree','index.md'),'# Plan Tree\n');
    await this.db.request(path.join(intent.temporary,'project.sqlite'),'put',{collection:'identity',id:'project',value:{projectId:intent.id,schema:1}});await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
-   await durableJson(path.join(intent.temporary,'project.json'),{schema:1,projectId:intent.id,operationId:intent.operationId,lineage:intent.source?.projectId??null});await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
-   await rejectLinks(intent.temporary);await syncTree(intent.temporary);await syncDirectory(root);
-   await checkpoint({phase:'staged'});
+   await this.io.writeJson(path.join(intent.temporary,'project.json'),{schema:1,projectId:intent.id,operationId:intent.operationId,lineage:intent.source?.projectId??null},{expectedSha256:stagedCopy?.copy.created.find(row=>row.relative==='project.json')?.sha256??null});await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
+   await this.io.rejectLinks(intent.temporary);const candidateTree=await this.io.syncTree(intent.temporary);await this.io.syncDirectory(root);
+   await checkpoint({phase:'staged',...(candidateTree?{candidateTree}:{}),...(this.io.qualification?{persistenceQualification:this.io.qualification}:{})});
   }
   if(intent.phase==='staged'){
-   await verify();await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
+   await verify();await this.io.assertTree(intent.temporary,intent.candidateTree);await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));
    if(intent.source){
-    if(intent.recoverySource){await assertRecoverySourceStopped(root);await directoryIdentity(root,intent.recoverySource.identity);const location=await present(intent.swap)?intent.swap:metadataRoot;await directoryIdentity(location,intent.recoverySource.metadataIdentity);const source=await checkedMetadata(location,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
-    if(!await present(intent.swap)){const source=await checkedMetadata(metadataRoot,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份已变化');await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await fs.rename(metadataRoot,intent.swap);}
-    const source=await checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','保留来源身份冲突');await checkedClose(this.db,path.join(intent.swap,'project.sqlite'));
+    if(intent.recoverySource){await assertRecoverySourceStopped(root);await this.io.directoryIdentity(root,intent.recoverySource.identity);const location=await present(intent.swap)?intent.swap:metadataRoot;await this.io.directoryIdentity(location,intent.recoverySource.metadataIdentity);const source=await this.io.checkedMetadata(location,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
+    if(!await present(intent.swap)){const source=await this.io.checkedMetadata(metadataRoot,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份已变化');await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await this.io.moveTree(metadataRoot,intent.swap,intent.sourceTree);}
+    const source=await this.io.checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','保留来源身份冲突');await checkedClose(this.db,path.join(intent.swap,'project.sqlite'));
     // Source remains intact beside the project until its independent app-local
     // preservation copy is complete. Interrupted copies are rebuilt on retry.
     await checkedClose(this.db,path.join(intent.backup,'project.sqlite'));
-    await rejectLinks(intent.swap);await fs.mkdir(path.dirname(intent.backup),{recursive:true,mode:0o700});await fs.rm(intent.backup,{recursive:true,force:true});await fs.cp(intent.swap,intent.backup,{recursive:true,errorOnExist:true,force:false});await checkedMetadata(intent.backup,this.db);await checkedClose(this.db,path.join(intent.backup,'project.sqlite'));
-    await syncTree(intent.backup);await syncDirectory(path.dirname(intent.backup));await syncDirectory(root);
+    await this.io.rejectLinks(intent.swap);await this.privateDirectory(path.dirname(intent.backup));
+    if(await present(intent.backup)){
+     if(this.io.retainsPartialTrees){const retained={directory:intent.backup,...await this.io.syncTree(intent.backup),reason:'incomplete-source-backup-retained'};await checkpoint({retainedBackups:[...(intent.retainedBackups??[]),retained],backup:path.join(path.dirname(intent.backup),'source-'+randomUUID())});}
+     else await this.io.removeTree(intent.backup);
+    }
+    await this.io.assertTree(intent.swap,intent.sourceTree);await this.io.copyTree(intent.swap,intent.backup);await this.io.checkedMetadata(intent.backup,this.db);await checkedClose(this.db,path.join(intent.backup,'project.sqlite'));
+    const backupTree=await this.io.syncTree(intent.backup);if(backupTree)await checkpoint({backupTree});await this.io.syncDirectory(path.dirname(intent.backup));await this.io.syncDirectory(root);
    }
    await checkpoint({phase:'source-preserved'});
   }
   if(intent.phase==='source-preserved'){
-   if(intent.recoverySource){await assertRecoverySourceStopped(root);await directoryIdentity(root,intent.recoverySource.identity);await directoryIdentity(intent.swap,intent.recoverySource.metadataIdentity);const source=await checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
-   await verify();if(await present(metadataRoot)){await candidate(metadataRoot);}else{await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));await fs.rename(intent.temporary,metadataRoot);}await syncDirectory(root);await checkpoint({phase:'published'});
+   if(intent.recoverySource){await assertRecoverySourceStopped(root);await this.io.directoryIdentity(root,intent.recoverySource.identity);await this.io.directoryIdentity(intent.swap,intent.recoverySource.metadataIdentity);const source=await this.io.checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.recoverySource.projectId||source.schema!==intent.recoverySource.schema)throw fail('PROJECT_IDENTITY_CONFLICT','恢复发布前来源身份已变化。');}
+   await verify();if(await present(metadataRoot)){await candidate(metadataRoot);await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await this.io.assertTree(metadataRoot,intent.candidateTree);}else{await candidate(intent.temporary);await checkedClose(this.db,path.join(intent.temporary,'project.sqlite'));await this.io.moveTree(intent.temporary,metadataRoot,intent.candidateTree);}await this.io.syncDirectory(root);await checkpoint({phase:'published'});
   }
   if(!['published','source-cleanup','complete'].includes(intent.phase))throw fail('PROJECT_INITIALIZATION_PENDING','初始化需要用户明确重试');
+  if(this.io.retainsPartialTrees){await checkedClose(this.db,path.join(metadataRoot,'project.sqlite'));await this.io.assertTree(metadataRoot,intent.candidateTree);}
   await verify();await candidate(metadataRoot);
-  const metadataIdentity=await directoryIdentity(metadataRoot);
-  const p={id:intent.id,instanceId:intent.instanceId,semanticInitializationEligible:true,root,metadataRoot,identity,metadataIdentity,lineage:[...new Set([intent.source?.projectId,...(Array.isArray(intent.source?.lineage)?intent.source.lineage:[intent.source?.lineage])].filter(Boolean))],name:path.basename(root),openedAt:intent.now,lastOpenedAt:new Date().toISOString(),removed:false};
+  const metadataIdentity=await this.io.directoryIdentity(metadataRoot);
+  const p={id:intent.id,instanceId:intent.instanceId,semanticInitializationEligible:true,root,metadataRoot,identity,metadataIdentity,lineage:[...new Set([intent.source?.projectId,...(Array.isArray(intent.source?.lineage)?intent.source.lineage:[intent.source?.lineage])].filter(Boolean))],name:path.basename(root),openedAt:intent.now,lastOpenedAt:new Date().toISOString(),removed:false,...(this.io.qualification?{persistenceQualification:this.io.qualification}:{})};
   await this.db.request(this.catalog,'put',{collection:'instances',id:p.id,value:p});
   if(intent.source&&await present(intent.swap)){
-   const backup=await checkedMetadata(intent.backup,this.db);if(backup.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源保留副本身份冲突');await checkedClose(this.db,path.join(intent.backup,'project.sqlite'));
-   const swapIdentity=await directoryIdentity(intent.swap);
+   const backup=await this.io.checkedMetadata(intent.backup,this.db);if(backup.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源保留副本身份冲突');await checkedClose(this.db,path.join(intent.backup,'project.sqlite'));
+   const swapIdentity=await this.io.directoryIdentity(intent.swap);
    if(intent.phase!=='source-cleanup'){
-    const source=await checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份冲突');await checkedClose(this.db,path.join(intent.swap,'project.sqlite'));
+    const source=await this.io.checkedMetadata(intent.swap,this.db);if(source.projectId!==intent.source.projectId)throw fail('PROJECT_INITIALIZATION_CONFLICT','来源身份冲突');await checkedClose(this.db,path.join(intent.swap,'project.sqlite'));
     await checkpoint({phase:'source-cleanup',swapIdentity});
    }else if(!same(swapIdentity,intent.swapIdentity))throw fail('PROJECT_INITIALIZATION_CONFLICT','来源临时目录实体已变化');
-   await verify();await directoryIdentity(intent.swap,intent.swapIdentity);await fs.rm(intent.swap,{recursive:true});await syncDirectory(root);
+   await verify();await this.io.assertTree(intent.backup,intent.backupTree);await this.io.directoryIdentity(intent.swap,intent.swapIdentity);await this.io.removeTree(intent.swap,intent.sourceTree);await this.io.syncDirectory(root);
   }
   await checkpoint({phase:'complete'});this.bindings.set(p.id,p);return p;
  }
  // A persisted reset fence also covers startup readers, before resumeReset sets
  // recoveringReset. Missing old targets are deletion evidence, not empty stores.
- async localDirectory(id){const p=await this.requireRegistered(id);const dir=path.join(this.root,'instances',p.instanceId);if(this.lifecycleHolds.get(id)?.action!=='reset-project')await fs.mkdir(dir,{recursive:true,mode:0o700});return dir;}
- async recoveryDirectory(id){const p=await this.requireRegistered(id);const dir=path.join(this.root,'recovery',p.instanceId);if(this.lifecycleHolds.get(id)?.action!=='reset-project')await fs.mkdir(dir,{recursive:true,mode:0o700});return dir;}
+ async localDirectory(id,{create=true}={}){const p=await this.requireRegistered(id);const dir=path.join(this.root,'instances',p.instanceId);if(create&&this.lifecycleHolds.get(id)?.action!=='reset-project')await this.privateDirectory(dir);return dir;}
+ async recoveryDirectory(id){const p=await this.requireRegistered(id);const dir=path.join(this.root,'recovery',p.instanceId);if(this.lifecycleHolds.get(id)?.action!=='reset-project')await this.privateDirectory(dir);return dir;}
  async projectDirectory(id){return (await this.requireOnline(id)).metadataRoot;}
  async getLocal(id,key){this.assertLocalOpen(id);const directory=await this.localDirectory(id);this.assertLocalOpen(id);const file=path.join(directory,'ui.sqlite'),reset=this.lifecycleHolds.get(id)?.action==='reset-project';if(reset&&!await present(file))return null;return this.db.request(file,'get',{collection:'ui',id:key,...(reset?{mustExist:true}:{})});}
  async putLocal(id,key,value,{expectedRevision,operationId}={}){this.assertLocalOpen(id);const directory=await this.localDirectory(id);this.assertLocalOpen(id);return this.db.request(path.join(directory,'ui.sqlite'),'put',{collection:'ui',id:key,value,expectedRevision,operationId});}
@@ -223,7 +237,26 @@ export class ProjectStorage {
  async getProject(id,table,key){return this.projectRequest(id,'get',{collection:table,id:key});}
  async putProject(id,table,key,value,{expectedRevision,operationId}={}){return this.projectRequest(id,'put',{collection:table,id:key,value,expectedRevision,operationId});}
  async getRecovery(id,key){const file=path.join(await this.recoveryDirectory(id),'recovery.sqlite'),reset=this.lifecycleHolds.get(id)?.action==='reset-project';if(reset&&!await present(file))return null;return this.db.request(file,'get',{collection:'recovery',id:key,...(reset?{mustExist:true}:{})});}
- async putRecovery(id,key,value){return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),'put',{collection:'recovery',id:key,value});}
+ async putRecovery(id,key,value,{expectedRevision}={}){return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),'put',{collection:'recovery',id:key,value,expectedRevision});}
+ async putRecoveryRecords(id,records){return this.db.request(path.join(await this.recoveryDirectory(id),'recovery.sqlite'),'putMany',{collection:'recovery',records});}
+ async putCrossTreeTransfer(key,value,{expectedRevision}={}){await this.ready();return this.db.request(this.catalog,'put',{collection:'tree_cross_transfers',id:key,value,expectedRevision});}
+ async readCrossTreeTransfer(key,options={}){await this.ready();return this.db.request(this.catalog,'recoveryRecord',{...options,collection:'tree_cross_transfers',id:key,purpose:'cross-tree-recovery'});}
+ async crossTreeTransferPage(options={}){await this.ready();return this.db.request(this.catalog,'recoveryPage',{...options,collection:'tree_cross_transfers',pendingOnly:true,purpose:'cross-tree-admission'});}
+ async pendingCrossTreeTransfer(projectId){
+  let cursor=null,count=0;
+  do{
+   const page=await this.crossTreeTransferPage({cursor,limit:50,maxBytes:65536});
+   for(const row of page.entries){
+    const value=row.value;
+    // Unknown/corrupt ownership cannot be scoped to an unrelated project.
+    const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value);
+     if(value.registryScopeValid!==true||value.schema!==1||value.kind!=='record'||value.crossTransfer!==true&&value.crossTransfer!==1||!uuid(value.projectId)||!uuid(value.sourceProjectId)||value.projectId===value.sourceProjectId||!uuid(value.operationId)||row.id!=='tree-operation:'+value.operationId||value.projectId===projectId||value.sourceProjectId===projectId)return row;
+    if(++count>1024)throw fail('TREE_RECOVERY_REQUIRED','跨项目操作待核对记录超过本次读取预算，请先处理恢复记录。');
+   }
+   cursor=page.nextCursor;
+  }while(cursor);
+  return null;
+ }
  async listLocalViews(id){const file=path.join(await this.localDirectory(id),'ui.sqlite'),reset=this.lifecycleHolds.get(id)?.action==='reset-project';if(reset&&!await present(file))return [];const rows=await this.db.request(file,'list',{collection:'ui',...(reset?{mustExist:true}:{})});return rows.filter(row=>['view','workspace:layout','file-tree-view'].includes(row.id)||row.id.startsWith('tex:view:'));}
  async clearLocalViews(id,{ids,operationId}){
   const hold=this.lifecycleHolds.get(id);if(hold?.action!=='clean-local'||this.lifecycleOwner.getStore()!==hold)throw fail('PROJECT_LIFECYCLE_ACTIVE','需要本机清理操作的唯一令牌。');
@@ -236,9 +269,9 @@ export class ProjectStorage {
  }
  async remove(id,{operationId}={}){const p=await this.requireRegistered(id),key=operationId?'lifecycle:remove:'+operationId:null;if(key){const receipt=await this.getRecovery(id,key);if(receipt?.complete)return receipt.result;}const next={...p,removed:true};await this.db.request(this.catalog,'put',{collection:'instances',id,value:next,operationId});this.bindings.set(id,next);const result={removed:true,projectId:id,operationId};if(key)await this.putRecovery(id,key,{complete:true,result});return result;}
  static syncResetDirectory=syncDirectory;
- async resetScope(id){return permanentResetScope(this,id);}
+ async resetScope(id){platformPersistence.requireSupported();return permanentResetScope(this,id);}
  async resetProject(id,options){platformPersistence.requireSupported();return permanentReset(this,id,options);}
- async objects(id){return new MaterialStore(path.join(await this.projectDirectory(id),'objects','sha256'),{createDirectory:false});}
+ async objects(id){const directory=path.join(await this.projectDirectory(id),'objects','sha256');return new MaterialStore(directory,{createDirectory:false,experimentalWindowsRoot:this.nativeRootForPath(directory)});}
  async listProject(id,collection){return this.projectRequest(id,'list',{collection});}
  async replaceProjectCollections(id,collections,{expectedCollections}={}){return this.projectRequest(id,'replace',{collections,expectedCollections});}
  async putObject(id,bytes){return (await this.objects(id)).put(bytes);}
@@ -255,9 +288,9 @@ export class ProjectStorage {
  async managedResourceSummary(id,{offline=false}={}){if(!offline)return this.projectRequest(id,'managedResourceSummary',{offline:false});const directory=await this.localDirectory(id);return this.db.request(path.join(directory,'ui.sqlite'),'managedResourceSummary',{offline:true});}
  async managedExecutionSummary(id){return this.projectRequest(id,'managedExecutionSummary',{});}
  async getProjectRecord(id,collection,key){return this.projectRequest(id,'record',{collection,id:key});}
- async putRecoveryObject(id,bytes){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).put(bytes);}
- async readRecoveryObject(id,digest,options){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024}).get(digest,options);}
- async recoveryObjects(id){return new MaterialStore(path.join(await this.recoveryDirectory(id),'objects','sha256'),{maxBytes:256*1024*1024});}
+ async putRecoveryObject(id,bytes){return (await this.recoveryObjects(id)).put(bytes);}
+ async readRecoveryObject(id,digest,options){return (await this.recoveryObjects(id)).get(digest,options);}
+ async recoveryObjects(id){const directory=path.join(await this.recoveryDirectory(id),'objects','sha256');return new MaterialStore(directory,{maxBytes:256*1024*1024,experimentalWindowsRoot:this.nativeRootForPath(directory)});}
  async putRecoveryObjectStream(id,input,options){return (await this.recoveryObjects(id)).putStream(input,options);}
  async withRecoveryObject(id,digest,fn){return (await this.recoveryObjects(id)).withObject(digest,fn);}
  async promoteRecoveryObject(id,digest){
@@ -269,14 +302,14 @@ export class ProjectStorage {
  async reconcileLifecycleStorage(id){const p=await this.requireRegistered(id),outcomes=[];for(const file of [this.catalog,path.join(this.root,'instances',p.instanceId,'ui.sqlite')])if(this.db.quarantined.has(file))outcomes.push({file,...await this.db.recover(file)});return outcomes;}
  async retry(id,{settledOnly=false}={}){
   this.assertActive(id);const p=await this.requireRegistered(id);
-  await directoryIdentity(p.root,p.identity);
+  await this.io.authorizeProject?.(p.root,p.identity);await this.io.directoryIdentity(p.root,p.identity);
   if(!p.metadataIdentity)throw fail('PROJECT_METADATA_CONFLICT','元数据身份不可核验');
-  await directoryIdentity(p.metadataRoot,p.metadataIdentity);
-  const probe=new StorageDatabase();
-  try{const manifest=await checkedMetadata(p.metadataRoot,probe);if(manifest.projectId!==p.id)throw fail('PROJECT_IDENTITY_CONFLICT','原项目身份不匹配');}
+  await this.io.directoryIdentity(p.metadataRoot,p.metadataIdentity);
+  const probe=new StorageDatabase({experimentalWindowsRoot:this.nativeRootForPath(path.join(p.metadataRoot,'project.sqlite'))});
+  try{const manifest=await this.io.checkedMetadata(p.metadataRoot,probe);if(manifest.projectId!==p.id)throw fail('PROJECT_IDENTITY_CONFLICT','原项目身份不匹配');}
   finally{await probe.close();}
   this.assertActive(id);
-  await directoryIdentity(p.root,p.identity);await directoryIdentity(p.metadataRoot,p.metadataIdentity);
+  await this.io.directoryIdentity(p.root,p.identity);await this.io.directoryIdentity(p.metadataRoot,p.metadataIdentity);
   const file=path.join(p.metadataRoot,'project.sqlite'),quarantine=this.db.quarantined.get(file);
   if(settledOnly&&quarantine?.operationIds?.length)throw quarantine;
   const outcome=await this.db.recover(file);

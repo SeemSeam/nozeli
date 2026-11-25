@@ -12,10 +12,10 @@ function color(cell,foreground){
 
 // One bounded parser per actual PTY. It has no input callback, process handle,
 // protocol reply transport or disk persistence. Snapshots contain cells, not ANSI.
-export function createTerminalScreen({cols=120,rows=32,onChange=()=>{}}={}){
+export function createTerminalScreen({cols=120,rows=32,onChange=()=>{},changeTimers={setTimeout,clearTimeout}}={}){
  const terminal=new Terminal({cols,rows,scrollback:0,allowProposedApi:true});
  let chain=Promise.resolve(),seq=0,version=0,updatedAt=null,disposed=false,timer,cached;
- function changed(){version++;updatedAt=Date.now();if(!timer)timer=setTimeout(()=>{timer=null;if(!disposed)onChange({seq,version,updatedAt});},80);}
+ function changed(){version++;updatedAt=Date.now();if(timer==null)timer=changeTimers.setTimeout(()=>{timer=null;if(!disposed)onChange({seq,version,updatedAt});},80);}
  const schedule=fn=>{chain=chain.then(()=>{if(!disposed)return fn();});return chain;};
  return {
   write(data,nextSeq){return schedule(()=>new Promise(resolve=>terminal.write(data,()=>{seq=nextSeq;changed();resolve();})));},
@@ -38,6 +38,6 @@ export function createTerminalScreen({cols=120,rows=32,onChange=()=>{}}={}){
    }
    return cached={cols:terminal.cols,rows:terminal.rows,seq,version,updatedAt,lines};
   });},
-  dispose(){clearTimeout(timer);timer=null;return chain.then(()=>{disposed=true;terminal.dispose();});},
+  dispose(){changeTimers.clearTimeout(timer);timer=null;return chain.then(()=>{disposed=true;changeTimers.clearTimeout(timer);timer=null;terminal.dispose();});},
  };
 }

@@ -1,5 +1,6 @@
 import {bindNativeUserEntries} from './restart-recovery.mjs';
 import fs from 'node:fs/promises';
+import {legacyWorkspaceIO} from './workspace-io.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {canonicalNativeEntryDigest} from './collab/runtime.mjs';
@@ -184,6 +185,7 @@ export function recordBusinessTimeline(prior, state) {
 export class SessionIndex {
   constructor(store) {
     this.store = store;
+    this.io = store.io ?? legacyWorkspaceIO;
     this.root = path.join(store.root, 'objects', 'session-entries');
     this.cache = new Map();
     this.cacheBytes = 0;
@@ -193,7 +195,7 @@ export class SessionIndex {
     this.deferred = new Map();
   }
   async initialize() {
-    await fs.mkdir(this.root, {recursive:true, mode:0o700});
+    await this.io.ensureDirectory(this.root);
     if (!this.store.state.sessionIndex) await this.store.mutateNative(() => { timelineState(this.store.state); });
     else timelineState(this.store.state);
   }
@@ -215,24 +217,7 @@ export class SessionIndex {
     if (this.cache.has(record.id)&&!this.cache.get(record.id).value.unavailable) return this.cache.get(record.id).value;
     if (!/^[a-f0-9]{64}$/.test(record.objectId)) fail('TIMELINE_OBJECT', 'Invalid immutable journal reference');
     const file = path.join(this.root, record.objectId + '.json');
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ENTRY_BYTES) fail('TIMELINE_OBJECT', 'Unsafe or oversized native entry');
-    if (stat.size > maxBytes) fail('TIMELINE_BUDGET', 'Native entry requires explicit original reading');
-    const handle = await fs.open(file, 'r');
-    let bytes;
-    try {
-      const opened = await handle.stat();
-      if (!opened.isFile() || opened.size !== stat.size || opened.ino !== stat.ino || opened.dev !== stat.dev) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
-      const buffer = Buffer.allocUnsafe(stat.size + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        const {bytesRead} = await handle.read(buffer, length, buffer.length - length, length);
-        if (!bytesRead) break;
-        length += bytesRead;
-      }
-      if (length !== stat.size) fail('TIMELINE_OBJECT', 'Native journal archive changed during read');
-      bytes = buffer.subarray(0, length);
-    } finally { await handle.close(); }
+    const bytes = await this.io.readFile(file,{maxBytes:Math.min(maxBytes,MAX_ENTRY_BYTES),limitCode:maxBytes<MAX_ENTRY_BYTES?'TIMELINE_BUDGET':'TIMELINE_OBJECT'});
     if (sha(bytes) !== record.objectId) fail('TIMELINE_CORRUPT', 'Native journal archive digest mismatch');
     const value = JSON.parse(bytes);
     if (value.id !== record.entryId) fail('TIMELINE_CORRUPT', 'Native journal archive identity mismatch');
@@ -344,12 +329,8 @@ export class SessionIndex {
       if(job&&identity(fact.recoveryAttemptId))record.recoveryAttemptId=fact.recoveryAttemptId;
       const role = entry.type === 'message' ? entry.message?.role : null;
       if (CONVERSATION_ROLES.includes(role)) Object.assign(record, {speaker:role === 'assistant' ? 'agent' : role === 'user' ? 'user' : 'tool'}, historicalModel(entry.message));
-      try {
-        const handle = await fs.open(path.join(this.root, objectId + '.json'), 'wx', 0o600);
-        try { await handle.writeFile(bytes); await platformPersistence.syncFileHandle(handle); } finally { await handle.close(); }
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const saved = await fs.readFile(path.join(this.root, objectId + '.json'));
+      if (!await this.io.writeImmutable(path.join(this.root, objectId + '.json'),bytes)) {
+        const saved = await this.io.readFile(path.join(this.root, objectId + '.json'),{maxBytes:MAX_ENTRY_BYTES});
         if (sha(saved) !== objectId) fail('TIMELINE_CORRUPT', 'Existing immutable journal object is corrupt');
       }
       prepared.push({record, entry, bytes:bytes.length}); prior.set(id, record);

@@ -1,4 +1,4 @@
-export async function mountSheet({parent,bytes,name,readOnly=false,onChange,onError,onSave,onContextMenu,onContextClose}){
+export async function mountSheet({parent,bytes,name,recoverySheets=null,readOnly=false,onChange,onError,onSave,onContextMenu,onContextClose}){
  const frame=document.createElement('iframe');frame.title='电子表格编辑器';frame.src='./sheet-frame.html';frame.style.cssText='display:block;width:100%;height:100%;min-height:0;border:0';frame.setAttribute('sandbox','allow-scripts allow-same-origin');
  const channel=crypto.randomUUID(),pending=new Map();let disposed=false,readyResolve,readyReject;
  const appearance=()=>({theme:document.documentElement.dataset.theme==='dark'?'dark':'light',palette:document.documentElement.dataset.palette==='slate'?'slate':'sage'});
@@ -20,7 +20,7 @@ export async function mountSheet({parent,bytes,name,readOnly=false,onChange,onEr
   else if(data.type==='error'){const error=Error(data.message);if(data.requestId){pending.get(data.requestId)?.reject(error);pending.delete(data.requestId);}else{clearTimeout(timer);readyReject(error);onError?.(error);}}
  };
  addEventListener('message',receive);
- frame.onload=()=>frame.contentWindow.postMessage({nozeliSheet:channel,type:'open',bytes:new Uint8Array(bytes),name,readOnly,...appearance()},location.origin);
+ frame.onload=()=>frame.contentWindow.postMessage({nozeliSheet:channel,type:'open',bytes:new Uint8Array(bytes),name,recoverySheets,readOnly,...appearance()},location.origin);
  parent.replaceChildren(frame);parent.hidden=false;
  const dispose=()=>{if(disposed)return;disposed=true;clearTimeout(timer);document.removeEventListener('appearance:change',onAppearance);removeEventListener('message',receive);for(const p of pending.values())p.reject(Error('电子表格已关闭'));pending.clear();onContextClose?.();frame.remove();};
  try{await ready;}catch(error){dispose();throw error;}

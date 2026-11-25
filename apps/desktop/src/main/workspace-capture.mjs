@@ -1,3 +1,4 @@
+import {recoveryHeld} from './workspace-recovery-state.mjs';
 // Simplified workspace capture (2026-10-24 rework, see topics/selection-drawing.md):
 // one initiating window, static viewport-only sources, bounded single-flight.
 // No overlay WCV, no describe handshake, no project-wide input/write gating.
@@ -122,7 +123,7 @@ export class WorkspaceCapture {
     if(!root||root.dead||root.wc!==snap.wc)throw Error('发起窗口已关闭');
     if(root.projectId!==snap.projectId)throw Error('发起窗口已切换项目');
     if(root.win.isMinimized()||!root.win.isVisible())throw Error('发起窗口不可见，请先恢复该窗口');
-    if(this.workspace.projectRecords(snap.projectId,snap.windowId).some(s=>s.transferring||s.recoveryHeld||!s.ready))throw Error('本窗口内容正在加载或迁移，请稍候');
+    if(this.workspace.projectRecords(snap.projectId,snap.windowId).some(s=>s.transferring||recoveryHeld(s)||!s.ready))throw Error('本窗口内容正在加载或迁移，请稍候');
     const blocked=await root.wc.executeJavaScript(`Array.from(document.querySelectorAll('#settings-dialog[open],#configuration-setup[open],input[type="password"]:not([hidden])')).some(node=>node.getClientRects().length>0)`).catch(()=>true);
     checkpoint(); // a reload during the settings check must abort before any pixel read
     if(blocked)throw Error('请先关闭本窗口的设置或认证界面再截图');

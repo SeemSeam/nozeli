@@ -33,6 +33,15 @@ export interface PiCreateAgentSessionOptions extends CreateAgentSessionOptions {
    * `createAgentSessionFromServices` for. Ignored when `model` is set.
    */
   readonly resolveInitialModel?: (modelRuntime: ModelRuntime) => PiModelInfo | undefined;
+  /**
+   * Build the initial session manager when `sessionManager` is not supplied.
+   * A host that owns session persistence uses this to bind its storage before
+   * pi reads or creates the session file. Defaults to `SessionManager.create`.
+   */
+  readonly createSessionManager?: (request: {
+    readonly kind: "create";
+    readonly cwd: string;
+  }) => SessionManager;
 }
 
 export function isGlobalNpmLookupError(error: unknown): boolean {
@@ -150,11 +159,15 @@ export async function createAgentSessionRuntimeWithNpmFallback(
 ): Promise<AgentSessionRuntime> {
   const cwd = options?.cwd ?? process.cwd();
   const agentDir = options?.agentDir ?? getAgentDir();
-  const initialSessionManager = options?.sessionManager ?? SessionManager.create(cwd);
+  const initialSessionManager = options?.sessionManager
+    ?? (options?.createSessionManager
+      ? options.createSessionManager({ kind: "create", cwd })
+      : SessionManager.create(cwd));
   const {
     cwd: _optionCwd,
     agentDir: _optionAgentDir,
     sessionManager: _optionSessionManager,
+    createSessionManager: _optionCreateSessionManager,
     sessionStartEvent: _optionSessionStartEvent,
     resourceLoaderOptions: stableResourceLoaderOptions,
     model: initialModel,
