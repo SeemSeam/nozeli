@@ -13,6 +13,8 @@ const inside=(parent,child)=>{const rel=path.relative(parent,child);return rel==
 const clone=value=>structuredClone(value);
 const source='demo-fixture';
 const commands=new Set(Object.values(demoCommands));
+const catalogDigest=digest(JSON.stringify([demoChapters,demoCommands]));
+const safeReplay=new Set(['file.open','report.open','diff.open','pdf.page']);
 const chapterIds=new Set(demoChapters.map(chapter=>chapter.id));
 const recordLimit=200;
 const fixedReply='【演示内容 · 本地固定回复】我已收到这处材料与问题。示例比较了两种方法的测量结果：方法 B 的平均误差较低，但还需要结合样本数与适用条件判断。你可以继续提问，或回到原文修改与批注。本回复不来自模型，也没有启动后台 Worker。';
@@ -46,6 +48,7 @@ export class GuidedDemo {
    if(row.projectId!==id||!row.session||row.session.projectId!==id||!path.isAbsolute(row.root)||!row.identity||!row.manifestDigest||!row.instanceId)throw fail('DEMO_REGISTRY_INVALID','演示身份登记损坏；未启用模型回退。');
    row.session.epoch++;if(!['stopped','finished','removed'].includes(row.session.status))row.session.status='paused';row.session.recovered=true;
    if(row.inflight){row.session.error={code:'DEMO_ACTION_UNCONFIRMED',message:'上次动作结果未确认；请核对原文件，可以随时结束并保留现场。'};row.inflight.status='unknown';}
+   if(row.catalogDigest!==catalogDigest&&!row.removed){row.session={...row.session,id:randomUUID(),status:'stopped',chapterId:'learn',stepIndex:0};}
   }
   await this.save();
  }
@@ -96,13 +99,18 @@ export class GuidedDemo {
   if(confirmed!==true)throw fail('DEMO_CONFIRM_REQUIRED','请先确认创建独立演示副本及离线固定回复。');if(!chapterIds.has(chapterId))throw fail('DEMO_CHAPTER_INVALID','未知演示章节。');
   const template=await loadDemoTemplate(this.appRoot),templateDigest=digest(JSON.stringify(template.manifest));
   const rows=Object.values(this.data.projects),current=this.workspace?.shell?.projectId;
-  const existing=rows.find(row=>row.projectId===current&&!row.cleanup?.trashed)??rows.find(row=>!row.cleanup?.trashed);
+  let existing=null;
+  for(const row of [...rows].sort((a,b)=>Number(b.projectId===current)-Number(a.projectId===current))){
+   if(row.retired||row.cleanup?.trashed)continue;
+   try{await this.verify(row.projectId,{allowRemoved:true});existing=row;break;}
+   catch(error){if(!row.removed||!['ENOENT','DEMO_IDENTITY_CHANGED','PROJECT_UNAVAILABLE','PROJECT_NOT_FOUND'].includes(error.code))throw error;await this.mutate(()=>{row.retired=true;});}
+  }
   if(existing&&existing.templateDigest===templateDigest){
    await this.verify(existing.projectId,{allowRemoved:true});
    for(const row of rows)if(row!==existing&&!row.removed)await this.exit({...row.session,sessionId:row.session.id});
    if(existing.inflight)throw fail('DEMO_ACTION_PENDING','原演示动作尚在收尾，请稍后重新进入。');
    const publicProject=await this.host.registerDirectory(existing.root);
-   await this.mutate(()=>{existing.removed=false;existing.project={...publicProject,demo:true,source};existing.cleanup=null;existing.returnProjectId=returnProjectId;existing.projection=blankProjection();existing.requests={};existing.reports={};existing.lastAction=null;existing.session={id:randomUUID(),projectId:existing.projectId,epoch:existing.session.epoch+1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()};});
+   await this.mutate(()=>{existing.removed=false;existing.project={...publicProject,demo:true,source};existing.cleanup=null;existing.returnProjectId=returnProjectId;existing.projection=blankProjection();existing.requests={};existing.reports={};delete existing.demoWorkId;existing.lastAction=null;existing.catalogDigest=catalogDigest;existing.session={id:randomUUID(),projectId:existing.projectId,epoch:existing.session.epoch+1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()};});
    return this.emit(existing);
   }
   if(existing){
@@ -120,7 +128,7 @@ export class GuidedDemo {
    await this.mutate(()=>{if(existing.session.status!=='removed')existing.session.status='stopped';existing.session.epoch++;});
    this.emit(existing);
    await this.lifecycle.removeProject(existing.projectId,{operationId:'demo-template-retire:'+retireSession});
-   await this.mutate(()=>{delete this.data.projects[existing.projectId];});
+   await this.mutate(()=>{existing.retired=true;});
   }
   const created=await createDemoDirectory({template,examplesRoot:this.examplesRoot});
   // Register privately before any renderer can open this directory. Normal
@@ -128,6 +136,7 @@ export class GuidedDemo {
   const publicProject=await this.host.registerDirectory(created.root),project=await this.host.requireRegisteredProject(publicProject.id),manifest=path.join(created.root,'.nozeli','project.json');
   const manifestStat=await fs.lstat(manifest,{bigint:true}),manifestIdentity={dev:String(manifestStat.dev),ino:String(manifestStat.ino)};
   const row={...created,projectId:project.id,instanceId:project.instanceId,manifestIdentity,manifestDigest:digest(await fs.readFile(manifest)),project:{...publicProject,demo:true,source},returnProjectId,templateDigest,projection:blankProjection(),requests:{},session:{id:randomUUID(),projectId:project.id,epoch:1,status:'paused',chapterId,stepIndex:0,createdAt:new Date().toISOString()},createdAt:new Date().toISOString()};
+  row.catalogDigest=catalogDigest;
   await this.mutate(()=>{this.data.projects[project.id]=row;});return this.emit(row);
  }
  async state({projectId}={}){if(!projectId)return {isDemo:false,demo:false,source,projects:Object.values(this.data.projects).filter(row=>!row.removed).map(row=>this.public(row))};if(!this.isDemo(projectId))return {isDemo:false,demo:false,projectId};const row=this.row(projectId);try{await this.verify(projectId);}catch(error){return {...this.public(row),isDemo:true,available:false,error:{code:error.code,message:error.message}};}return {...this.public(row),isDemo:true,messages:clone(row.projection.messages),todos:clone(row.projection.todos),available:true};}
@@ -158,46 +167,46 @@ export class GuidedDemo {
   if(row.inflight)throw fail('DEMO_ACTION_PENDING','已有原子动作正在收尾。');
   const args=payload.args??{};if(!args||typeof args!=='object'||Array.isArray(args)||Buffer.byteLength(JSON.stringify(args))>65536)throw fail('DEMO_ARGUMENTS_INVALID','演示参数无效。');if(args.semantic!==undefined&&(typeof args.semantic!=='string'||(demoCommands[args.semantic]??null)!==payload.command))throw fail('DEMO_ARGUMENTS_INVALID','演示语义与宿主命令不一致。');
   if(payload.relPath&&!Object.hasOwn(row.expectedFiles,payload.relPath))throw fail('DEMO_FILE_DENIED','演示动作不能访问模板外的文件。');
+  if(!safeReplay.has(payload.command)&&row.unconfirmed?.[`${row.session.chapterId}:${row.session.stepIndex}:${payload.command}`])throw fail('DEMO_ACTION_UNCONFIRMED','本步可能已经写入，不能自动重放。');
   if(payload.relPath&&!['file.open','report.open','diff.open','pdf.page'].includes(payload.command)){
    const file=path.join(row.root,...payload.relPath.split('/')),stat=await fs.lstat(file);
    if(!stat.isFile()||stat.isSymbolicLink()||digest(await fs.readFile(file))!==row.expectedFiles[payload.relPath])throw fail('DEMO_CONTENT_CHANGED','来源文件已变化；自动操作已暂停，保留所有探索内容，可以随时结束。');
   }
-  let todoId=null;
+  const semantic=args.semantic;
+  const relay=async(extra={})=>{const receipt=await this.workspace.performDemoAction(scope,{...payload,args:{...args,...extra}},{manager:this,row});if(!receipt.ok)throw fail(receipt.error?.code||'DEMO_ACTION_FAILED',receipt.error?.message||'演示动作未确认');return receipt;};
   if(payload.command==='conversation.ask'){
-   // The offline reply commits first (idempotent by step key); the step only
-   // settles after the real conversation surface shows the exchange.
-   const sent=await this.send({...payload,target:'frontdesk',text:'两种方法是否在同一时段观测？请快速回答。',requestKey:'demo-step:'+args.stepId});
-   await this.workspace.performDemoAction(scope,{...payload,args:{...args,expect:demoConversationMarkers[args.semantic]??'本地固定回复'}},{manager:this,row});
-   return sent;
+   await this.send({...payload,target:'frontdesk',text:'两种方法是否在同一时段观测？请快速回答。',requestKey:'demo-step:'+args.stepId});
+   return relay({expect:demoConversationMarkers['frontdesk-ask']});
   }
-  if(payload.command==='notification.show'){
-   const semantic=args.semantic;
-   if(['task-a','task-b','progress','decision-continue'].includes(semantic)){
-    await this.notice(row,semantic);
-    await this.workspace.performDemoAction(scope,{...payload,args:{...args,expect:demoConversationMarkers[semantic]}},{manager:this,row});
-    return {ok:true,source,noticed:true,conversation:true};
-   }
-   if(['task-a-done','task-b-done'].includes(semantic)){todoId=(await this.publishFixture(row,payload)).todoId;await this.notice(row,semantic);}
-   else if(['decision-accept','decision-discard'].includes(semantic)){
-    todoId=row.projection.todos.filter(todo=>todo.kind==='result'&&todo.status==='open').at(-1)?.id;
-    if(!todoId)throw fail('DEMO_TODO_MISSING','没有待审核的演示任务。');
-    const decision=semantic==='decision-accept'?'accept':'discard';
-    // The decision is a real click in the visible report footer (the same
-    // button a user presses); the host only appends the timeline notice after
-    // the report surface confirms the settled todo.
-    const receipt=await this.workspace.performDemoAction(scope,{...payload,args:{...args,todoId,decision}},{manager:this,row});
-    await this.notice(row,semantic);
-    return receipt;
-   }
+  if(semantic==='task-submit'){
+   const receipt=await relay();
+   if(!row.demoWorkId)throw fail('DEMO_ACTION_FAILED','没有后台任务提交回执。');
+   await this.notice(row,'task-a');return receipt;
   }
-  if(payload.command==='report.open'){todoId=row.projection.todos.filter(todo=>todo.kind==='result'&&todo.status==='open').at(-1)?.id;if(!todoId)throw fail('DEMO_TODO_MISSING','原演示报告事项已不存在；没有创建替代任务。');}
-  return this.workspace.performDemoAction(scope,{...payload,args:{...args,...(todoId?{todoId}:{})}},{manager:this,row});
+  if(['task-a-done','task-a-revised'].includes(semantic)){
+   const {todoId}=await this.publishFixture(row,payload);
+   return relay({todoId});
+  }
+  if(['report','report-revised','diff','decision-continue','decision-accept'].includes(semantic)){
+   const revision=semantic==='report-revised'||semantic==='decision-accept'||args.stepId==='view-diff-revised'?2:1;
+   const todo=row.projection.todos.find(item=>item.workId===row.demoWorkId&&item.revision===revision);
+   if(!todo)throw fail('DEMO_TODO_MISSING','此版报告尚未交付，请从后台任务开始。');
+   const receipt=await relay({todoId:todo.id,objectId:todo.objectId,...(semantic==='decision-accept'?{decision:'accept'}:{})});
+   if(semantic==='decision-continue'&&!row.reports[todo.objectId]?.proof)throw fail('DEMO_ACTION_FAILED','追加讨论没有发送回执。');
+   if(semantic==='decision-accept'){
+    if(todo.status!=='resolved'||todo.resolution?.choice!=='accept'||receipt.value?.todoId!==todo.id)throw fail('DEMO_ACTION_FAILED','未收到同一版本的采纳回执。');
+    await this.notice(row,semantic);
+   }
+   return receipt;
+  }
+  return relay();
  }
  async acceptAction(row,{requestId,command,viewId,generation,sessionId,epoch,relPath}){await this.mutate(()=>{if(row.inflight||row.session.id!==sessionId||row.session.epoch!==epoch||row.session.status!=='playing')throw fail('DEMO_ACTION_PENDING','动作身份已变化或已有动作执行中。');row.inflight={requestId,command,viewId,generation,sessionId,epoch,relPath,chapterId:row.session.chapterId,stepIndex:row.session.stepIndex,status:'accepted',at:new Date().toISOString()};});}
  async settleAction(row,requestId,result){
   await this.mutate(()=>{
    const pending=row.inflight;if(pending?.requestId!==requestId)return;
    row.lastAction={...pending,status:result.ok?'completed':'failed',result:clone(result),settledAt:new Date().toISOString()};
+   if(!result.ok&&!safeReplay.has(pending.command)&&['DEMO_SCOPE_CHANGED','DEMO_ACTION_TIMEOUT','DEMO_SURFACE_GONE'].includes(result.error?.code)){row.unconfirmed??={};row.unconfirmed[`${pending.chapterId}:${pending.stepIndex}:${pending.command}`]=pending.requestId;}
    delete row.inflight;
    const s=row.session;
    if(result.ok&&s.status!=='playing'&&s.id===pending.sessionId&&s.chapterId===pending.chapterId&&s.stepIndex===pending.stepIndex){s.stepIndex++;row.lastAction.checkpointAdvanced=true;}
@@ -207,11 +216,11 @@ export class GuidedDemo {
  }
  async recordTutorialSave(scope,op,payload,value){
   if(!this.isDemo(payload.projectId))return;const {row}=await this.verify(payload.projectId),pending=row.inflight;
-  if(!pending||pending.status!=='accepted'||pending.generation!==scope.generation||pending.viewId!==scope.viewId||pending.relPath!==payload.relPath||pending.sessionId!==row.session.id||pending.epoch!==row.session.epoch||row.session.status!=='playing'||!['document.edit','word.edit','sheet.edit'].includes(pending.command))return;
+  if(!pending||pending.status!=='accepted'||pending.generation!==scope.generation||pending.viewId!==scope.viewId||pending.relPath!==payload.relPath||pending.sessionId!==row.session.id||!['playing','paused'].includes(row.session.status)||!['document.edit','word.edit','sheet.edit'].includes(pending.command))return;
   if(!['file.save','word.save','sheet.save'].includes(op)||!Object.hasOwn(row.expectedFiles,payload.relPath))return;
   const before=payload.baseDigest,after=value?.digest;if(before!==row.expectedFiles[payload.relPath]||typeof after!=='string')return;
   const located=await this.host.resolveFile(await this.host.requireProject(payload.projectId),payload.relPath);if(located.missing||digest(await fs.readFile(located.abs))!==after)return;
-  await this.mutate(()=>{if(row.inflight?.requestId===pending.requestId&&row.session.epoch===pending.epoch)row.expectedFiles[payload.relPath]=after;});
+  await this.mutate(()=>{if(row.inflight?.requestId===pending.requestId&&row.session.id===pending.sessionId&&row.expectedFiles[payload.relPath]===before)row.expectedFiles[payload.relPath]=after;});
  }
  result(scope,payload){return this.workspace.demoActionResult(scope,payload,this);}
  page(row,{cursor,limit=100}){if(!Number.isSafeInteger(limit)||limit<1||limit>200)throw fail('DEMO_PAGE_INVALID','消息分页无效。');let before=Infinity;if(cursor!=null){if(typeof cursor!=='string'||!/^before:\d+$/.test(cursor))throw fail('DEMO_PAGE_INVALID','游标无效。');before=Number(cursor.slice(7));if(!Number.isSafeInteger(before))throw fail('DEMO_PAGE_INVALID','游标无效。');}const all=row.projection.messages.filter(m=>m.sequence<before),entries=all.slice(-limit);return {version:1,source,demo:true,entries:clone(entries),deltas:[],hasMore:all.length>entries.length,nextCursor:all.length>entries.length?'before:'+entries[0].sequence:null};}
@@ -253,6 +262,7 @@ export class GuidedDemo {
    const prior=row.requests[key];if(prior){if(prior.fingerprint!==fingerprint)throw fail('DEMO_REQUEST_COLLISION','发送身份已用于不同内容。');idempotent=prior.result;return;}
    const frozen=await this.freezeMaterials(payload.projectId,payload);
    const id=randomUUID(),at=new Date().toISOString(),target=payload.target??'frontdesk';
+   if(payload.context?.background===true&&row.inflight?.status==='accepted'&&row.inflight.stepIndex===demoChapters[0].steps.findIndex(step=>step.id==='task-a'))row.demoWorkId??=id;
    const first=row.projection.messages.length+1,common={source,demo:true,sessionId:row.session.id,requestId:id,jobId:id,target,at,durable:true,complete:true,status:'completed',availability:'available'};
    if(row.projection.messages.length+2>recordLimit)throw fail('DEMO_HISTORY_FULL','演示会话已达记录上限，记录已保留，可以随时结束。');row.projection.messages.push({...common,id:randomUUID(),speaker:'user',text:payload.text,sequence:first,materialSources:frozen.materialSources,attachments:frozen.attachments,drawingSources:frozen.drawingSources},{...common,id:randomUUID(),speaker:'agent',text:fixedReply,sequence:first+1});
    const result={accepted:true,source,demo:true,jobId:id,requestId:id,sessionId:row.session.id};row.requests[key]={fingerprint,result,material:frozen.material};idempotent=result;
@@ -268,16 +278,26 @@ export class GuidedDemo {
   this.emit(row);return {noticed:true};
  }
  async publishFixture(row,payload){
-  const stepId=payload.args?.stepId??'manual-report',prior=row.projection.todos.find(todo=>todo.demoStepId===stepId);
-  if(prior)return {source,demo:true,todoId:prior.id};
-  const bytes=await fs.readFile(path.join(row.root,'report.html'));
-  if(digest(bytes)!==row.expectedFiles['report.html'])throw fail('DEMO_CONTENT_CHANGED','示例报告已修改，文件保留，自动展示已暂停。');
+  const revision=payload.args.semantic==='task-a-revised'?2:1;
+  const stepId=revision===1?'task-a-done':'task-a-revised',prior=row.projection.todos.find(todo=>todo.demoStepId===stepId);
+  if(prior)return {todoId:prior.id};
+  const v1=row.projection.todos.find(todo=>todo.demoStepId==='task-a-done');
+  if(!row.demoWorkId||revision===2&&(!v1||!row.reports[v1.objectId]?.proof))throw fail('DEMO_TODO_MISSING','请先提交原任务并完成本版所需的讨论。');
+  const template=await loadDemoTemplate(this.appRoot),read=name=>fs.readFile(path.join(template.directory,name),'utf8');
+  const [html,baseline,candidate]=await Promise.all(['report.html','comparison-before.md','comparison-after.md'].map(read));
+  const after=revision===1?candidate:candidate+'\n## 补充核对\n\n两种方法按同一采样时段对齐后再比较；无法对齐的记录单独标注。\n';
+  const bytes=Buffer.from(revision===1?html:html.replace('</body>','<section><h2>第二版：采样时段补充</h2><p>按同一采样时段对齐；无法对齐的记录单独标注。</p></section></body>'));
   const object=await this.host.storage.putObject(row.projectId,bytes),id=randomUUID(),objectId=randomUUID(),at=new Date().toISOString();
+  const title=`【演示内容】任务 A · 方法比较报告 V${revision}`;
+  const changeSetId=randomUUID(),fileId=randomUUID(),relPath='comparison-before.md';
   await this.mutate(()=>{
-   row.reports??={};row.reports[objectId]={digest:object.digest,byteLength:bytes.length,title:fixtureTitles[payload.args?.semantic]??'【演示内容】方法比较报告'};
-   row.projection.todos.push({id,kind:'result',status:'open',source,demo:true,title:fixtureTitles[payload.args?.semantic]??'【演示内容】方法比较报告',revision:1,managementRevision:0,objectId,demoStepId:stepId,text:'固定教学样本；没有执行真实 Worker。查看或稍后处理不表示接受。',createdAt:at});
+   if(row.session.id!==payload.sessionId||row.session.epoch!==payload.epoch||row.session.status!=='playing')throw fail('DEMO_SESSION_STALE','演示已暂停。');
+   if(row.projection.todos.some(todo=>todo.demoStepId===stepId))throw fail('DEMO_ACTION_PENDING','此版本已交付。');
+   if(v1&&revision===2){if(v1.status!=='open')throw fail('DEMO_TODO_STALE','第一版事项已变化。');v1.status='superseded';v1.managementRevision++;}
+   row.reports??={};row.reports[objectId]={digest:object.digest,byteLength:bytes.length,title,workId:row.demoWorkId,changeSetId,fileId,relPath,baseline,after};
+   row.projection.todos.push({id,kind:'result',status:'open',source,demo:true,title,revision,managementRevision:0,objectId,workId:row.demoWorkId,demoStepId:stepId,text:'固定离线教学交付；不启动 Worker、不修改项目文件。',createdAt:at});
   });
-  this.emit(row);return {source,demo:true,todoId:id};
+  this.emit(row);return {todoId:id};
  }
  async reportSource(projectId,objectId){
   const {row}=await this.verify(projectId);
@@ -289,6 +309,23 @@ export class GuidedDemo {
   const {row}=await this.verify(payload.projectId),action=op.replace(/^managed\./,'');
   if(['status','connect','enable','project.active'].includes(action))return {enabled:true,ready:false,demo:true,source,state:this.projection(row),session:clone(row.session),connectionError:null,handoff:null};
   if(['send','task'].includes(action))return this.send(payload);
+  if(action==='review.read'){
+   const r=row.reports?.[payload.objectId];if(!r?.changeSetId)throw fail('DEMO_REPORT_MISSING','演示交付不存在。');
+   return {workId:r.workId,objectId:payload.objectId,changeSetId:r.changeSetId,files:[{relPath:r.relPath,changeFileId:r.fileId,change:'modified'}]};
+  }
+  if(action==='changes.read'){
+   const r=Object.values(row.reports??{}).find(item=>item.changeSetId&&item.changeSetId===payload.changeSetId&&item.fileId===payload.fileId);
+   if(!r)throw fail('DEMO_REPORT_MISSING','冻结文件不属于本演示交付。');
+   return {file:{path:r.relPath,change:'modified'},availability:'available',before:{text:r.baseline},after:{text:r.after}};
+  }
+  if(action==='discussion.send'||action==='discussion.read'){
+   const todo=row.projection.todos.find(item=>item.id===payload.todoId&&item.objectId===payload.objectId&&item.workId===row.demoWorkId),r=todo&&row.reports?.[todo.objectId];
+   if(!r)throw fail('DEMO_REPORT_MISSING','原报告不属于当前演示任务。');
+   if(action==='discussion.read')return {proof:clone(r.proof??null)};
+   if(typeof payload.text!=='string'||!payload.text.trim()||payload.text.length>8000||typeof payload.requestKey!=='string'||!payload.requestKey||payload.requestKey.length>128)throw fail('DEMO_INPUT_INVALID','演示讨论内容无效。');
+   await this.mutate(()=>{if(todo.status!=='open'||todo.revision!==1)throw fail('DEMO_TODO_STALE','此报告只读。');if(r.proof){if(r.proof.requestKey!==payload.requestKey||r.proof.text!==payload.text)throw fail('DEMO_TODO_STALE','此版已记录一条演示返工要求。');return;}r.proof={requestKey:payload.requestKey,text:payload.text,reply:'【离线演示】已记录补充要求；下一版将说明如何对齐采样时段。'};});
+   return clone(r.proof);
+  }
   if(action==='draft'){if(typeof payload.text!=='string'||payload.text.length>32000)throw fail('DEMO_INPUT_INVALID','草稿无效。');await this.mutate(()=>{row.projection.drafts[payload.target??'frontdesk']=payload.text;});return {saved:true,source,demo:true};}
   if(action==='timeline.page'){
    if(payload.workId!==undefined||payload.sourceJobId!==undefined)throw fail('DEMO_SCOPE_UNAVAILABLE','固定演示不提供真实任务过程历史。');
@@ -304,6 +341,7 @@ export class GuidedDemo {
    if(!['close','reopen','remove','demo-accept','demo-discard'].includes(payload.action))throw fail('DEMO_ACTION_DENIED','无效的演示待办操作。');
    await this.mutate(()=>{
     if(payload.expectedRevision!==undefined&&payload.expectedRevision!==(todo.managementRevision||0))throw fail('DEMO_TODO_STALE','演示事项已经变化，请重新查看。');
+    if(todo.status==='superseded'||payload.action==='demo-accept'&&todo.revision!==2)throw fail('DEMO_TODO_STALE','只能采纳当前第二版。');
     if(payload.action==='remove')row.projection.todos=row.projection.todos.filter(item=>item!==todo);
     else if(payload.action.startsWith('demo-')){
      if(todo.status!=='open')throw fail('DEMO_TODO_STALE','演示事项已有决定，不会重复处理。');

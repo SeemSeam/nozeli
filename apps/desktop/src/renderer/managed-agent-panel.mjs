@@ -1074,9 +1074,12 @@ function show(activeValue){active=activeValue;toolbar.hidden=true;if(!active){pe
   doc.problemDecision?.update();
   if(doc.report?.source==='demo-fixture'){
    const todo=state?.todos.find(todo=>todo.id===doc.todoId),status=footer.querySelector('[data-report-state]'),reason=footer.querySelector('[data-report-reason]');
-   if(status)status.textContent=todo?.resolution?.choice==='accept'?'已接受演示结论（未改动真实任务）':todo?.resolution?.choice==='discard'?'已丢弃演示结论（示例文件保留）':todo?.status==='open'?'【演示内容】待决定；查看或稍后不会接受':'演示事项已关闭或移除，报告原件保留。';
-   for(const button of footer.querySelectorAll('[data-demo-decision]'))button.disabled=dispositionPending||todo?.status!=='open';
-   if(reason)reason.textContent='固定教学报告；本操作仅记录本地演示决定，不写入论文、不启动真实 Worker。';
+   const open=todo?.status==='open',version=todo&&todo.revision>1?'报告 V'+todo.revision+' · ':'';
+   if(status)status.textContent=todo?.resolution?.choice==='accept'?'已接受演示结论（未改动真实任务）':todo?.resolution?.choice==='discard'?'已丢弃演示结论（示例文件保留）':todo?.status==='superseded'?'已被第二版取代 · 报告与讨论记录保留为只读历史，不再接受决定':open?'【演示内容】'+version+'待决定；查看或稍后不会接受':'演示事项已关闭或移除，报告原件保留。';
+   for(const button of footer.querySelectorAll('[data-demo-decision]'))button.disabled=dispositionPending||!open;
+   const opener=footer.querySelector('[data-demo-discuss="open"]');if(opener)opener.disabled=!open;
+   if(reason)reason.textContent='固定教学报告；本操作仅记录本地演示决定，不写入论文、不启动真实 Worker，也不把候选合入项目。';
+   doc.demoDiscussion?.lock(!open);
    return;
   }
   const w=state?.works.find(w=>w.id===doc.workId);if(!w)return;
@@ -1110,6 +1113,71 @@ function show(activeValue){active=activeValue;toolbar.hidden=true;if(!active){pe
   })();
   try{await publicationRefresh;}finally{publicationRefresh=null;}
  }
+// Demo fixture reports have no real Work session, so the review surface gets
+// its own honest equivalents: the discussion records a host proof bound to the
+// exact todo/object, and the frozen diff drives the standard frozen reader.
+function buildDemoDiscussion(todo,sourceProject){
+ const section=document.createElement('section');section.className='managed-demo-discussion';section.hidden=true;section.dataset.demoDiscussion=todo.id;
+ const heading=document.createElement('h3');heading.textContent='追加讨论';
+ const note=document.createElement('p');note.className='managed-demo-discussion-note';note.textContent='追加要求绑定本报告的成果事项；明确发送后由宿主记录讨论凭据。只打开或留草稿不会发送，发送也不表示采纳。';
+ const labelId='demo-discussion-input-'+todo.id;
+ const label=document.createElement('label');label.textContent='给原任务的问题或修改要求';label.htmlFor=labelId;
+ const input=document.createElement('textarea');input.rows=2;input.maxLength=8000;input.id=labelId;input.dataset.demoDiscussionInput='';input.placeholder='明确发送后才会记录讨论凭据并出现离线回复';
+ const actions=document.createElement('div');actions.className='managed-demo-discussion-actions';
+ const status=document.createElement('p');status.className='managed-demo-discussion-status';status.setAttribute('role','status');status.hidden=true;
+ const thread=document.createElement('div');thread.className='managed-demo-discussion-thread';thread.dataset.demoDiscussionThread='';thread.setAttribute('aria-label','追加讨论记录（宿主记录的凭据）');thread.setAttribute('aria-live','polite');
+ const send=document.createElement('button');send.type='button';send.textContent='发送';send.className='ui-action';send.dataset.demoDiscussionSend='';
+ const current=()=>reportDocument?.todoId===todo.id&&$('managed-doc')?.contains(section);
+ let sending=false;
+ const lock=locked=>{send.disabled=locked||sending;input.readOnly=locked||sending;};
+ const fail=error=>{if(current()){status.textContent=error.message;status.hidden=false;}};
+ const renderProof=proof=>{const request=document.createElement('p');request.className='managed-demo-discussion-request';request.textContent='追加要求：'+(proof?.text||'');const reply=document.createElement('p');reply.className='managed-demo-discussion-reply';reply.dataset.demoDiscussionReply='';reply.textContent=proof?.reply?.text||proof?.reply||'';thread.replaceChildren(request,reply);};
+ const submit=async()=>{
+  if(sending)return;
+  const text=input.value.trim();
+  if(!text)throw Error('请先输入要追加的要求；空内容不会发送。');
+  if(todo.status!=='open')throw Error('演示事项已有决定或已被取代；讨论记录保留只读，不再发送。');
+  sending=true;lock(false);send.textContent='正在发送…';status.hidden=true;
+  try{
+   const proof=await call('discussion.send',{todoId:todo.id,objectId:todo.objectId,text,requestKey:crypto.randomUUID()},sourceProject);
+   if(!current())return;
+   renderProof(proof);input.value='';
+  }finally{sending=false;send.textContent='发送';lock(todo.status!=='open');}
+ };
+ send.onclick=()=>Promise.resolve(submit()).catch(fail);
+ input.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&event.key==='Enter'){event.preventDefault();Promise.resolve(submit()).catch(fail);}});
+ actions.append(send);
+ section.append(heading,note,label,input,actions,status,thread);
+ // A recorded proof renders on every open; nothing is re-sent for re-visits.
+ void (async()=>{try{const existing=await call('discussion.read',{todoId:todo.id,objectId:todo.objectId},sourceProject);if(current()&&existing?.proof)renderProof(existing.proof);}catch(error){}})();
+ return {section,lock};
+}
+function buildDemoFrozenDiff(todo,sourceProject){
+ const section=document.createElement('section');section.className='managed-demo-frozen';
+ const heading=document.createElement('h3');heading.textContent='冻结交付 Diff';
+ const note=document.createElement('p');note.className='managed-demo-frozen-note';note.textContent='冻结输入 → 本报告发布候选的只读差异；不比较当前工作区文件，也不含人工稿。';
+ const list=document.createElement('div');list.className='managed-demo-frozen-files';
+ const status=document.createElement('p');status.className='managed-demo-frozen-status';status.setAttribute('role','status');status.hidden=true;
+ section.append(heading,note,list,status);
+ const current=()=>reportDocument?.todoId===todo.id&&$('managed-doc')?.contains(section);
+ void (async()=>{
+  try{
+   const review=await call('review.read',{objectId:todo.objectId},sourceProject);
+   const files=review?.files??[];
+   if(!current())return;
+   if(!files.length){status.textContent='本报告未登记冻结交付文件；不会比较当前工作区文件。';status.hidden=false;return;}
+   for(const file of files){
+    const row=document.createElement('div');row.className='managed-demo-frozen-file';
+    const name=document.createElement('code');name.textContent=(file.oldPath?file.oldPath+' → ':'')+file.relPath;
+    const change=document.createElement('small');change.textContent=({added:'新增',modified:'修改',removed:'删除',renamed:'重命名',unchanged:'未修改'}[file.status||file.change]||'修改类型未核实');
+    const open=document.createElement('button');open.type='button';open.textContent='冻结交付 Diff';open.className='ui-action';open.dataset.demoFrozenDiff=file.relPath;
+    open.onclick=()=>Promise.resolve(openArtifactDiff({objectId:todo.objectId,relPath:file.relPath,sourceProject}));
+    row.append(name,change,open);list.append(row);
+   }
+  }catch(error){if(current()){status.textContent='冻结交付清单暂不可读取：'+error.message+'；不会以当前工作区文件替代。';status.hidden=false;}}
+ })();
+ return section;
+}
  async function openTodo(id){
   const permission=state?.todos.find(todo=>todo.id===id&&(['effect-permission','effect-grant'].includes(todo.destination?.kind)||todo.destination?.kind==='conversation'&&todo.destination.question?.method==='approve'));
   if(permission){
@@ -1256,8 +1324,12 @@ function show(activeValue){active=activeValue;toolbar.hidden=true;if(!active){pe
   const footer=document.createElement('div');footer.id='managed-result-actions';
   const action= (caption,fn)=>button(caption,async()=>{try{await fn();await refresh();}catch(error){if(error.businessRejection)return;let notice=$('managed-review-error');if(!notice){notice=document.createElement('p');notice.id='managed-review-error';notice.setAttribute('role','alert');footer.append(notice);}notice.textContent=error.message;}});
   if(todo.source==='demo-fixture')for(const [choice,caption]of [['accept','接受演示结论'],['discard','丢弃演示结论']]){
-   const decide=action(caption,async()=>{if(!stillCurrent())throw Error('原演示事项已变化，请重新打开');dispositionPending=true;updateReviewActions();try{const result=await call('todo.manage',{todoId:todo.id,expectedRevision:todo.managementRevision||0,action:'demo-'+choice,requestKey:crypto.randomUUID()},sourceProject);if(!result.accepted)throw Error('未取得演示决定回执');}finally{dispositionPending=false;updateReviewActions();}});
+   const decide=action(caption,async()=>{if(!stillCurrent())throw Error('原演示事项已变化，请重新打开');const version=todo.revision>1?'报告 V'+todo.revision:'演示结论';if(!await confirmDecision('确认'+(choice==='accept'?'采纳':'丢弃')+version+'？只记录本机离线演示决定：不把候选合入项目、不启动真实任务收尾，论文与示例文件保持不变；原报告、讨论记录与决定回执保留。','确认演示决定',{confirmLabel:choice==='accept'?'记录采纳':'记录丢弃'}))return;dispositionPending=true;updateReviewActions();try{const result=await call('todo.manage',{todoId:todo.id,expectedRevision:todo.managementRevision||0,action:'demo-'+choice,requestKey:crypto.randomUUID()},sourceProject);if(!result.accepted)throw Error('未取得演示决定回执');}finally{dispositionPending=false;updateReviewActions();}});
    decide.dataset.demoDecision=choice;footer.append(decide);
+  }
+  if(todo.source==='demo-fixture'){
+   const discuss=button('追加讨论',()=>{const section=$('managed-doc')?.querySelector('[data-demo-discussion="'+todo.id+'"]');if(!section)throw Error('追加讨论区未就绪');section.hidden=!section.hidden;discuss.setAttribute('aria-expanded',String(!section.hidden));if(!section.hidden)section.querySelector('[data-demo-discussion-input]')?.focus({preventScroll:true});});
+   discuss.dataset.demoDiscuss='open';discuss.setAttribute('aria-expanded','false');footer.append(discuss);
   }
   if(todo.status==='open'&&!todo.reopenedAt&&!w?.readOnly){
   if(w&&!['closing','ended'].includes(w.status)){
@@ -1286,7 +1358,13 @@ function show(activeValue){active=activeValue;toolbar.hidden=true;if(!active){pe
   }
   }
   const status=document.createElement('p');status.dataset.reportState='';status.className='managed-report-state';footer.prepend(status);const reason=document.createElement('p');reason.id='managed-report-reason';reason.dataset.reportReason='';reason.setAttribute('role','status');footer.append(reason);const error=document.createElement('p');error.id='managed-review-error';error.setAttribute('role','alert');error.hidden=true;footer.append(error);
-  $('managed-doc').append(footer);if(fixtureMode)updateReviewActions();else void queryDisposition();
+  $('managed-doc').append(footer);
+  if(todo.source==='demo-fixture'){
+   const discussion=buildDemoDiscussion(todo,sourceProject),frozen=buildDemoFrozenDiff(todo,sourceProject);
+   reportDocument.demoDiscussion=discussion;
+   $('managed-doc').append(discussion.section,frozen);
+  }
+  if(fixtureMode)updateReviewActions();else void queryDisposition();
  }
  async function refresh(){const id=projectId,gen=generation,version=++refreshing;if(!id)return;let s;try{s=await call('status',{},id);}catch(error){if(id===projectId&&gen===generation&&version===refreshing)todoUI.unavailable(id);throw error;}if(id!==projectId||gen!==generation||version!==refreshing)return;state=s.state;if(!state){todoUI.unavailable(id);return;}if(fixtureMode){render();return;}ready=Boolean(s.ready);if(ready&&state?.agents?.some(a=>a.target==='frontdesk'&&!a.closed))sessionRecoveryError='';if(!active&&s.enabled)show(true);renderResidentRecovery(s);if(state)render();}
  const resetSession=()=>{++waitingRead;waitingSignature='';waitingProject=null;waiting.hidden=true;waiting.replaceChildren();workMenu.close();categoryMenu.close();delete workInfo.dataset.workId;requestReads.clear();clear();};

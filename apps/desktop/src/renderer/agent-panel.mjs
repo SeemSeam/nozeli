@@ -24,9 +24,19 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
   let restoredInput;
   const demo=mountDemoConversation({invoke,getProjectId:()=>projectId,onMessages,subscribe});
   const skillPickers=new Map();
-  if(ownsConversation)for(const role of ['frontdesk','orchestrator']){
-    const picker=createImportedSkillPicker({invoke,role,target:role});
-    picker.root.hidden=true;$('composer').after(picker.root);skillPickers.set(role,picker);
+  const skillDialog=ownsConversation?document.createElement('dialog'):null;
+  if(skillDialog){
+    skillDialog.id='conversation-skill-dialog';skillDialog.hidden=true;
+    skillDialog.setAttribute('aria-labelledby','conversation-skill-title');
+    const title=document.createElement('h2');title.id='conversation-skill-title';title.textContent='本次发送使用的技能';
+    const close=document.createElement('button');close.type='button';close.textContent='完成';close.onclick=()=>skillDialog.close();
+    skillDialog.append(title);
+    for(const role of ['frontdesk','orchestrator']){
+      const picker=createImportedSkillPicker({invoke,role,target:role});
+      skillDialog.append(picker.root);skillPickers.set(role,picker);
+    }
+    skillDialog.append(close);document.body.append(skillDialog);
+    window.addEventListener('nozeli-conversation-skills',()=>{if(!skillDialog.hidden&&!skillDialog.open)skillDialog.showModal();});
   }
   let filePaths = new Set();
   const legacyArchive = document.createElement('details');
@@ -105,7 +115,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
       }
       const initialized = await configuration.ready;
       if (id !== projectId || gen !== generation) return;
-      for(const picker of skillPickers.values()){picker.bind(id);picker.root.hidden=false;}
+      for(const picker of skillPickers.values())picker.bind(id);
+      if(skillDialog)skillDialog.hidden=false;
       void loadLegacyHistory(id, gen).catch(error => {
         if (id === projectId && gen === generation) toast('旧版只读历史加载失败：' + error.message);
       });
@@ -172,7 +183,8 @@ export function mountAgent({ invoke, toast, attachment, getProjectId, openManage
     }
     filePaths = new Set();
     projectId = id;
-    for(const picker of skillPickers.values()){picker.bind(null);picker.root.hidden=true;}
+    if(skillDialog){if(skillDialog.open)skillDialog.close();skillDialog.hidden=true;}
+    for(const picker of skillPickers.values())picker.bind(null);
     settingsPanel.projectChanged();
     restoredInput = input;
     $('send-message').disabled = true;

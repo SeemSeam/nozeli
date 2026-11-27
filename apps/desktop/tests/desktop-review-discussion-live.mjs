@@ -204,9 +204,15 @@ try{
  const workerGrant={projectId:project.id,...skill,role:'worker'};
  await invoke(shell,'store.imports.disable',workerGrant);
  async function selectSkill(page,role){const selector=`[data-imported-skill="${role}"]`,value=JSON.stringify([skill.id,skill.version]);
+  assert.equal(await page.$('#compose-form [data-skill-role]'),null,'Skill choices do not occupy composer rows');
+  await page.click('[data-chat-more]');
+  await page.click('#conversation-context-menu [data-command="chat-skill-choice"]');
+  await page.waitForSelector('#conversation-skill-dialog[open]',{visible:true});
   await page.click(`[data-skill-role="${role}"] summary`);
   await page.waitForFunction((selector,value)=>Array.from(document.querySelector(selector)?.options??[]).some(o=>o.value===value),{},selector,value);
   assert.deepEqual(await page.select(selector,value),[value]);
+  await page.click('#conversation-skill-dialog > button');
+  await page.waitForSelector('#conversation-skill-dialog:not([open])');
  }
  await invoke(shell,'managed.enable',{projectId:project.id});
  await shell.evaluate(()=>{window.__foregroundPresentations=[];window.nozeli.subscribe('workspace.control',event=>{if(event.type==='attention-presented')window.__foregroundPresentations.push(event);});});

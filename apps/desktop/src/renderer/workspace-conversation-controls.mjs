@@ -43,6 +43,7 @@ export function mountConversationControls({close}) {
     const runtime = document.getElementById('chat-session-runtime');
     if (runtime && !runtime.hidden) entries.push({id:'chat-session-runtime',label:'会话管理：压缩、重载与诊断…',enabled:!runtime.disabled});
     entries.push({id:'chat-agent-details',label:'连接与历史…'});
+    if(document.querySelector('#conversation-skill-dialog:not([hidden])'))entries.push({id:'chat-skill-choice',label:'本次发送使用的技能…'});
     if (detached()&&!usesNativeWindowChrome()) entries.push(...windowActions.map(({id,label}) => ({id,label})));
     const clear = document.getElementById('chat-clear-frontdesk-context');
     if (clear && !clear.hidden) entries.push({id:'chat-clear-frontdesk-context',label:clear.textContent,enabled:!clear.disabled});
@@ -50,6 +51,7 @@ export function mountConversationControls({close}) {
   }
   async function run(id) {
     if(id==='chat-agent-details')return window.dispatchEvent(new Event('nozeli-agent-details'));
+    if(id==='chat-skill-choice')return window.dispatchEvent(new Event('nozeli-conversation-skills'));
     if(id==='chat-workspace-layout'){const rect=more.getBoundingClientRect();return invoke('workspace.control',{type:'conversation-layout-menu',x:rect.left,y:rect.bottom});}
     if (['chat-clear-frontdesk-context','chat-session-runtime'].includes(id)) {
       const button = document.getElementById(id);

@@ -12,6 +12,7 @@ import {createGuidedDemo} from '../src/main/guided-demo.mjs';
 import {WorkspaceNative} from '../src/main/workspace-native.mjs';
 import {EventEmitter} from 'node:events';
 import {GuidedDemoControls,guidedDemoOverlayLayout} from '../src/main/guided-demo-controls.mjs';
+import {demoSteps,runDemoLayout} from '../src/domain/guided-demo.mjs';
 
 function assertOverlayGeometry(layout,width,height){
  for(const rect of Object.values(layout)){
@@ -298,24 +299,24 @@ test('frontdesk ask, task completion and review decisions use the fixed fixture 
  assert.equal(askedState.messages.at(-1).speaker,'agent');
  await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'conversation.ask',args:{semantic:'frontdesk-ask',stepId:'frontdesk-ask'}}),{code:'DEMO_SURFACE_NOT_READY'});
  assert.equal((await f.manager.state({projectId:f.created.project.id})).messages.length,2,'the ask stays idempotent without a visible conversation');
- // the manager pauses the session (an immediate pre-acceptance refusal would
- // instead leave pausing to the renderer's fail path).
- const pending=f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'task-a-done',stepId:'task-a-done'}});
- await assert.rejects(bounded(pending,'task completion surface wait',3000),Error);
- await settlePending(f);pending.catch(()=>{});
- const state=await f.manager.state({projectId:f.created.project.id});
- const todo=state.todos.find(todo=>todo.kind==='result');
- assert.equal(typeof todo?.id,'string','the result todo is published host-side');
- assert.equal(state.messages.at(-1).text.includes('任务 A 完成'),true,'notices must carry body text');
- assert.equal(state.session.status,'paused','an unsettled surface action pauses instead of counting as done');
- // Without the real report surface a decision is refused and the todo stays open.
- await assert.rejects(f.manager.perform(f.scope,{...binding(playing),command:'notification.show',args:{semantic:'decision-accept',stepId:'review-accept'}}),{code:'DEMO_SESSION_STALE'});
- assert.equal((await f.manager.state({projectId:f.created.project.id})).todos.find(item=>item.id===todo.id).status,'open');
- // The report footer button settles the same todo through the public todo API.
- const decided=await f.manager.managed('todo.manage',{projectId:f.created.project.id,todoId:todo.id,expectedRevision:0,action:'demo-accept'});
- assert.equal(decided.status,'resolved');
- const resumed=await f.manager.transition({...binding(state),action:'play'});
- await assert.rejects(f.manager.perform(f.scope,{...binding(resumed),command:'notification.show',args:{semantic:'decision-discard',stepId:'review-discard'}}),{code:'DEMO_TODO_MISSING'});
+ const action=(semantic,stepId=semantic)=>({...binding(playing),command:'notification.show',args:{semantic,stepId}});
+ await assert.rejects(f.manager.perform(f.scope,action('task-a-done')),{code:'DEMO_TODO_MISSING'});
+ await f.manager.mutate(()=>{f.manager.row(playing.project.id).demoWorkId='fixture-work';});
+ // The seam replaces only the native-surface receipt, not publication or decisions.
+ f.workspace.performDemoAction=async()=>({ok:false,error:{code:'DEMO_SURFACE_NOT_READY'}});
+ await assert.rejects(f.manager.perform(f.scope,action('task-a-done')),{code:'DEMO_SURFACE_NOT_READY'});
+ const {projectId}=binding(playing),call=(name,payload)=>f.manager.managed(name,{projectId,...payload});
+ const v1=(await f.manager.state({projectId})).todos[0];assert.equal(v1.revision,1);
+ await assert.rejects(f.manager.perform(f.scope,action('task-a-revised')),{code:'DEMO_TODO_MISSING'});
+ await assert.rejects(call('todo.manage',{todoId:v1.id,action:'demo-accept'}),{code:'DEMO_TODO_STALE'});
+ await call('discussion.send',{todoId:v1.id,objectId:v1.objectId,text:'核对采样时段',requestKey:'discussion'});
+ await assert.rejects(f.manager.perform(f.scope,action('task-a-revised')),{code:'DEMO_SURFACE_NOT_READY'});
+ const [old,v2]=(await f.manager.state({projectId})).todos;assert.equal(old.status,'superseded');assert.equal(v2.workId,v1.workId);assert.equal(v2.revision,2);
+ await assert.rejects(f.manager.perform(f.scope,action('decision-accept','review-accept')),{code:'DEMO_SURFACE_NOT_READY'});
+ const after=await f.manager.state({projectId});assert.equal(after.todos[1].status,'open');assert.ok(!after.messages.some(message=>message.requestId==='decision-accept'));
+ const first=await call('review.read',{objectId:v1.objectId}),second=await call('review.read',{objectId:v2.objectId});
+ const read=review=>call('changes.read',{changeSetId:review.changeSetId,fileId:review.files[0].changeFileId});
+ const [a,b]=await Promise.all([read(first),read(second)]);assert.deepEqual(a.before,b.before);assert.notDeepEqual(a.after,b.after);
 });
 
 test('copying project metadata never copies private demo ownership or cleanup authority',async t=>{
@@ -381,6 +382,18 @@ test('restart persists paused status and invalidates previous epochs without rep
  assert.equal((await restarted.managed('managed.status',{projectId:playing.project.id})).state.messages.length,2);
 });
 
+test('an older lesson catalog cannot resume its saved step index in the new course',async t=>{
+ const f=await demoFixture(t),id=f.created.project.id,root=f.manager.row(id).root;
+ const old=await f.manager.transition({...binding(f.created),action:'seek',chapterId:'learn',stepIndex:20});
+ const notes=await fs.readFile(path.join(root,'research-notes.md'));
+ await f.manager.mutate(()=>{f.manager.row(id).catalogDigest='legacy-catalog';});
+ const restarted=await createGuidedDemo({host:f.host,userDataDir:f.userDataDir,examplesRoot:f.examplesRoot,appRoot,workspace:f.workspace});
+ const state=await restarted.state({projectId:id});
+ assert.equal(state.session.status,'stopped');assert.equal(state.session.stepIndex,0);assert.notEqual(state.session.id,old.session.id);
+ await assert.rejects(restarted.transition({...binding(old),action:'play'}),{code:'DEMO_SESSION_STALE'});
+ assert.deepEqual(await fs.readFile(path.join(root,'research-notes.md')),notes);
+});
+
 test('replay and cleanup preserve simultaneous visible and hidden user changes instead of blessing baseline',async t=>{
  const f=await demoFixture(t),project=await f.host.requireProject(f.created.project.id);
  const before=await f.host.readFile(project.id,'research-notes.md');
@@ -430,6 +443,31 @@ test('real workspace relay binds sender and generation; paused late atomic save 
  const resumed=await f.manager.transition({...binding(state),action:'play'});
  assert.equal(resumed.session.stepIndex,playing.session.stepIndex+1,'A confirmed original save must not be dispatched again after explicit continue');
  }finally{await settlePending(f);await bounded(operation.catch(()=>{}),'relay cleanup');}
+});
+
+test('an unconfirmed edit cannot be replayed after seeking away, returning, and restarting',async t=>{
+ const f=await demoFixture(t),{project}=f.created,chapterId='learn',stepId='human-edit';
+ const stepIndex=demoSteps.findIndex(step=>step.id===stepId);
+ const seek=async(manager,state,index)=>manager.transition({...binding(state),action:'seek',chapterId,stepIndex:index});
+ const start=await seek(f.manager,f.created,stepIndex),playing=await f.manager.transition({...binding(start),action:'play'});
+ const surface=f.workspace.register(new BoundaryContents(),{role:'surface',kind:'document',projectId:project.id,viewId:'notes',relPath:'research-notes.md',windowId:'main'});
+ surface.ready=true;f.workspace.surfaces.set(surface.viewId,surface);
+ let ready;const dispatched=new Promise(resolve=>{ready=resolve;});
+ surface.wc.onSend=(channel,payload)=>{if(payload.type==='demo-action')ready(payload);};
+ const action=state=>({...binding(state),chapterId,stepIndex,command:'document.edit',args:{semantic:'human-edit',stepId},relPath:surface.relPath});
+ const operation=f.manager.perform(f.scope,action(playing));operation.catch(()=>{});
+ try{
+  const receipt=await bounded(dispatched,'edit relay');
+  await f.manager.result(surface,{...binding(playing),requestId:receipt.requestId,ok:false,error:{code:'DEMO_ACTION_TIMEOUT',message:'Test: write outcome unknown'}});
+  await bounded(operation.catch(()=>{}),'edit settlement');
+  const paused=await f.manager.state({projectId:project.id});
+  const away=await seek(f.manager,paused,0);
+  const restarted=await createGuidedDemo({host:f.host,userDataDir:f.userDataDir,examplesRoot:f.examplesRoot,appRoot,workspace:f.workspace});
+  const back=await seek(restarted,await restarted.state({projectId:project.id}),stepIndex);
+  await assert.rejects(async()=>{const next=await restarted.transition({...binding(back),action:'play'});await restarted.perform(f.scope,action(next));},{code:'DEMO_ACTION_UNCONFIRMED'});
+  assert.equal(surface.wc.sent.filter(event=>event.payload.type==='demo-action').length,1);
+  assert.equal(away.session.stepIndex,0);
+ }finally{await settlePending(f);}
 });
 
 test('concurrent same-key sends expose one accepted request and exactly one user/reply pair',async t=>{
@@ -574,10 +612,31 @@ test('a preserved copy from an older template is retired with files kept and the
  assert.equal(await fs.readFile(path.join(retiredRoot,'my-note.txt'),'utf8'),'PRESERVED EXPLORATION','user exploration in the old copy is kept');
  await assert.rejects(fs.lstat(path.join(retiredRoot,'sample.tex')),{code:'ENOENT'},'retirement never writes files into the old copy');
  assert.equal((await f.host.storage.requireRegistered(oldId)).removed,true);
- assert.equal(f.manager.isDemo(oldId),false);
+ assert.equal(f.manager.isDemo(oldId),true,'a retained example must not enter normal project routes');
  const again=await f.manager.create({confirmed:true});
  assert.equal(again.project.id,reopened.project.id,'the fresh template copy is itself reused afterwards');
  assert.deepEqual((await fs.readdir(f.examplesRoot)).sort(),[path.basename(retiredRoot),path.basename(f.manager.row(again.project.id).root)].sort());
+});
+
+test('a moved exited copy does not prevent a new example or lose its offline registration',async t=>{
+ const f=await demoFixture(t),id=f.created.project.id,old=f.manager.row(id).root,moved=path.join(f.directory,'retained-example');
+ f.manager.lifecycle.workspace.closeProject=async()=>({closed:true});
+ f.manager.lifecycle.managed.stopProject=async()=>({confirmationComplete:true});
+ await f.manager.exit(binding(f.created));
+ await fs.rename(old,moved);
+ const created=await f.manager.create({confirmed:true});
+ assert.notEqual(created.project.id,id);
+ assert.equal(f.manager.isDemo(id),true);
+ assert.equal(hash(await fs.readFile(path.join(moved,'research-notes.md'))),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.md'))));
+});
+
+test('demo return docks the notebook, not the most recently detached window',async()=>{
+ const projectId='example',layout={projectId,views:{note:{id:'note',kind:'document',relPath:'research-notes.md'},other:{id:'other',kind:'document',relPath:'paper.pdf'}},detached:[{id:'note-window',root:{kind:'group',views:['note']}},{id:'other-window',root:{kind:'group',views:['other']}}]};
+ const groups={snapshot:()=>layout,command:async({type,windowId})=>{assert.equal(type,'dock');layout.detached=layout.detached.filter(window=>window.id!==windowId);}};
+ await runDemoLayout(groups,projectId,'dock');
+ assert.deepEqual(layout.detached.map(window=>window.id),['other-window']);
+ await assert.rejects(runDemoLayout(groups,projectId,'dock'),/研究笔记/);
+ assert.deepEqual(layout.detached.map(window=>window.id),['other-window']);
 });
 
 test('removing the currently open project must not be admitted as its own project operation',async t=>{

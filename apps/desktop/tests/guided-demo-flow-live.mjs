@@ -65,26 +65,19 @@ try {
   await harness.until(async () => (await harness.invoke(controls, 'workspace.bootstrap')).model.stepIndex > frontdesk, 'skipping the reading advances to the next step');
   mark('paused seek withholds the explanation until the real answer lands; reading is skippable', {reading: frontdeskReading.title});
 
-  await harness.seek(controls, stepIndex('task-a'), 'single seek while playing');
-  await harness.until(async () => {
-    const model = (await harness.invoke(controls, 'workspace.bootstrap')).model;
-    return model.status === 'playing' && model.stepIndex >= stepIndex('task-a') ? model : null;
-  }, 'playing seek keeps playing at the target');
-  await harness.until(async () => (await state()).messages.some(message => message.text.includes('已提交后台任务 A')), 'task handoff notice appears');
-  mark('the handed-off background task shows in the conversation');
+  await harness.until(async () => (await state()).messages.some(message => message.text.includes('已提交后台任务')), 'task handoff appears in conversation');
+  mark('the composer submits through the offline background-task route');
 
-  await harness.seek(controls, stepIndex('task-a-done'), 'seek to the task completion');
-  await harness.until(async () => (await state()).todos.some(todo => todo.kind === 'result'), 'task A enters the todo list');
-  await harness.until(async () => {
-    const windows = await harness.invoke(shell, 'workspace.windows.list', {projectId});
-    return windows.some(window => window.surfaces.some(surface => surface.visible));
-  }, 'review report opens on a real surface', 90_000);
-  await harness.until(async () => {
-    const demo = await state();
-    const reviewed = demo.todos.find(todo => todo.title.includes('任务 A'));
-    return reviewed?.status === 'resolved' ? reviewed : null;
-  }, 'accept closes the reviewed task A', 90_000);
-  mark('the review decision closes the single reviewed task: accept resolves it');
+  const v1=await harness.until(async()=> (await state()).todos.find(todo=>todo.kind==='result'),'V1 result todo');
+  const v2=await harness.until(async()=> (await state()).todos.find(todo=>todo.kind==='result'&&todo.objectId!==v1.objectId),'V2 follows explicit report discussion',120_000);
+  assert.ok(v1.workId,'the fixture todo must identify its Work');
+  assert.equal(v2.workId,v1.workId);assert.deepEqual([v1.revision,v2.revision],[1,2]);
+  await harness.until(async()=> (await state()).todos.find(todo=>todo.id===v2.id)?.status==='resolved','accept resolves V2',90_000);
+  const finalTodos=(await state()).todos;
+  assert.notEqual(finalTodos.find(todo=>todo.id===v1.id)?.status,'open');
+  assert.notEqual(finalTodos.find(todo=>todo.id===v1.id)?.resolution?.choice,'accept');
+  assert.equal(finalTodos.find(todo=>todo.id===v2.id)?.resolution?.choice,'accept');
+  mark('the original work retains V1 and accepts only the reviewed V2');
 
   await harness.until(() => shell.$eval('#settings-dialog', dialog => dialog.open), 'settings dialog opens for the tour', 150_000);
   await shell.screenshot({path: path.join(harness.root, 'settings-tour.png')});

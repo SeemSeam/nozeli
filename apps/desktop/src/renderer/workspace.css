@@ -115,6 +115,10 @@ dialog{width:min(480px,calc(100vw - 24px));border:1px solid var(--line);border-r
 .imported-skill-picker :is(select,button,summary):focus-visible{outline:2px solid var(--green);outline-offset:1px}
 .imported-skill-picker [role=status]{display:block}
 .imported-skill-picker[hidden]{display:none!important}
+#conversation-skill-dialog{box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);overflow:auto}
+#conversation-skill-dialog h2{margin:0 0 12px;font-size:16px}
+#conversation-skill-dialog .imported-skill-picker{padding:8px 0}
+#conversation-skill-dialog>button{margin-top:12px}
 .tag-chat-window>.tag-composer{order:3;flex:none;margin:8px 12px 4px}
 .tag-chat-window>.tag-composer:not(.discussion-composer){display:flex;flex-wrap:wrap;align-items:flex-end;gap:6px}
 .tag-chat-window .tag-composer .tag-editor{flex:1;min-width:0;display:block;box-sizing:border-box;min-height:64px;max-height:min(160px,25vh);overflow-y:auto;padding:8px 10px;border:1px solid var(--line);box-shadow:none;border-radius:6px;background:var(--paper);color:var(--ink);font-size:var(--conversation-font,14px);line-height:1.6;outline:none;resize:none;white-space:pre-wrap;field-sizing:content}

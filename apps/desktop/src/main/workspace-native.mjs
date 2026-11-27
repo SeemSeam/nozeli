@@ -42,8 +42,8 @@ export class WorkspaceNative {
   }
   async performDemoAction(scope,payload,{manager,row}){
     const candidates=this.projectRecords(payload.projectId).filter(record=>!record.dead&&record.ready&&!record.transferring&&(!payload.viewId||record.viewId===payload.viewId)&&(!payload.relPath||record.relPath===payload.relPath));
-    const reportCommand=payload.command==='report.open'||['decision-accept','decision-discard'].includes(payload.args?.semantic);
-    const conversationCommand=payload.command==='conversation.ask'||['task-a','task-b','progress','decision-continue'].includes(payload.args?.semantic);
+    const reportCommand=payload.command==='report.open'||payload.command==='diff.open'&&Boolean(payload.args?.todoId)||['decision-continue','decision-accept','decision-discard'].includes(payload.args?.semantic);
+    const conversationCommand=payload.command==='conversation.ask'||payload.args?.semantic==='task-submit';
     const shellCommand=['workspace.split','workspace.resize','workspace.detach','workspace.dock'].includes(payload.command)||payload.command==='notification.show'&&!reportCommand&&!conversationCommand;
     const layout=reportCommand?await this.layout(payload.projectId):null;
     const record=shellCommand?this.shell:reportCommand?candidates.find(record=>record.kind==='report'&&layout.views[record.viewId]?.resourceId===payload.args.todoId):conversationCommand?candidates.find(record=>record.kind==='conversation'):candidates.find(record=>payload.viewId?record.viewId===payload.viewId:payload.relPath?record.relPath===payload.relPath:record.kind==='document')??(!payload.viewId&&!payload.relPath?candidates[0]:null);

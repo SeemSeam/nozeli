@@ -131,6 +131,25 @@ body[data-managed-agents=true] #managed-doc{overflow-wrap:anywhere;line-height:1
 #managed-result-actions [data-report-reason],#managed-result-actions [role=alert]{flex:1 1 100%;min-width:0;margin:0;overflow-wrap:anywhere;font-size:max(12px,1em)}
 #managed-result-actions p:empty{display:none}
 #managed-result-actions button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+#managed-doc>.managed-demo-discussion,#managed-doc>.managed-demo-frozen{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);line-height:1.6}
+#managed-doc>.managed-demo-discussion h3,#managed-doc>.managed-demo-frozen h3{font-size:14px;margin:0 0 6px}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-note,#managed-doc>.managed-demo-frozen .managed-demo-frozen-note{margin:0 0 8px;overflow-wrap:anywhere;font-size:max(12px,1em)}
+#managed-doc>.managed-demo-discussion label{display:block;margin:0 0 4px}
+#managed-doc>.managed-demo-discussion textarea{width:100%;box-sizing:border-box;min-height:56px;resize:vertical;font:inherit;line-height:1.5}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-actions{display:flex;justify-content:flex-end;margin-top:6px}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-status{margin:6px 0 0;overflow-wrap:anywhere;font-size:max(12px,1em)}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-status:empty{display:none}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-thread{margin-top:8px}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-request,#managed-doc>.managed-demo-discussion .managed-demo-discussion-reply{margin:6px 0;padding:8px 10px;border-radius:8px;overflow-wrap:anywhere;white-space:pre-wrap}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-request{background:light-dark(var(--line),color-mix(in srgb,var(--line) 55%,transparent))}
+#managed-doc>.managed-demo-discussion .managed-demo-discussion-reply{border-left:3px solid var(--accent);background:transparent;padding-left:12px}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-file{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-file:last-child{border-bottom:0}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-file code{overflow-wrap:anywhere;font-size:12px}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-file small{color:color-mix(in srgb,currentColor 70%,transparent)}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-file button{margin-left:auto;white-space:normal}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-status{margin:6px 0 0;overflow-wrap:anywhere;font-size:max(12px,1em)}
+#managed-doc>.managed-demo-frozen .managed-demo-frozen-status:empty{display:none}
 .managed-report-dialog{max-width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);box-sizing:border-box;overflow:auto;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:16px;font-family:var(--chrome-font-family);font-size:var(--chrome-font-size,13px);overflow-wrap:anywhere}
 .managed-report-dialog button{font:inherit;min-height:32px;margin:4px;white-space:normal}
 #frontdesk-memory-dialog{inline-size:min(740px,calc(100vw - 24px));max-width:none;padding:0;border-radius:16px;line-height:1.55;box-shadow:0 18px 60px #0003;overflow:hidden}

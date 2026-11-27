@@ -28,8 +28,46 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
     let c=check(request);const action=request.args?.semantic??request.action??request.command;
     const surfaceTarget=c.editor?.adapter.getEditorElement()??document.querySelector('#word-host:not([hidden]),#image-host:not([hidden]),#pdf-host:not([hidden]),.workspace-pane.is-focused');if(surfaceTarget){const rect=surfaceTarget.getBoundingClientRect();indicator.hidden=false;indicator.style.left=Math.max(6,rect.left+12)+'px';indicator.style.top=Math.max(6,rect.top+12)+'px';}badge.hidden=false;
     if(action==='md-preview'){setTextMode('edit');const toggle=await wait(()=>!$('markdown-preview-toggle').hidden?$('markdown-preview-toggle'):null,request);toggle.click();return {preview:true};}
-    if(action==='report'){if(scope.kind!=='report')throw Error('演示报告未在正常报告面打开');await wait(()=>document.querySelector('#managed-doc .isolated-status[data-state="ready"]'),request);return {report:true};}
-    if(['frontdesk-ask','task-a','task-b','progress','decision-continue'].includes(action)){
+    if(action==='report'||action==='report-revised'){
+      // Runs on the report surface: the opened view must be the report bound
+      // to this step's exact result todo (V1 for report, V2 for report-revised),
+      // and the static report must actually be ready on screen.
+      if(scope.kind!=='report')throw Error('演示报告未在正常报告面打开');
+      const todoId=request.args?.todoId;
+      if(!todoId)throw Error('演示报告缺少成果事项身份');
+      const end=Date.now()+10000;let bound=false;
+      while(Date.now()<end){
+        check(request,true);
+        const layout=(await value('workspace.snapshot',{projectId:request.projectId}).catch(()=>null))?.layout;
+        const view=layout?.views?.[scope.viewId];
+        if(view?.kind==='report'&&view.resourceId===todoId){bound=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      if(!bound)throw Error('打开的报告不是本步骤绑定的成果版本');
+      await wait(()=>document.querySelector('#managed-doc .isolated-status[data-state="ready"]'),request);
+      const status=await value('managed.status',{projectId:request.projectId});
+      const todo=status.state.todos.find(item=>item.id===todoId);
+      if(!todo)throw Error('演示成果事项已不存在');
+      return {report:true,todoId,revision:todo.revision??null};
+    }
+    if(action==='task-submit'){
+      // Runs on the real conversation surface: the step types into the actual
+      // composer and presses the real 后台任务 control (never 发送). The send
+      // receipt clears the input and the exchange becomes visible in the same
+      // timeline; re-visits only verify the recorded exchange, never resubmit.
+      if(scope.kind!=='conversation')throw Error('演示后台任务未在真实对话内容面显示');
+      const composer=$('composer'),background=$('submit-background'),send=$('send-message');
+      if(!composer||!background)throw Error('项目对话输入区未就绪');
+      const text='请整理两种方法的测量数据，并生成一份方法比较报告。';
+      if(!document.body.innerText.includes(text)){
+        await wait(()=>!background.disabled&&!send.disabled&&!composer.disabled&&!composer.readOnly?true:null,request,10000);
+        composer.value=text;composer.dispatchEvent(new Event('input',{bubbles:true}));
+        background.click();
+        await wait(()=>!composer.value&&document.body.innerText.includes(text)?true:null,request,15000,true);
+      }
+      return {submitted:true,background:true,text};
+    }
+    if(['frontdesk-ask'].includes(action)){
       // Runs on the real conversation surface: the step only settles once the
       // timeline actually shows this step's message text on screen.
       if(scope.kind!=='conversation')throw Error('演示对话未在真实对话内容面显示');
@@ -38,10 +76,11 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
       await wait(()=>document.body.innerText.includes(expected)?true:null,request,12000);
       return {conversation:true,visible:true};
     }
-    if(action==='task-a-done'||action==='task-b-done'){
-      // Shell side: walk the fresh result todo through the real attention
-      // prompt into a visible report surface. A completed task is only
-      // acknowledged after its report view is actually on screen.
+    if(action==='task-a-done'||action==='task-a-revised'){
+      // Shell side: walk the fresh result todo (V1 delivery or V2 delivery of
+      // the same task) through the real attention prompt into a visible report
+      // surface. A completed task is only acknowledged after its report view
+      // is actually on screen.
       const todoId=request.args?.todoId;
       if(!todoId)throw Error('演示任务缺少待办身份');
       const attentionRow=()=>[...document.querySelectorAll('[data-attention-item]')].find(node=>node.dataset.attentionItem===request.projectId+':'+todoId);
@@ -58,11 +97,43 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
       }
       throw Error('审核报告未在真实内容面打开');
     }
+    if(action==='decision-continue'){
+      // Runs on the report surface: open the real 追加讨论 affordance of the
+      // demo report bound to this exact result todo, type the followup and
+      // send it explicitly. Only the host-recorded proof rendered back into
+      // the discussion settles this step; opening the composer or leaving a
+      // draft never counts as sent, and sending is not acceptance.
+      if(scope.kind!=='report')throw Error('演示追加讨论未在真实报告面打开');
+      const todoId=request.args?.todoId;
+      if(!todoId)throw Error('演示追加讨论缺少成果事项身份');
+      const opener=await wait(()=>{const node=document.querySelector('[data-demo-discuss="open"]');return node&&!node.disabled&&!node.hidden?node:null;},request,10000);
+      if(opener.getAttribute('aria-expanded')!=='true')opener.click();
+      const input=await wait(()=>{const node=document.querySelector(`[data-demo-discussion="${todoId}"] [data-demo-discussion-input]`);return node&&!node.hidden&&!node.readOnly&&node.getClientRects().length?node:null;},request,8000);
+      const text='请补充采样时段的说明，并在下一版候选中反映。';
+      if(!document.querySelector(`[data-demo-discussion="${todoId}"] [data-demo-discussion-reply]`)?.textContent?.trim()){
+        input.value=text;input.dispatchEvent(new Event('input',{bubbles:true}));
+        const send=await wait(()=>{const node=document.querySelector(`[data-demo-discussion="${todoId}"] [data-demo-discussion-send]`);return node&&!node.disabled&&node.getClientRects().length?node:null;},request,8000);
+        send.click();
+        await wait(()=>document.querySelector(`[data-demo-discussion="${todoId}"] [data-demo-discussion-reply]`)?.textContent?.trim()?true:null,request,15000,true);
+      }
+      return {sent:true,todoId,text};
+    }
     if(action==='decision-accept'||action==='decision-discard'){
       // Runs on the report surface: press the same footer button a user
-      // would, then confirm the todo actually settled through todo.manage.
+      // would, confirm the explicit decision dialog, then verify the todo
+      // actually settled through todo.manage. The deciding surface must be
+      // the report view bound to the todo under decision (V2 for acceptance).
       const todoId=request.args?.todoId,choice=request.args?.decision??(action==='decision-accept'?'accept':'discard');
       if(!todoId)throw Error('演示决定缺少待办身份');
+      const end=Date.now()+10000;let bound=false;
+      while(Date.now()<end){
+        check(request,true);
+        const layout=(await value('workspace.snapshot',{projectId:request.projectId}).catch(()=>null))?.layout;
+        const view=layout?.views?.[scope.viewId];
+        if(view?.kind==='report'&&view.resourceId===todoId){bound=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      if(!bound)throw Error('演示决定未绑定当前审核的成果版本');
       const current=await value('managed.status',{projectId:request.projectId});
       const todo=current.state.todos.find(todo=>todo.id===todoId);
       if(!todo)throw Error('原演示事项已不存在');
@@ -72,6 +143,8 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
       if(!await visible())throw Error('报告处理面尚未可见，未执行决定');
       const button=await wait(()=>document.querySelector(`#managed-result-actions [data-demo-decision="${choice}"]`),request,6000);
       button.click();
+      const confirmButton=await wait(()=>{const node=document.querySelector('dialog[data-confirmation-dialog][open] [data-confirmation-confirm]');return node&&!node.disabled?node:null;},request,8000);
+      confirmButton.click();
       const settled=Date.now()+8000;let decided=todo;
       while(Date.now()<settled){
         check(request,true);
@@ -117,7 +190,44 @@ export function mountDemoSurface({invoke,subscribe,scope,getCurrent,setTextMode,
     if(action==='ppt-note'){const frame=$('ppt-frame');if(!frame)throw Error('PPT 驱动未就绪');const canvas=frame.contentDocument.querySelector('.slide-canvas,.canvas');if(!canvas)throw Error('PPT 画布尚未就绪');const r=canvas.getBoundingClientRect();canvas.dispatchEvent(new frame.contentWindow.MouseEvent('contextmenu',{bubbles:true,button:2,clientX:r.left+r.width*.4,clientY:r.top+r.height*.4}));const button=await wait(()=>frame.contentDocument.querySelector('[data-command="note-here"]'),request);button.click();await wait(()=>!$('note-form').hidden,request);$('note-input').value='演示幻灯片位置备注';$('note-form').requestSubmit();await wait(()=>$('note-form').hidden,request);return {saved:true};}
     if(action==='word-edit'){const frame=document.querySelector('#word-host iframe'),editor=frame?.contentWindow.nozeliWordEditor?.activeEditor;if(!editor)throw Error('Word 编辑入口未就绪');const text=' 演示修订：继续核查样本。',position=Math.max(1,editor.state.doc.content.size-1);editor.commands.setTextSelection(position);editor.view.focus();editor.view.dispatch(editor.state.tr.insertText(text,position));await wait(()=>c.office.getText().includes(text),request,15000,true);const result=await flush();if(!result.ok)throw Error(result.error?.message||'Word 保存未完成');return {saved:true,text:c.office.getText()};}
     if(action==='sheet-edit'){const frame=document.querySelector('#word-host iframe'),editor=frame?.contentWindow.nozeliSheetEditor;if(!editor)throw Error('表格编辑器未就绪');const range={row:[1,1],column:[1,1]},before=c.officeRevision;editor.setSelection([range]);editor.batchCallApis([{name:'clearCell',args:[1,1]},{name:'setCellValuesByRange',args:[[['12.5']],range,frame.contentDocument.querySelector('#luckysheet-rich-text-editor')]},{name:'calculateFormula',args:[]}]);await wait(()=>getCurrent().officeRevision>before,request,15000,true);const result=await flush();if(!result.ok)throw Error(result.error?.message||'表格保存未完成');return {saved:true};}
-    if(action==='diff'){$('open-beside').click();await wait(()=>[...$('beside-file').options].some(o=>o.value==='comparison-after.md'),request);$('beside-file').value='comparison-after.md';$('beside-file').dispatchEvent(new Event('change'));$('beside-diff').click();await wait(()=>document.querySelector('.cm-mergeView'),request);return {compared:true};}
+    if(action==='diff'){
+      // Runs on the report surface: press the report's own frozen-deliverable
+      // diff affordance, then verify a real frozen diff view opened for THIS
+      // report's change set and that its frozen text is actually available.
+      // The workspace's loose beside-file comparison is never used here; the
+      // same handler serves V1 and V2 through the step's exact todo binding.
+      if(scope.kind!=='report')throw Error('演示冻结 Diff 未在真实报告面打开');
+      const todoId=request.args?.todoId;
+      if(!todoId)throw Error('演示冻结 Diff 缺少成果事项身份');
+      const end=Date.now()+10000;let todo=null;
+      while(Date.now()<end){
+        check(request,true);
+        const layout=(await value('workspace.snapshot',{projectId:request.projectId}).catch(()=>null))?.layout;
+        const status=await value('managed.status',{projectId:request.projectId}).catch(()=>null);
+        const view=layout?.views?.[scope.viewId];
+        todo=status?.state?.todos.find(item=>item.id===todoId)??null;
+        if(view?.kind==='report'&&view.resourceId===todoId&&todo?.objectId)break;
+        todo=null;await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      if(!todo?.objectId)throw Error('演示冻结 Diff 未绑定当前报告的成果事项');
+      const review=await value('managed.review.read',{projectId:request.projectId,objectId:todo.objectId});
+      const files=(review?.files??[]).filter(item=>typeof item.relPath==='string');
+      const file=files.find(item=>item.changeFileId)??files[0];
+      if(!review?.changeSetId||!file?.changeFileId)throw Error('此报告没有登记冻结交付差异；不会比较当前工作区文件');
+      const button=await wait(()=>{const node=document.querySelector(`[data-demo-frozen-diff="${CSS.escape(file.relPath)}"]`)??document.querySelector('[data-demo-frozen-diff]');return node&&!node.disabled?node:null;},request,10000);
+      button.click();
+      const opened=Date.now()+12000;let compared=false;
+      while(Date.now()<opened){
+        check(request,true);
+        const layout=(await value('workspace.snapshot',{projectId:request.projectId}).catch(()=>null))?.layout;
+        if(Object.values(layout?.views??{}).some(view=>view.kind==='diff'&&view.viewState?.target?.changeSetId===review.changeSetId)){compared=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,60));
+      }
+      if(!compared)throw Error('冻结交付 Diff 未在真实内容面打开');
+      const frozen=await value('managed.changes.read',{projectId:request.projectId,changeSetId:review.changeSetId,fileId:file.changeFileId});
+      if(frozen?.availability!=='available'||typeof frozen.before?.text!=='string'||typeof frozen.after?.text!=='string')throw Error('冻结正文不可用；不会以当前文件替代');
+      return {compared:true,todoId,relPath:file.relPath,revision:todo.revision??null};
+    }
     if(['split','detach','dock'].includes(action))return runDemoLayout(workspaceGroups(),request.projectId,action);
     throw Error('语义动作必须由宿主演示源处理：'+action);
   }

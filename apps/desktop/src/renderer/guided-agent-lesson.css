@@ -1,0 +1,43 @@
+/* Offline elective lesson dialog (guided-agent-lesson.mjs).
+   Self-contained: only shared theme variables, no store-window CSS dependency. */
+#guided-agent-lesson{box-sizing:border-box;width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink);box-shadow:0 20px 80px #0004;overflow:hidden;font-family:var(--chrome-font-family,system-ui,sans-serif);font-size:var(--chrome-font-size,13px);line-height:1.6}
+#guided-agent-lesson[open]{display:flex;flex-direction:column}
+#guided-agent-lesson::backdrop{background:#0005}
+#guided-agent-lesson *{box-sizing:border-box}
+#guided-agent-lesson [hidden]{display:none!important}
+#guided-agent-lesson .lesson-heading{display:flex;align-items:center;gap:12px;flex:none;padding:12px 18px;border-bottom:1px solid var(--line)}
+#guided-agent-lesson .lesson-heading h2{flex:1;min-width:0;margin:0;font-size:16px;font-weight:650;overflow-wrap:anywhere}
+#guided-agent-lesson .lesson-offline{flex:none;margin:0;padding:10px 18px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--amber) 12%,var(--paper));color:var(--amber);font-weight:600;overflow-wrap:anywhere}
+#guided-agent-lesson .lesson-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+#guided-agent-lesson .lesson-stage{display:grid;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line)}
+#guided-agent-lesson .lesson-stage:last-of-type{border-bottom:0}
+#guided-agent-lesson h3{margin:0;font-size:14px;font-weight:650;overflow-wrap:anywhere}
+#guided-agent-lesson :is(.lesson-hint,.lesson-status){margin:0;color:var(--muted);overflow-wrap:anywhere}
+#guided-agent-lesson .lesson-composer{display:grid;gap:8px}
+#guided-agent-lesson :is(.lesson-input,.lesson-select){width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;padding:8px 10px}
+#guided-agent-lesson .lesson-input{min-height:72px;resize:vertical}
+#guided-agent-lesson .lesson-select{min-height:34px}
+#guided-agent-lesson button{min-height:34px;padding:5px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);font:inherit;cursor:pointer}
+#guided-agent-lesson button:not(:disabled):hover{background:var(--green-soft)}
+#guided-agent-lesson button:disabled{opacity:.55;cursor:not-allowed}
+#guided-agent-lesson :is(button,textarea,select):focus-visible{outline:2px solid var(--ui-control-focus,var(--green));outline-offset:2px}
+#guided-agent-lesson :is([data-agent-lesson-action="admin-send"],[data-agent-lesson-action="migration"],[data-agent-lesson-action="use-send"]){border-color:var(--green);background:var(--green-soft);color:var(--green);font-weight:650}
+#guided-agent-lesson :is([data-agent-lesson-action="admin-send"],[data-agent-lesson-action="migration"],[data-agent-lesson-action="use-send"]):not(:disabled):hover{border-color:var(--green)}
+#guided-agent-lesson .lesson-transcript{display:grid;gap:8px;align-content:start;max-height:230px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:10px 12px}
+#guided-agent-lesson .lesson-message strong{display:block;font-size:12px;color:var(--muted)}
+#guided-agent-lesson .lesson-message-body{white-space:pre-wrap;overflow-wrap:anywhere}
+#guided-agent-lesson .lesson-event{margin:0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+#guided-agent-lesson .lesson-footer{display:flex;flex:none;align-items:center;gap:12px;padding:12px 18px;border-top:1px solid var(--line)}
+#guided-agent-lesson .lesson-progress{flex:1;min-width:0;margin:0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+/* Reused store-imports panel, scoped to the lesson dialog. */
+#guided-agent-lesson .store-import-panel{margin:0;color:var(--ink)}
+#guided-agent-lesson .store-import-panel fieldset{display:grid;gap:8px;min-width:0;margin:0;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+#guided-agent-lesson .store-import-panel legend{font-weight:600;padding-inline:4px}
+#guided-agent-lesson .store-import-panel :is(label,summary){cursor:pointer;overflow-wrap:anywhere}
+#guided-agent-lesson .store-import-panel fieldset>button{justify-self:start}
+#guided-agent-lesson .store-import-panel :is(p,pre){overflow-wrap:anywhere}
+#guided-agent-lesson .store-import-panel pre{white-space:pre-wrap;max-height:18rem;overflow:auto;background:var(--surface,var(--bg));padding:8px;margin:0}
+#guided-agent-lesson .store-import-panel :is([role=status],[role=alert]){font-size:12px}
+#guided-agent-lesson .store-import-panel input[type=checkbox]{width:15px;height:15px;margin:0;accent-color:var(--green)}
+#guided-agent-lesson .store-import-panel .store-meta{display:flex;flex-wrap:wrap;gap:5px 8px;margin-top:6px}
+@media(max-width:600px){#guided-agent-lesson{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}#guided-agent-lesson .lesson-stage{padding:12px 14px}}

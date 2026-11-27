@@ -60,6 +60,7 @@ import {mountInterfaceAppearance,mountDrawingLauncher} from './interface-appeara
 import {mountWorkspaceSnapshot} from './workspace-snapshot.mjs';
 import {mountWorkspaceGroups} from './workspace-groups.mjs';
 import {mountGuidedDemo} from './guided-demo.mjs';
+import {mountGuidedAgentLesson} from './guided-agent-lesson.mjs';
 import {createProjectSwitches,requireProjectSwitch} from './project-switches.mjs';
 import {mountDemoSurface} from './guided-demo-surface.mjs';
 import {mountAutoUpdate} from './auto-update-view.mjs';
@@ -568,6 +569,8 @@ if (!isSurface) workspaceGroups = mountWorkspaceGroups({invoke,scope:workspaceSc
 let adminAgent=null;
 if(workspaceScope.role==='shell'){
   adminAgent=mountAdminAgent({invoke,onOpenProject:id=>requireProjectSwitch(activateProject(id))});
+  const agentLesson=mountGuidedAgentLesson();
+  document.addEventListener('click',event=>{const opener=event.target.closest('[data-agent-lesson]');if(opener)agentLesson.open(opener);});
   guidedDemo=mountGuidedDemo({invoke,subscribe:window.nozeli.subscribe,openProject:id=>requireProjectSwitch(activateProject(id)),openFile:relPath=>openFile(relPath),getProjectId:()=>ui.project?.id,captureReturn:async()=>{const retained=await retainWorkspace();if(!retained.ok)throw Error(retained.error?.message||'当前编辑尚未保留');await writeView();return {projectId:ui.project?.id};},restoreReturn:async saved=>{if(saved?.projectId)await requireProjectSwitch(activateProject(saved.projectId));else if(ui.project?.demo){const id=ui.project.id,result=await invoke('workspace.closeProject',{projectId:id});if(!result.ok)throw Error(result.error.message);await clearProjectPage(id);}},onExit:async()=>{await renderRecent();},onError:message=>workspace.toast(message)});
   window.addEventListener('nozeli-demo-start',()=>void guidedDemo.start().catch(error=>workspace.toast(error.message)));
   window.addEventListener('nozeli-demo-settings-close',()=>{const dialog=$('settings-dialog');if(dialog.open)dialog.close();});
@@ -3103,7 +3106,7 @@ async function closeCurrentSubject(preserveDraft=false) {
 $('close-subject').addEventListener('click', () => enqueue(()=>ui.file?closeFileTab(ui.file.relPath):closeCurrentSubject(), true));
 $('retain-file-close').addEventListener('click',()=>enqueue(async()=>{if(ui.file?.kind==='text'&&await closeCurrentSubject(true)){renderFileTabs();workspace.toast('文本副本已保留，仍可从已打开列表查看；未重建原路径。');}},true));
 document.addEventListener('keydown',event=>{if(!(event.ctrlKey||event.metaKey)||document.body.classList.contains('provider-console-open')||document.querySelector('dialog[open]'))return;if(event.key.toLowerCase()==='w'&&ui.file){event.preventDefault();enqueue(()=>closeFileTab(ui.file.relPath),true);}});
-document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); flushCurrent(); } });
+document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!$('guided-agent-lesson')?.open) flushCurrent(); } });
 for (const [id, factor] of [['pdf-zoom-in', 1.2], ['pdf-zoom-out', 1/1.2], ['pdf-fit', null]]) $(id).addEventListener('click', () => enqueue(() => ui.pdf?.zoom(factor)));
 $('pdf-outline-toggle').addEventListener('click', () => enqueue(async () => {
   if (!ui.pdf) return;

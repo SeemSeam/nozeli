@@ -13,6 +13,7 @@ export function createStartPage({project,start,browse,compact=false}){
   const button=(text,run,id,primary=false)=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(id)b.id=id;if(primary)b.className='guided-start-primary';b.onclick=run;actions.append(b);return b;};
   if(project){if(browse)button('浏览文件',browse,undefined,true).dataset.startBrowse='true';}
   else{button('打开本地项目',()=>document.getElementById('pick-project')?.click(),undefined,true);button('体验演示',start,compact?undefined:'start-demo-entry');}
+  if(!project&&!compact){const elective=button('管理助手与技能移植教学',null);elective.dataset.agentLesson='';elective.setAttribute('aria-haspopup','dialog');}
   if(actions.children.length)root.append(actions);
   if(project)return root;
   const viewer=document.createElement('dialog');viewer.className='guided-start-viewer';viewer.setAttribute('aria-label','功能图片');
@@ -193,7 +194,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
       if(part==='files'&&document.getElementById('file-toggle')?.getAttribute('aria-expanded')!=='true')document.getElementById('file-toggle').click();
       if(part==='todos')document.dispatchEvent(new CustomEvent('nozeli-reveal-work-sidebar'));
       if(part==='conversation')unwrapDemo(await invoke('workspace.control',{type:'conversation-action',projectId:original.projectId,action:'open'}));
-      const selector={project:'.rail',files:'#files',workspace:'#workspace-groups',conversation:'#workspace-groups',todos:'#side'}[part];
+      const selector={project:'.rail',files:'#files',workspace:'#workspace-groups',conversation:'#workspace-open-conversation',todos:'#side'}[part];
       const node=document.querySelector(selector);if(!node)throw Error('教学界面区域不存在：'+part);
       const deadline=Date.now()+8000;
       while(node.getBoundingClientRect().width<1||node.getBoundingClientRect().height<1){if(Date.now()>deadline)throw Error('教学界面区域不可见：'+part);await new Promise(r=>setTimeout(r,80));}
@@ -228,17 +229,8 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
     return runAction(session,step);
   }
  function runStep(original,step){
-  const conversationSemantics=new Set(['frontdesk-ask','task-a','task-b','progress','decision-continue']);
-  const execute=conversationSemantics.has(step.semantic)?conversationStep(original,step):step.relPath?openStep(original,step):clientStep(original,step);
-  return execute.catch(reason=>{
-   // Only guarded refusals become explicit skips: the visitor's own edits
-   // (DEMO_CONTENT_CHANGED) or a superseded playback position
-   // (DEMO_ACTION_CANCELLED). Every other failure is real: rethrow it so the
-   // demo pauses on the failed step instead of advancing as if it succeeded.
-   if(reason?.code==='DEMO_CONTENT_CHANGED'){captionOverride='这一步已跳过：示例文件已包含你的修改，未改动文件';paint();return {ok:true,skipped:true};}
-   if(reason?.code==='DEMO_ACTION_CANCELLED'){captionOverride='这一步已跳过：演示位置已变化';paint();return {ok:true,skipped:true};}
-   throw reason;
-  });
+  const conversationSemantics=new Set(['frontdesk-ask','task-submit']);
+  return conversationSemantics.has(step.semantic)?conversationStep(original,step):step.relPath?openStep(original,step):clientStep(original,step);
  }
   // A receipt says the action ran; it does not prove the visitor can see the
   // result (main activates views lazily and only gates on readiness). Poll
@@ -274,7 +266,7 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
         prepareHint(step);
         if(session?.status!=='playing'||session.id!==original.id||session.stepIndex!==original.stepIndex||getProjectId()!==original.projectId){restartAfterFlight=session?.status==='playing';break;}
         original={...session};generation=token;
-        if(executedSteps.has(step.id)&&!step.semantic.startsWith('ui.map-')&&!['open','ui.settings','ui.finish'].includes(step.semantic)){
+        if(executedSteps.has(step.id)&&!step.semantic.startsWith('ui.map-')&&!['open','report','report-revised','diff','ui.settings','ui.finish'].includes(step.semantic)){
           // Already demonstrated once with its content-aligned explanation:
           // no second edit, and no label replayed over whatever is on screen
           // now — the caption alone records the skip.
@@ -293,15 +285,13 @@ export function mountGuidedDemo({invoke,subscribe,openProject,openFile,captureRe
             // The flight was superseded and the session recorded a refusal.
             // Report it and stay put: never advance a step or resume playback
             // on the host's behalf as if the interrupted action had succeeded.
-            if(reason.code==='DEMO_CONTENT_CHANGED')captionOverride='这一步已跳过：示例文件已包含你的修改，未改动文件';
-            else if(reason.code==='DEMO_ACTION_CANCELLED')captionOverride='这一步已跳过：演示位置已变化';
-            else failureMessage=reason.message;
+            failureMessage=reason.message;
             paint();
           }
           restartAfterFlight=session?.status==='playing'&&getProjectId()===session.projectId;break;
         }
         if(receipt?.ok===false)throw Error(receipt.error?.message||'真实动作未完成');
-        if(!receipt?.skipped)executedSteps.add(step.id);
+        executedSteps.add(step.id);
         // Content-present gate before the label: the receipt alone does not
         // prove the surface is on screen; only then may reading start.
         await confirmContentPresent(original,step);

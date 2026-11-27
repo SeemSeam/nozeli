@@ -105,21 +105,23 @@ try {
 
   controls=await startFromSettings();
   const resultId = await active();
-  await h.seek(controls, stepIndex('task-a-done'), 'seek to the first task completion');
+  await h.seek(controls, stepIndex('task-a'), 'seek to the background-task submission');
   current = await playUntil(async () => (await state(resultId)).todos.some(todo => todo.kind === 'result'), 'task A enters the todo list');
   const todo = current.todos.find(todo => todo.kind === 'result');
   const source = await h.invoke(shell, 'managed.history.read', {projectId: resultId, objectId: todo.objectId});
   const reportFile = path.join(current.project.rootDisplay, 'report.html');
+  const originalReport=await fs.readFile(reportFile);
   await fs.appendFile(reportFile, '<p>USER_EXPLORED_CURRENT_REPORT</p>');
   const frozenReport = await h.invoke(shell, 'managed.history.read', {projectId: resultId, objectId: todo.objectId});
   assert.equal(frozenReport.body, source.body, 'frozen report must not track later edits');
   assert(!frozenReport.body.includes('USER_EXPLORED_CURRENT_REPORT'));
 
-  await h.seek(controls, stepIndex('review-accept'), 'seek to the accept decision');
-  current = await playUntil(async () => { const value = await state(resultId); return value.todos.find(item => item.id === todo.id)?.status === 'resolved'; }, 'accept closes the reviewed task');
-  assert.equal(current.todos.find(item => item.id === todo.id).resolution.choice, 'accept');
-  assert((await fs.readFile(reportFile, 'utf8')).includes('USER_EXPLORED_CURRENT_REPORT'), 'acceptance must not rewrite the explored file');
-  mark('acceptance is a real decision and the frozen report preserves original bytes');
+  // Restore the fixture input after proving the frozen V1 ignored the edit.
+  await fs.writeFile(reportFile, originalReport);
+  current = await playUntil(async()=> (await state(resultId)).todos.some(item=>item.workId===todo.workId&&item.objectId!==todo.objectId&&item.resolution?.choice==='accept'),'the same work publishes and accepts a distinct V2',120_000);
+  assert.notEqual(current.todos.find(item=>item.id===todo.id)?.resolution?.choice,'accept');
+  assert.deepEqual(await fs.readFile(reportFile),originalReport,'acceptance must not rewrite the report fixture');
+  mark('V1 stays frozen; only V2 is accepted after the explicit discussion');
   await h.capture(shell, 'accepted-frozen-report');
   await h.auditIsolation();
   assert.deepEqual(r.errors, []);
