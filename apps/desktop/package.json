@@ -123,7 +123,7 @@
     "@shikijs/core": "4.5.0",
     "@shikijs/engine-javascript": "4.5.0",
     "@shikijs/langs": "4.5.0",
-    "@shikijs/monaco": "4.5.0",
+    "@shikijs/monaco": "4.6.0",
     "@shikijs/themes": "4.5.0",
     "@xterm/xterm": "6.0.0",
     "@xterm/addon-fit": "0.11.0",
