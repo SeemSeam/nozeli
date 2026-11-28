@@ -9,6 +9,9 @@ class WorkspaceWindow extends BaseWindow {
     // Native traffic lights remain in the inset title strip; the shell centers
     // its project identity independently of the macOS title alignment.
     if (process.platform === 'darwin') { options.frame = true; options.titleBarStyle = centeredProjectTitle?'hiddenInset':'default'; }
+    // Use the OS caption and resize hit targets, even when a WebContentsView
+    // covers the client area or the renderer is blocked by a project operation.
+    if (process.platform === 'win32') options.frame = true;
     super(options);
     this.chromeView = new WebContentsView({webPreferences});
     this.webContents = this.chromeView.webContents;

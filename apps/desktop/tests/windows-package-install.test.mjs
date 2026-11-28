@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
+import {spawn,spawnSync} from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import {windowsInstall} from '../tools/install-windows.mjs';
 import {validateWindowsCandidate,packageWindowsCandidate} from '../tools/package-windows-candidate.mjs';
@@ -121,8 +122,70 @@ test('an independently held installer lock wins without copying or publishing',n
  const f=await fixture(t),input=await candidate(f.candidate('candidate'));await windowsInstall({root:f.root,command:'install',candidate:input});
  const before=await fs.readFile(path.join(f.root,'ACTIVE.json')),versions=await fs.readdir(path.join(f.root,'versions'));
  const parent=openExperimentalPersistenceParent(f.root,'.install-lock'),held=parent.createPrivateTreeRootExclusive('.install-lock');
- try{await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}));assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);assert.deepEqual(await fs.readdir(path.join(f.root,'versions')),versions);}
+ try{
+  const live=await windowsInstall({root:f.root,command:'status'});assert.equal(live.installerLock,true);assert.equal(live.installerLockCustody.custody,'held');
+  await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),error=>error.code==='INSTALL_LOCK_HELD'&&error.installationRoot===f.root&&error.installLock.win32Code===32);
+  assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);assert.deepEqual(await fs.readdir(path.join(f.root,'versions')),versions);
+ }
  finally{held.removePrivateEmptyDirectory();held.close();parent.close();}
+ const recovered=await windowsInstall({root:f.root,command:'upgrade',candidate:input});assert.notEqual(recovered.active,JSON.parse(before).active);
+});
+
+test('retained lock husk left behind without any holder is diagnosed and never removed automatically',native,async t=>{
+ const f=await fixture(t),one=await candidate(f.candidate('one')),two=await candidate(f.candidate('two'),'synthetic-2');
+ const installed=await windowsInstall({root:f.root,command:'install',candidate:one});
+ // Exact force-termination residue: the exclusive lock name survives while
+ // every holder HANDLE is already gone (no normal empty-directory removal).
+ const parent=openExperimentalPersistenceParent(f.root,'.install-lock');parent.createPrivateTreeRootExclusive('.install-lock').close();parent.close();
+ const status=await windowsInstall({root:f.root,command:'status'});
+ assert.equal(status.installerLock,true);assert.equal(status.installerLockCustody.present,true);assert.equal(status.installerLockCustody.custody,'stale');
+ const before=await fs.readFile(path.join(f.root,'ACTIVE.json'));
+ await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:two}),error=>error.code==='INSTALL_LOCK_RETAINED'&&error.installationRoot===f.root);
+ assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);
+ assert.equal((await windowsInstall({root:f.root,command:'status'})).installerLockCustody.custody,'stale');
+ // Explicit operator resolution is the only path past a retained husk.
+ const resolver=openExperimentalPersistenceParent(f.root,'.install-lock');const probe=resolver.openPrivateDeleteDirectory('.install-lock');
+ try{probe.removePrivateEmptyDirectory();}finally{probe.close();resolver.close();}
+ const upgraded=await windowsInstall({root:f.root,command:'upgrade',candidate:two});
+ assert.notEqual(upgraded.active,installed.active);assert.equal(upgraded.previous,installed.active);assert.equal((await state(f.root)).active,upgraded.active);
+ const after=await windowsInstall({root:f.root,command:'status'});assert.equal(after.installerLock,false);assert.equal(after.installerLockCustody.custody,'absent');
+});
+
+test('force-terminated lock holder is diagnosed live, then its dead husk is retained fail-closed',native,async t=>{
+ const f=await fixture(t),input=await candidate(f.candidate('candidate'));await windowsInstall({root:f.root,command:'install',candidate:input});
+ const holder=new URL('../src/platform/windows/experimental-persistence.mjs',import.meta.url).href;
+ const child=spawn(process.execPath,['--input-type=module','-e',
+  `import {openExperimentalPersistenceParent} from ${JSON.stringify(holder)};
+   const parent=openExperimentalPersistenceParent(${JSON.stringify(f.root)},'.install-lock');
+   parent.createPrivateTreeRootExclusive('.install-lock');
+   console.log('LOCK-HELD');setInterval(()=>{},1000);`],{stdio:['ignore','pipe','pipe']});
+ t.after(()=>{try{child.kill('SIGKILL');}catch{}});
+ let observed='';
+ await new Promise((resolve,deny)=>{const timer=setTimeout(()=>deny(Error('holder never reported the lock')),15000);
+  child.stdout.on('data',bytes=>{observed+=bytes;if(observed.includes('LOCK-HELD')){clearTimeout(timer);resolve();}});
+  child.once('exit',()=>{clearTimeout(timer);deny(Error('holder exited before holding the lock'));});});
+ // The live foreign holder is never adopted or deleted; the refusal names it.
+ await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),{code:'INSTALL_LOCK_HELD'});
+ const taskkill=path.join(process.env.SystemRoot??'C:\\Windows','System32','taskkill.exe');
+ assert.equal(spawnSync(taskkill,['/F','/PID',String(child.pid)]).status,0);
+ await new Promise((resolve,deny)=>{const timer=setTimeout(()=>deny(Error('holder never exited')),15000);child.once('exit',()=>{clearTimeout(timer);resolve();});});
+ const status=await windowsInstall({root:f.root,command:'status'});assert.equal(status.installerLockCustody.custody,'stale');
+ // The dead husk is never adopted or deleted; the installation fails closed.
+ await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),error=>error.code==='INSTALL_LOCK_RETAINED'&&error.installationRoot===f.root);
+ assert.equal((await state(f.root)).active,status.state.active);
+ assert.equal((await windowsInstall({root:f.root,command:'status'})).installerLockCustody.custody,'stale');
+});
+
+test('non-empty unknown installer lock is refused with an actionable diagnostic and never removed',native,async t=>{
+ const f=await fixture(t),input=await candidate(f.candidate('candidate'));await windowsInstall({root:f.root,command:'install',candidate:input});
+ const parent=openExperimentalPersistenceParent(f.root,'.install-lock'),husk=parent.createPrivateTreeRootExclusive('.install-lock');
+ const stray=husk.createPrivateExclusive('.stray');stray.write(Buffer.from('foreign content'));stray.sync();stray.publishNew('stray');stray.close();husk.close();parent.close();
+ const before=await fs.readFile(path.join(f.root,'ACTIVE.json'));
+ const status=await windowsInstall({root:f.root,command:'status'});
+ assert.equal(status.installerLockCustody.custody,'unknown');assert.equal(status.installerLockCustody.evidence.entries,1);
+ await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),error=>error.code==='INSTALL_LOCK_UNKNOWN'&&error.installationRoot===f.root&&error.installLock.entries===1);
+ assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);
+ assert.equal(await fs.readFile(path.join(f.root,'.install-lock','stray'),'utf8'),'foreign content');
 });
 
 test('native locked active-state winner preserves the original pointer and reconciliation lock',native,async t=>{
@@ -132,6 +195,11 @@ test('native locked active-state winner preserves the original pointer and recon
  try{await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),e=>e.reconciliationRequired===true);assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);}
  finally{winner.close();parent.close();}
  const status=await windowsInstall({root:f.root,command:'status'});assert.equal(status.installerLock,true);assert.equal(status.state.active,JSON.parse(before).active);
+ assert.equal(status.installerLockCustody.custody,'stale');
+ // The retained failure lock fails closed: no automatic adoption, the active
+ // pointer stays untouched until the husk is resolved explicitly.
+ await assert.rejects(windowsInstall({root:f.root,command:'upgrade',candidate:input}),error=>error.code==='INSTALL_LOCK_RETAINED'&&error.installationRoot===f.root);
+ assert.deepEqual(await fs.readFile(path.join(f.root,'ACTIVE.json')),before);
 });
 
 test('tampered rollback leaves active pointer and user profile unchanged',native,async t=>{

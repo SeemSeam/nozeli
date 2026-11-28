@@ -2134,8 +2134,13 @@ async function renderRecent() {
   await refreshOpenFileAvailability(ui.project);renderFileTabs();
   if (isSurface && workspaceScope.relPath) await openFileNow(workspaceScope.relPath, workspaceScope.viewState || (isReviewDocument?{}:state.value.files?.[workspaceScope.relPath]));
   else renderEmptyState();
-  await window.__agentProject?.(ui.project.id, {input:isConversation?{projectId:ui.project.id,frame:workspaceScope.viewState||{}}:undefined});
-  if(workspaceScope.role==='shell')await invoke('workspace.activated',{projectId});
+  const agentLoading=window.__agentProject?.(ui.project.id,{input:isConversation?{projectId:ui.project.id,frame:workspaceScope.viewState||{}}:undefined});
+  if(workspaceScope.role==='shell'){
+    // Agent configuration/connection is not part of the file-workspace receipt.
+    void agentLoading;
+    const activated=await invoke('workspace.activated',{projectId});
+    if(!activated.ok)return activated;
+  }else await agentLoading;
   projectReady = true;
   return {ok:true,projectId};
 }
@@ -3198,8 +3203,9 @@ async function openBesideSnapshot(file, diff=false, left=null) {
   };
   mountSearchSurface({current:()=>({projectId:ui.project?.id,file:ui.file,editor:ui.editor,pdf:ui.pdf,office:ui.word,review:isReviewDocument,dirty:ui.dirty||ui.wordDirty,composing:ui.composing||projectComposing(),blocked:ui.conflict||ui.sourceMissing||ui.viewBlocked||ui.file?.sourceChanged}),setTextMode});
   mountDemoSurface({invoke,subscribe:window.nozeli.subscribe,scope:workspaceScope,getCurrent:()=>({project:ui.project,file:ui.file,editor:ui.editor,pdf:ui.pdf,office:ui.word,officeRevision:ui.wordRevision||0,tags:[...ui.threads.values()]}),setTextMode,flush:flushCurrent,beginNote,addTag,persistTag,tagActions,regionDrawing,startDrawing,workspaceGroups:()=>workspaceGroups});
-  window.nozeli.subscribe('session.flush', async () => {
-    if(adminAgent){const saved=await adminAgent.flush();if(!saved.ok)return saved;}
+  window.nozeli.subscribe('session.flush', async detail => {
+    // The global assistant retains its own draft across project bindings.
+    if(adminAgent&&detail?.purpose!=='project-switch'){const saved=await adminAgent.flush();if(!saved.ok)return saved;}
     const drawingSaved=await workspaceSnapshot.flush();if(!drawingSaved.ok)return drawingSaved;
     // Detached roots own layout chrome only; their content surfaces flush separately.
     if(workspaceScope.role==='detached')return Promise.resolve({ok:true});

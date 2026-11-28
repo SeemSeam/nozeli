@@ -36,7 +36,7 @@ async function fixture(t){const directory=await mkdtemp(path.join(os.tmpdir(),'w
 host.storage=new Proxy(storage,{get(target,key){const value=Reflect.get(target,key);return typeof value==='function'?((id,...args)=>value.call(target,id==='p'?projectId:id,...args)):value;}});
 const stateHost=new DesktopHost(directory);stateHost.storage=host.storage;stateHost.requireRegisteredProject=id=>host.requireRegisteredProject(id);host.readState=id=>stateHost.readState(id);
 const native=new WorkspaceNative({BrowserWindow:Window,WebContentsView:View,screen:{getDisplayMatching:()=>({workArea:{x:-1920,y:0,width:1920,height:1080}})},origin:'http://127.0.0.1:9000/',userDataDir:directory,host});const root=native.registerShell(new Window());root.projectId='p';root.ready=true;native.layouts.set('p',createLayout('p',{workspace:{minimized:true}}));return {native,root};}
-function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload,ok}));};}
+function receipt(native,r,ok=true){r.ready=true;r.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(r,{requestId:payload?.requestId??payload,ok}));};}
 test('strict project close keeps live surfaces when interactive terminal cleanup is unconfirmed',async t=>{
  const {native,root}=await fixture(t);receipt(native,root);
  native.projectTerminals.stopProject=async()=>{throw Object.assign(Error('terminal exit not confirmed'),{code:'TERMINAL_CLEANUP_INCOMPLETE'});};
@@ -135,15 +135,15 @@ for(const failure of ['shell-save','surface-save','attachment','none'])test(`pro
  const guest=new View();guest.setVisible(true);const sourceGuest=previewSlot(guest,original,root.win,'source-guest');preview.slots.set(sourceGuest.id,sourceGuest);
  const captures=[];
  for(const owner of [root,original]){
-  owner.ready=true;owner.wc.onSend=(channel,requestId)=>{
+  owner.wc.onSend=(channel,payload)=>{
    if(channel!=='nozeli:flush')return;
    void (async()=>{
     assert.equal(root.projectId,'p','host must still admit source recovery while saving');
     await native.saveRecovery(owner,{projectId:'p',viewId:owner.viewId,generation:1,candidate:{text:owner===root?'UNSENT COMPOSER':'UNSAVED DOCUMENT'},workspace:{draft:'KEEP DRAFT'}});
     captures.push(owner.role);
     const refused=failure===`${owner===root?'shell':'surface'}-save`;
-    native.acknowledge(owner,{requestId,ok:!refused,error:refused?{code:'SAVE_REFUSED',message:'retained, not confirmed'}:undefined});
-   })().catch(error=>native.acknowledge(owner,{requestId,ok:false,error}));
+   native.acknowledge(owner,{requestId:payload?.requestId??payload,ok:!refused,error:refused?{code:'SAVE_REFUSED',message:'retained, not confirmed'}:undefined});
+  })().catch(error=>native.acknowledge(owner,{requestId:payload?.requestId??payload,ok:false,error}));
   };
  }
  const add=root.win.contentView.addChildView;root.win.contentView.addChildView=view=>{
@@ -765,7 +765,7 @@ test('workspace.focus hands off via parked returnFocus and drops stale requests'
 });
 test('open admission settles new document surfaces and reports init failure instead of success',async t=>{
  const {native,root}=await fixture(t);
- const settleRelPath=(relPath,state)=>{const realReconcile=native.reconcile.bind(native);native.reconcile=async layout=>{await realReconcile(layout);for(const surface of native.surfaces.values())if(surface.relPath===relPath){Object.assign(surface,state);surface.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(surface,{requestId:payload,ok:true}));};}};return ()=>{native.reconcile=realReconcile;};};
+ const settleRelPath=(relPath,state)=>{const realReconcile=native.reconcile.bind(native);native.reconcile=async layout=>{await realReconcile(layout);for(const surface of native.surfaces.values())if(surface.relPath===relPath){Object.assign(surface,state);surface.wc.onSend=(channel,payload)=>{if(channel==='nozeli:flush')queueMicrotask(()=>native.acknowledge(surface,{requestId:payload?.requestId??payload,ok:true}));};}};return ()=>{native.reconcile=realReconcile;};};
  const command=(relPath,key)=>native.command(root,{projectId:'p',expectedRevision:native.layouts.get('p').revision,requestKey:key,command:{type:'open',view:{kind:'document',relPath}}});
  // A surface whose init terminally failed (unreadable file) must fail the open
  // itself — the dialog caller never sees a success result for a broken surface.

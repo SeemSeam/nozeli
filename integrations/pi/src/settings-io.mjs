@@ -1,12 +1,12 @@
 // SDK storage boundary: the SDK retains parsing, merging, migration, trust and
-// dirty-field semantics. Windows reads the bytes through retained native HANDLEs
-// and records those same bytes before giving them to the SDK callback.
+// dirty-field semantics. Windows buffers exact bytes from native HANDLE reads
+// for the next durable evidence boundary.
 import path from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {SettingsManager} from '@earendil-works/pi-coding-agent';
 import {windowsBridge} from './journal-io.mjs';
+import {createReadEvidenceJournal} from './read-evidence-journal.mjs';
 
-const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=(code,message,cause)=>Object.assign(Error(message,{cause}),{code});
 const missing=error=>error.code==='WIN32_IO_ERROR'&&error.win32Code===2;
 const limit=1024*1024;
@@ -33,30 +33,15 @@ export async function createOwnerSettingsIO({agentDir,privateRoot=process.env.NO
  if(!path.isAbsolute(privateRoot)||!path.isAbsolute(agentDir)||!relative||path.isAbsolute(relative)||relative.split(path.sep).includes('..'))
   throw fail('PI_SETTINGS_SCOPE','Agent settings are outside the bound owner root');
  const native=await windowsBridge(),agentRelative=relative.split(path.sep).join('/');
- const streamId=randomUUID();let sequence=0,head=null,headFileIdentity=null,poisoned=null;
+ let poisoned=null;
  const check=()=>{if(poisoned)throw poisoned;};
  const openAgent=()=>native.openAnchoredPersistenceParent(privateRoot,agentRelative+'/__settings_anchor__');
- function publish(parent,name,bytes){
-  let stage,primary,published=false;
-  try{stage=parent.createPrivateExclusive('.settings-'+randomUUID()+'.pending');stage.write(bytes);stage.sync();stage.publishNew(name);published=true;directorySync(parent);parent.verify();return stage.identity();}
-  catch(cause){primary=published||cause.committed?fail('PI_SETTINGS_UNCONFIRMED','Settings evidence publication requires reconciliation',cause):cause;if(published||cause.committed)primary.committed=true;throw primary;}
-  finally{closeAll([stage],primary);}
- }
- function retain(observation){
-  let agent,evidence,primary;
-  try{
-   check();agent=openAgent();evidence=agent.openPrivateDirectory('settings-reads',true);evidence.syncDirectory();agent.syncDirectory();
-   const next=sequence+1,base=String(next).padStart(8,'0')+'-'+randomUUID();
-   const bytes=observation.bytes;
-   const blobIdentity=bytes===null?null:publish(evidence,base+'.bytes',bytes);
-   const record={schema:2,streamId,sequence:next,previousSha256:head,previousFileIdentity:headFileIdentity,scope:observation.scope,cwd:observation.cwd,
-    path:observation.path,projectIdentity:observation.projectIdentity??null,parentIdentity:observation.parentIdentity??null,
-    absentParent:observation.absentParent??false,present:bytes!==null,fileIdentity:observation.identity??null,
-    byteLength:bytes?.length??0,sha256:bytes===null?null:hash(bytes),blob:bytes===null?null:'settings-reads/'+base+'.bytes',blobIdentity};
-   const encoded=Buffer.from(JSON.stringify(record)),identity=publish(evidence,base+'.json',encoded);
-   sequence=next;head=hash(encoded);headFileIdentity=identity;return record;
-  }catch(error){primary=error;poisoned=fail('PI_SETTINGS_UNCONFIRMED','Settings read evidence is incomplete; owner must reconcile',error);throw poisoned;}
-  finally{try{closeAll([evidence,agent],primary);}catch(error){poisoned=error;throw error;}}
+ const evidence=createReadEvidenceJournal({openAgent,member:'settings-reads',streamId:randomUUID(),schema:3,
+  mechanism:'windows-native-settings-read-journal',directory:path.join(agentDir,'settings-reads'),byteLimit:limit,directorySync});
+ const flushEvidence=()=>{check();try{evidence.flush();}catch(cause){throw poisoned=fail('PI_SETTINGS_UNCONFIRMED','Settings read evidence requires reconciliation',cause);}};
+ function retain({scope,cwd,path:target,projectIdentity,parentIdentity,absentParent,identity,bytes}){
+  evidence.retain({scope,cwd,path:target,projectIdentity:projectIdentity??null,parentIdentity:parentIdentity??null,
+   absentParent:absentParent??false,fileIdentity:identity??null},bytes);
  }
  function observe(cwd,scope){
   check();let project,parent,file,primary;
@@ -76,6 +61,7 @@ export async function createOwnerSettingsIO({agentDir,privateRoot=process.env.NO
  }
  function write(cwd,scope,expected,next){
   check();if(typeof next!=='string'||Buffer.byteLength(next)>limit)throw fail('PI_SETTINGS_LIMIT','Settings candidate must be a string of at most 1 MiB');
+  flushEvidence();
   let project,parent,created,transaction,stage,primary,published=false;
   try{
    if(scope==='global')parent=openAgent();
@@ -135,6 +121,7 @@ export async function createOwnerSettingsIO({agentDir,privateRoot=process.env.NO
    catch(cause){poisoned=fail('PI_SETTINGS_UNCONFIRMED','Native settings observation could not be confirmed',cause);throw poisoned;}
    try{const parsed=JSON.parse(observation.bytes?.toString('utf8')??'');return typeof parsed==='object'&&parsed!==null?parsed:{};}catch{return {};}
   },
-  snapshot(){check();return {schema:2,streamId,mechanism:'windows-native-settings-read-bytes',reads:sequence,headSha256:head,headFileIdentity,directory:path.join(agentDir,'settings-reads'),fullRecoveryClosureQualified:false};},
+  flush:flushEvidence,close:evidence.close,
+  snapshot(){flushEvidence();return evidence.snapshot();},
  });
 }

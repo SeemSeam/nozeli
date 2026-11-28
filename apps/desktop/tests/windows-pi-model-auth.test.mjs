@@ -6,9 +6,11 @@ import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {ensureExperimentalPrivateDirectory} from '../src/platform/windows/experimental-directories.mjs';
+import {serve} from './pi-provider.fixture.mjs';
 const integration=process.env.NOZELI_TEST_PI_ROOT??path.resolve(import.meta.dirname,'../../../integrations/pi');
 const {createOwnerModelAuthIO}=await import(pathToFileURL(path.join(integration,'src/model-auth-io.mjs')));
 const {OwnerRuntime}=await import(pathToFileURL(path.join(integration,'src/bridge.mjs')));
+const {readEvidenceFrames}=await import(pathToFileURL(path.join(integration,'src/read-evidence-journal.mjs')));
 const native={skip:process.platform!=='win32'||process.arch!=='x64'};
 const sha=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t,options={}){
@@ -17,16 +19,16 @@ async function fixture(t,options={}){
  const bridge=path.resolve(import.meta.dirname,'../native/windows/build/Release/nozeli_windows_read.node');
  const env={NOZELI_PI_PRIVATE_ROOT:root,NOZELI_PI_WINDOWS_NATIVE_BRIDGE:bridge,NOZELI_PI_WINDOWS_NATIVE_SHA256:sha(await fs.readFile(bridge))},before={};
  for(const [k,v] of Object.entries(env)){before[k]=process.env[k];process.env[k]=v;}
- t.after(async()=>{for(const [k,v] of Object.entries(before)){if(v===undefined)delete process.env[k];else process.env[k]=v;}await fs.rm(root,{recursive:true,force:true});});
- const io=await createOwnerModelAuthIO({agentDir,...options});return {root,agentDir,cwd,io,file:name=>path.join(agentDir,name),workspace:{workspaceId:'model-auth-test',path:cwd}};
+ const io=await createOwnerModelAuthIO({agentDir,...options}),closers=[()=>io.close()];
+ t.after(async()=>{for(const close of closers.reverse())await close();for(const [k,v] of Object.entries(before)){if(v===undefined)delete process.env[k];else process.env[k]=v;}await fs.rm(root,{recursive:true,force:true});});
+ return {root,agentDir,cwd,io,closers,file:name=>path.join(agentDir,name),workspace:{workspaceId:'model-auth-test',path:cwd}};
 }
 const models=id=>JSON.stringify({providers:{synthetic:{api:'openai-completions',baseUrl:'http://127.0.0.1:1/v1',apiKey:'synthetic-only',models:[{id,name:id,contextWindow:4096,maxTokens:1024}]}}});
 async function receipts(f){
- const directory=f.file('model-auth-reads'),names=(await fs.readdir(directory)).filter(n=>n.endsWith('.json')).sort();let head=null;
- const result=[];for(const name of names){const bytes=await fs.readFile(path.join(directory,name)),row=JSON.parse(bytes);if(row.streamId!==f.io.snapshot().streamId)continue;result.push({row,bytes});}
- result.sort((a,b)=>a.row.sequence-b.row.sequence);let count=0;for(const {row,bytes} of result){assert.equal(row.previousSha256,head);head=sha(bytes);assert.equal(row.sequence,++count);
-  if(row.present){const bytes=await fs.readFile(f.file(row.blob));assert.equal(sha(bytes),row.sha256);assert.equal(bytes.length,row.byteLength);assert.match(row.blobIdentity,/^[a-f0-9]{16}:[a-f0-9]{32}$/);}
- }assert.equal(head,f.io.snapshot().headSha256);assert.equal(result.length,f.io.snapshot().reads);return result.map(r=>r.row);
+ const snapshot=f.io.snapshot(),bytes=await fs.readFile(path.join(snapshot.directory,snapshot.streamId+'.journal'));
+ const frames=[...readEvidenceFrames(bytes,snapshot.headBytes,8*1024*1024)];
+ assert.equal(frames.at(-1)?.headSha256,snapshot.headSha256);assert.equal(frames.length,snapshot.reads);
+ return frames.map(({row})=>row);
 }
 
 test('native model runtime preserves SDK comments/BOM/schema and refreshes the actual models version',native,async t=>{
@@ -38,11 +40,31 @@ test('native model runtime preserves SDK comments/BOM/schema and refreshes the a
  assert.equal(f.io.snapshot().fullRecoveryClosureQualified,false);
 });
 
+test('request-time auth evidence must be durable before a provider receives the prompt',native,async t=>{
+ const provider=await serve(()=>({text:'unexpected dispatch'}));t.after(()=>provider.close());
+ const f=await fixture(t,{directorySync(){throw Error('synthetic evidence directory sync failure');}});
+ await fs.writeFile(f.file('models.json'),models('scripted').replace('http://127.0.0.1:1/v1',provider.url));
+ const runtime=await f.io.createModelRuntime({refreshOnCreate:false});
+ await assert.rejects(runtime.completeSimple(runtime.getModel('synthetic','scripted'),{messages:[{role:'user',content:'synthetic',timestamp:Date.now()}]}),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
+ assert.deepEqual(provider.requests,[]);
+ assert.throws(()=>f.io.snapshot(),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
+});
+
+test('an unconfirmed native auth read blocks the SDK credential transaction callback',native,async t=>{
+ const f=await fixture(t,{directorySync(){throw Error('synthetic evidence directory sync failure');}});
+ const content='{"synthetic":{"type":"oauth","refresh":"synthetic-only","access":"expired","expires":0}}';
+ await fs.writeFile(f.file('auth.json'),content);
+ let entered=false;
+ await assert.rejects(f.io.createCredentials().modify('synthetic',async()=>{entered=true;}),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
+ assert.equal(entered,false);
+ assert.equal(await fs.readFile(f.file('auth.json'),'utf8'),content);
+});
+
 test('native credentials persist async changes, refresh external versions and preserve unrelated providers',native,async t=>{
  const f=await fixture(t);await fs.writeFile(f.file('auth.json'),JSON.stringify({other:{type:'api_key',key:'synthetic-other'}}));
  const auth=f.io.createCredentials();await auth.modify('synthetic',async()=>({type:'api_key',key:'synthetic-first'}));
  assert.equal((await auth.read('synthetic')).key,'synthetic-first');assert.equal((await auth.read('other')).key,'synthetic-other');
- const second=await createOwnerModelAuthIO({agentDir:f.agentDir});assert.equal((await second.createCredentials().read('synthetic')).key,'synthetic-first');
+ const second=await createOwnerModelAuthIO({agentDir:f.agentDir});f.closers.push(()=>second.close());assert.equal((await second.createCredentials().read('synthetic')).key,'synthetic-first');
  await fs.writeFile(f.file('auth.json'),'{"synthetic":{"type":"api_key","key":"synthetic-external"}}');assert.equal((await auth.read('synthetic')).key,'synthetic-external');
  await auth.delete('synthetic');assert.equal(await auth.read('synthetic'),undefined);assert.deepEqual(JSON.parse(await fs.readFile(f.file('auth.json'),'utf8')),{});
  const rows=await receipts(f);assert.ok(rows.some(r=>r.name==='auth.json'&&r.present));assert.equal(JSON.stringify(f.io.snapshot()).includes('synthetic-external'),false);
@@ -67,7 +89,7 @@ test('native async callbacks serialize per file and abort before publishing afte
 
 test('native models store remains persistent and observes another writer without path revision caching',native,async t=>{
  const f=await fixture(t),store=f.io.createModelsStore();const entry={models:[{id:'one'}],updatedAt:1};await store.write('synthetic',entry);assert.deepEqual(await store.read('synthetic'),entry);
- const next=await createOwnerModelAuthIO({agentDir:f.agentDir}),other=next.createModelsStore();assert.deepEqual(await other.read('synthetic'),entry);
+ const next=await createOwnerModelAuthIO({agentDir:f.agentDir}),other=next.createModelsStore();f.closers.push(()=>next.close());assert.deepEqual(await other.read('synthetic'),entry);
  await other.write('external',{models:[{id:'two'}]});assert.ok(await store.read('external'));await store.delete('synthetic');assert.equal(await other.read('synthetic'),undefined);assert.ok(await other.read('external'));
  assert.ok((await receipts(f)).some(r=>r.name==='models-store.json'));
 });
@@ -84,7 +106,7 @@ for(const name of ['models.json','auth.json','models-store.json'])test(`native $
 
 test('native private configuration publication failure poisons credentials after commit and never retries',native,async t=>{
  let failPublication=false;const f=await fixture(t,{directorySync(parent){if(failPublication&&!parent.path.includes('model-auth-reads'))throw Error('synthetic post-publication failure');parent.syncDirectory();}});
- await fs.writeFile(f.file('auth.json'),'{}');const auth=f.io.createCredentials();failPublication=true;let calls=0;
+ await fs.writeFile(f.file('auth.json'),'{}');const auth=f.io.createCredentials();f.io.snapshot();failPublication=true;let calls=0;
  await assert.rejects(auth.modify('synthetic',async()=>{calls++;return {type:'api_key',key:'synthetic-published'};}),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
  assert.equal(calls,1);assert.equal(JSON.parse(await fs.readFile(f.file('auth.json'),'utf8')).synthetic.key,'synthetic-published');
  assert.throws(()=>auth.read('synthetic'),{code:'PI_MODEL_AUTH_UNCONFIRMED'});assert.throws(()=>f.io.createCredentials(),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
@@ -92,6 +114,7 @@ test('native private configuration publication failure poisons credentials after
 
 test('owner provider management and session inventory use native models and credential storage',native,async t=>{
  const f=await fixture(t);await fs.writeFile(f.file('models.json'),models('before'));const runtime=new OwnerRuntime({send:()=>{}});await runtime.ensureInitialized(f);
+ f.closers.push(()=>runtime.stop());
  const supervisor=runtime.driver.runtimeSupervisor;
  await supervisor.setProviderApiKey(f.workspace,'openai','synthetic-managed');
  assert.equal(JSON.parse(await fs.readFile(f.file('auth.json'),'utf8')).openai.key,'synthetic-managed');
@@ -170,9 +193,9 @@ for(const name of ['auth.json','models-store.json'])test(`native ${name} rejects
  });
 });
 
-test('native model auth refuses an evidence directory replacement before another read is consumed',native,async t=>{
- const f=await fixture(t);f.io.readModels();const directory=f.file('model-auth-reads'),name=(await fs.readdir(directory)).find(name=>name.endsWith('.json')),original=await fs.readFile(path.join(directory,name));
- await fs.rename(directory,directory+'.original');await ensureExperimentalPrivateDirectory(f.root,directory);
- assert.throws(()=>f.io.readModels(),{code:'PI_MODEL_AUTH_UNCONFIRMED'});assert.throws(()=>f.io.snapshot(),{code:'PI_MODEL_AUTH_UNCONFIRMED'});
- assert.deepEqual(await fs.readFile(path.join(directory+'.original',name)),original);
+test('native model auth pins the original journal against a same-byte replacement',native,async t=>{
+ const f=await fixture(t);f.io.readModels();const snapshot=f.io.snapshot(),file=path.join(snapshot.directory,snapshot.streamId+'.journal');
+ const original=await fs.readFile(file);await fs.writeFile(file+'.candidate',original);
+ await assert.rejects(fs.rename(file+'.candidate',file));
+ f.io.readModels();assert.equal(f.io.snapshot().headFileIdentity,snapshot.headFileIdentity);
 });

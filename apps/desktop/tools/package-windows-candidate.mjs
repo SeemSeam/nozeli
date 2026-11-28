@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {applicationSourceIncluded,dependencyIncluded} from './local-release.mjs';
 import {packagePiRuntime} from './package-pi-runtime.mjs';
 import {absolute,openPayload,sha256,json,reject,readRegular} from './windows-install-core.mjs';
+import {loadDemoTemplate} from '../src/main/guided-demo-files.mjs';
 
 const prefix='resources/app/';
 const platformListAllows=(list,target)=>list===undefined||(!list.includes('!'+target)&&(!list.some(value=>!value.startsWith('!'))||list.includes(target)));
@@ -72,6 +73,7 @@ export async function packageWindowsCandidate({source,candidate,input,nativeProv
  const origin=absolute(source??input);const rel=path.relative(origin,candidate),back=path.relative(candidate,origin);const contains=value=>value===''||value!=='..'&&!value.startsWith('..'+path.sep)&&!path.isAbsolute(value);if(contains(rel)||contains(back))throw reject('CANDIDATE_INPUT','Input and output must be disjoint dedicated directories');
  if(input){const verified=await validateWindowsCandidate(input);try{await verified.tree.copyTo(path.dirname(candidate),path.basename(candidate));return verified.manifest;}finally{verified.tree.close();}}
  absolute(source);const pkg=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8')),lock=JSON.parse(await fs.readFile(path.join(source,'package-lock.json'),'utf8'));
+ await loadDemoTemplate(source);
  const require=createRequire(path.join(source,'package.json'));const electron=path.dirname(require('electron'));
  await fs.mkdir(candidate); // Exclusive; failed preparations remain for review.
  await fs.cp(electron,candidate,{recursive:true,errorOnExist:false,force:false});

@@ -2,8 +2,9 @@
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import net from 'node:net';
-import {spawn} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
 import puppeteer from 'puppeteer-core';
@@ -32,6 +33,12 @@ async function launch(){
  const launchedAt=performance.now();
  child=spawn(binary,[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(appRoot,'src/main/main.cjs')]),...(process.platform==='darwin'?['--inspect=0']:[]),...(process.platform==='linux'?['--ozone-platform='+ozone]:[])],{cwd:project,env,stdio:['ignore','pipe','pipe']});
  exited=new Promise(r=>child.once('exit',(code,signal)=>r({code,signal})));for(const stream of[child.stdout,child.stderr])stream.on('data',b=>log+=b);
+ if(process.platform==='win32'){
+   await until(()=>log.includes(`DevTools listening on ws://127.0.0.1:${port}/`),'loopback CDP startup');
+   const command=`$ErrorActionPreference='Stop'; $rows=@(Get-NetTCPConnection -State Listen -LocalPort ${port}); if($rows.Count -ne 1 -or $rows[0].LocalAddress -ne '127.0.0.1' -or $rows[0].OwningProcess -ne ${child.pid}){throw 'Unexpected debug listener'}; (Get-Process -Id ${child.pid}).Path`;
+   const actual=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{encoding:'utf8',timeout:15000}).trim();
+   assert.equal(path.normalize(actual).toLowerCase(),path.normalize(binary).toLowerCase());
+ }
  browser=await until(()=>puppeteer.connect({browserURL:'http://127.0.0.1:'+port,defaultViewport:null,protocolTimeout:120000}).catch(()=>null),'CDP');
  shell=await until(async()=>{for(const p of await browser.pages())if(await p.evaluate(()=>window.__nozeliReady&&window.__workspaceScope?.role==='shell').catch(()=>false))return p;},'ready shell');
  for(const p of await browser.pages())p.on('pageerror',e=>result.errors.push(e.message));
@@ -46,9 +53,23 @@ async function close(){
  observer?.close();observer=null;
  const exit=await Promise.race([exited,pause(15000).then(()=>null)]);assert.deepEqual(exit,{code:0,signal:null},'normal application shutdown must finish all persistence');await browser.disconnect();browser=null;return exit;
 }
+async function exerciseWindowsGeometry(){
+ const control=(action,dimensions)=>invoke('workspace.control',{type:'window-control',action,...dimensions});
+ const original=await control('state');
+ assert.equal(await shell.$$eval('[data-window-action]',nodes=>nodes.length),0,'Windows caption must not compete with HTML controls');
+ for (const width of [720,860]){
+   await control('resize',{width,height:520});
+   await until(async()=>{const {contentSize}=await control('state');return contentSize.width===width&&contentSize.height===520&&await shell.evaluate(w=>innerWidth===w&&innerHeight===520,width);},'native client and renderer resize to '+width);
+ }
+ await control('maximize');await until(async()=>(await control('state')).bounds.windowState==='maximized','maximize');
+ await control('maximize');await until(async()=>{const state=await control('state');return state.bounds.windowState==='normal'&&state.contentSize.width===860&&state.contentSize.height===520;},'restore normal client size');
+ await control('resize',original.contentSize);
+ result.checks.push('Windows client and renderer shrink/grow, maximize and restore to previous size');
+}
 try{
  await launch();await shell.waitForSelector('.guided-start-welcome');
  await shell.screenshot({path:path.join(out,'welcome.png')});result.checks.push('unconfigured application opens feature welcome without provider startup');
+ if(process.platform==='win32')await exerciseWindowsGeometry();
  await shell.locator('[data-project-id="'+projectId+'"]').click();await shell.waitForSelector('[data-start-browse]');
  await shell.locator('[data-start-browse]').click();await shell.waitForFunction(()=>document.activeElement?.id==='file-filter');
  const fileOpenedAt=performance.now();await shell.locator('#file-tree [data-path="reading.txt"]').click();const doc=await documentPage();

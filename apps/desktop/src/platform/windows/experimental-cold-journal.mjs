@@ -38,10 +38,18 @@ export async function inspectExperimentalColdHostJournal(binding){
   if(starts.length!==1||stops.length>1||(stops.length===1&&transcript.at(-1)!==stops[0]))
     throw fail('HOST_JOURNAL_STOP_UNCONFIRMED','One original start and at most one terminal stop acknowledgement required');
   const start=starts[0],stop=stops[0],abrupt=!stop,launch=start.ownerLaunch,record=owner.value;
-  // Residents use the registered project. Workers use the desktop's exact
-  // per-work execution directory, never an arbitrary path from a reply.
-  const expectedCwd=['frontdesk','orchestrator'].includes(target)?source.source.catalog.registration.value.root:
-    path.join(await storage.localDirectory(projectId),'execution','execution',target);
+  // Residents use the registered project. Workers use only the desktop's
+  // exact per-work directory: fresh Windows work is one level shallower
+  // than the legacy layout, which remains valid for existing work.
+  let expectedCwd=source.source.catalog.registration.value.root;
+  if(!['frontdesk','orchestrator'].includes(target)){
+    if(!/^[a-zA-Z0-9_-]+$/.test(target))throw fail('HOST_JOURNAL_BINDING_CHANGED','Invalid original work target');
+    const runtime=path.join(path.dirname(localFile),'execution');
+    const legacyCwd=path.join(runtime,'execution',target),freshCwd=path.join(runtime,target);
+    expectedCwd=(await storage.getLocal(projectId,'managed:works:'+target))?.execution?.directory??legacyCwd;
+    if(expectedCwd!==freshCwd&&expectedCwd!==legacyCwd)
+      throw fail('HOST_JOURNAL_BINDING_CHANGED','Persisted worker directory is outside its registered execution layout');
+  }
   if(!launch||launch.schema!==1||(stop&&!same(launch,stop.ownerLaunch))||launch.ownerId!==record.ownerId||launch.generation!==record.generation||
      launch.launchId!==record.launchId||launch.home!==record.home||launch.cwd!==expectedCwd||
      typeof start.id!=='string'||(stop&&(typeof stop.id!=='string'||start.id===stop.id||transcript.indexOf(start)>=transcript.indexOf(stop))))

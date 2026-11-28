@@ -29,29 +29,81 @@ async function state(root,owner){
  if(records.installationId!==owner.installationId)throw reject('INSTALL_NOT_OWNED','Installation owner changed');
  return records.state??{value:null,digest:null};
 }
-async function lock(root,action){
- const acquire=()=>{const parent=openExperimentalPersistenceParent(root,'.install-lock');try{return {parent,held:parent.createPrivateTreeRootExclusive('.install-lock')};}catch(error){parent.close();throw error;}};
- let parent,held,success=false;
+const INSTALL_LOCK='.install-lock',LOCK_EXISTS=183,LOCK_SHARING_VIOLATION=32,LOCK_MISSING=[2,3];
+const LOCK_HELD_MESSAGE='Installation lock .install-lock is held by another running install/upgrade/rollback/launch process; it is released when that process exits. Inspect it with install-windows.mjs status; the lock was not removed.';
+const LOCK_UNKNOWN_MESSAGE='Installation lock .install-lock is not the ordinary empty lock and was left untouched; inspect it manually and resolve it explicitly. No installation changes were made.';
+const LOCK_RETAINED_MESSAGE='Installation lock .install-lock has no live custodian (a failed operation or a force-terminated holder left it behind) and was left untouched; it is never removed automatically. Inspect it with install-windows.mjs status and resolve it explicitly. No installation changes were made.';
+function installLockRejected(code,message,evidence){const error=reject(code,message);error.installLock=evidence;return error;}
+function lockEvidence(error){return {code:error.code,...(Number.isSafeInteger(error.win32Code)?{win32Code:error.win32Code}:{})};}
+// The installer lock is an exclusively created private directory name. Every
+// live custodian holds it open without FILE_SHARE_DELETE, so opening it with
+// DELETE access is a liveness proof: sharing denial means a live installer or
+// launcher, while a successful probe proves only a husk remains (force
+// termination, power loss or a retained failure lock). Retained, unknown,
+// non-empty or policy-mismatched locks are diagnosed and never removed; the
+// only authorized release is updater recovery of its own proven dead attempt.
+function classifyInstallLock(parent){
+ let probe;
+ try{probe=parent.openPrivateDeleteDirectory(INSTALL_LOCK);}
+ catch(error){
+  if(error.code==='WIN32_IO_ERROR'&&error.win32Code===LOCK_SHARING_VIOLATION)return {custody:'held',evidence:lockEvidence(error)};
+  if(error.code==='WIN32_IO_ERROR'&&LOCK_MISSING.includes(error.win32Code))return {custody:'missing'};
+  return {custody:'unknown',evidence:lockEvidence(error)};
+ }
  try{
-  try{({parent,held}=acquire());}
+  const entries=probe.entries(10000);
+  if(entries.length){try{probe.close();}catch{}return {custody:'unknown',evidence:{entries:entries.length}};}
+  return {custody:'stale',probe};
+ }catch(error){const evidence=lockEvidence(error);try{probe.close();}catch{}return {custody:'unknown',evidence};}
+}
+async function installLockCustody(root){
+ if(!await exists(path.join(root,INSTALL_LOCK)))return {present:false,custody:'absent'};
+ const parent=openExperimentalPersistenceParent(root,INSTALL_LOCK);
+ try{
+  const classification=classifyInstallLock(parent);
+  if(classification.probe){try{classification.probe.close();}catch{}}
+  if(classification.custody==='missing')return {present:false,custody:'absent'};
+  const detail=classification.custody==='held'?'A running installer or launcher process holds this lock; it is released when that process exits.'
+   :classification.custody==='stale'?'No live custodian holds this empty lock husk (for example after force termination or a failed operation); it is retained, never removed automatically, and must be resolved explicitly.'
+   :'This lock is not the ordinary empty installer lock; it is never removed automatically. Inspect the directory manually.';
+  return {present:true,custody:classification.custody,...(classification.evidence?{evidence:classification.evidence}:{}),detail};
+ }
+ finally{parent.close();}
+}
+async function acquireInstallLock(parent,root){
+ for(let recovered=false;;){
+  try{return parent.createPrivateTreeRootExclusive(INSTALL_LOCK);}
   catch(error){
    if(!lockHeld(error))throw error;
+   if(recovered)throw installLockRejected('INSTALL_LOCK_HELD',LOCK_HELD_MESSAGE,lockEvidence(error));
+   recovered=true;
    // An exclusive lock that still carries an own update attempt is freed
    // only through launcher-side recovery authorization: every dead-attempt
    // proof is held, the journal is advanced by an exact digest CAS to
    // recoveryAuthorized while the kernel exclusion is still held, and only
    // then is the stale lock released for this launcher's own lock. Launcher
-   // and foreign locks are never stolen or deleted here.
+   // and foreign locks are never stolen or deleted here, and retained or
+   // unknown locks are diagnosed fail-closed instead of adopted.
    const reconciled=await authorizeWindowsUpdateRecovery({root});
-   if(reconciled?.state!=='authorized'){
-    if(reconciled?.live)throw reject('INSTALL_UPDATE_ACTIVE','An automatic update is completing; retry shortly');
-    throw error;
-   }
-   ({parent,held}=acquire());
+   if(reconciled?.state==='authorized')continue;
+   if(reconciled?.live)throw reject('INSTALL_UPDATE_ACTIVE','An automatic update is completing; retry shortly');
+   const classification=classifyInstallLock(parent);
+   if(classification.custody==='missing')continue;
+   if(classification.custody==='held')throw installLockRejected('INSTALL_LOCK_HELD',LOCK_HELD_MESSAGE,classification.evidence);
+   if(classification.custody==='stale'){try{classification.probe.close();}catch{}throw installLockRejected('INSTALL_LOCK_RETAINED',LOCK_RETAINED_MESSAGE);}
+   throw installLockRejected('INSTALL_LOCK_UNKNOWN',LOCK_UNKNOWN_MESSAGE,classification.evidence);
   }
-  try{const result=await action(held.identity());success=true;return result;}catch(error){error.installationRoot=root;success=error.code==='INSTALL_LAUNCH_NOT_STARTED'&&error.launchEffect==='not-started';error.reconciliationRequired=!success;throw error;}
  }
- finally{try{if(held&&success)held.removePrivateEmptyDirectory();}finally{try{held?.close();}finally{parent?.close();}}}
+}
+async function lock(root,action){
+ const parent=openExperimentalPersistenceParent(root,INSTALL_LOCK);let held,success=false;
+ try{
+  try{held=await acquireInstallLock(parent,root);}
+  catch(error){error.installationRoot=root;throw error;}
+  try{const result=await action(held.identity());success=true;return result;}
+  catch(error){error.installationRoot=root;success=error.code==='INSTALL_LAUNCH_NOT_STARTED'&&error.launchEffect==='not-started';error.reconciliationRequired=!success;throw error;}
+ }
+ finally{try{if(held&&success)held.removePrivateEmptyDirectory();}finally{try{held?.close();}finally{parent.close();}}}
 }
 async function initialize(root,updater='unsupported'){
  safeRoot(root);if(await exists(root))throw reject('INSTALL_NOT_EMPTY','First install requires a nonexistent dedicated root; never adopts existing directories');
@@ -79,7 +131,7 @@ export async function windowsInstall({root,command,candidate,version:target,args
    }
    const after=await state(root,owner);let active=null;
    if(before.value){try{active=await version(root,before.value.active,before.value.versions[before.value.active]);}catch{}}
-   const result={root,profile:owner.profile,automaticUpdater:active?active.manifest.automaticUpdater:(owner.automaticUpdater??'unsupported'),updater:active?windowsUpdaterCapability(active.manifest):false,state:before.value,versions,installerLock:await exists(path.join(root,'.install-lock')),concurrentStateChange:before.digest!==after.digest};
+   const result={root,profile:owner.profile,automaticUpdater:active?active.manifest.automaticUpdater:(owner.automaticUpdater??'unsupported'),updater:active?windowsUpdaterCapability(active.manifest):false,state:before.value,versions,installerLock:await exists(path.join(root,INSTALL_LOCK)),installerLockCustody:await installLockCustody(root),concurrentStateChange:before.digest!==after.digest};
    active?.tree.close();return result;
   }
   if(command==='install'||command==='upgrade'){

@@ -70,6 +70,8 @@ class WindowRecovery {
       return {accepted:false};
     }
     if(p.stage!=='waiting')return {accepted:false};
+    // A refused renderer save cannot be made successful by draining other work.
+    if(payload.ok!==true)return this.complete(p,{...payload,ok:false});
     p.stage='settling';
     try{await this.settle();}catch(error){
       if(!this.current(p))return {accepted:false};

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {windowControls,usesNativeWindowChrome} from '../src/renderer/window-chrome.mjs';
 import {menuShortcut} from '../src/renderer/context-menu.mjs';
 
-// Platform simulation verifies renderer branching only, never native macOS chrome.
-test('platform chrome creates no HTML window buttons on macOS; other platforms retain actions',async()=>{
+// Platform simulation verifies renderer branching only, not OS caption behavior.
+test('platform chrome uses OS controls on macOS and Windows and retains HTML actions on Linux',async()=>{
   const previous={document:globalThis.document,nozeli:globalThis.nozeli};
   const created=[];
   // Match the action-button DOM fixture used by surface-identity-state tests:
@@ -22,8 +22,8 @@ test('platform chrome creates no HTML window buttons on macOS; other platforms r
     for(const platform of ['darwin','win32','linux']){
       globalThis.nozeli={platform};created.length=0;const requests=[];
       const controls=windowControls(async(op,payload)=>{requests.push({op,payload});return {ok:true};});
-      assert.equal(usesNativeWindowChrome(),platform==='darwin');
-      if(platform==='darwin'){assert.deepEqual(created,[]);assert.equal(controls.children.length,0);}
+      assert.equal(usesNativeWindowChrome(),platform!=='linux');
+      if(platform!=='linux'){assert.deepEqual(created,[]);assert.equal(controls.children.length,0);}
       else{
         assert.deepEqual(controls.children.map(button=>button.dataset.windowAction),['minimize','maximize','close']);
         for(const button of controls.children){

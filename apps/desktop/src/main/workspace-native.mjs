@@ -448,7 +448,10 @@ export class WorkspaceNative {
         // Review-decision barrier flushes identify themselves so the renderer
         // persists candidate buffers and report opinions before the token
         // recompute; ordinary flushes keep the legacy bare requestId payload.
-        record.wc.send(channel, channel === 'nozeli:flush' && detail.reviewBarrier !== true ? requestId : channel === 'nozeli:flush' ? { requestId, reviewBarrier: true, projectId: record.projectId, workId: detail.workId, objectId: detail.objectId } : { ...detail, requestId });
+        const payload=channel!=='nozeli:flush'?{...detail,requestId}:detail.reviewBarrier===true
+          ?{requestId,reviewBarrier:true,projectId:record.projectId,workId:detail.workId,objectId:detail.objectId}
+          :detail.purpose==='project-switch'?{requestId,purpose:'project-switch'}:requestId;
+        record.wc.send(channel,payload);
       }
       catch (error) { this.receipts.get(requestId)?.reject(error); this.receipts.delete(requestId); }
     });
@@ -851,7 +854,7 @@ export class WorkspaceNative {
       // Each owner acknowledges only after its own durable retention completes.
       // Global host idleness also includes unrelated reads/imports/projects and
       // is neither a save receipt nor a navigation barrier.
-      const saved=await Promise.allSettled(owners.map(owner=>this.flushOne(owner)));
+      const saved=await Promise.allSettled(owners.map(owner=>owner===r?this.flushOne(owner,'nozeli:flush',{purpose:'project-switch'}):this.flushOne(owner)));
       const refused=saved.find(result=>result.status==='rejected');if(refused)throw refused.reason;
       // Target state is part of the staged receipt, not a cross-project renderer
       // read. A failed read leaves shell authorization and the source scene intact.

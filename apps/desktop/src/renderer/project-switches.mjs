@@ -6,7 +6,17 @@ export function createProjectSwitches({schedule,transition,current,ready,onPendi
   function notify(){onPending(desired);}
   function start(request){
     active=request;
-    void schedule(async()=>{
+    let entered=false;
+    const refuse=result=>{
+      if(entered||active!==request)return;
+      settle(request,desired===request.id?result:cancelled(request.id));
+      if(pending)settle(pending,result);
+      active=null;pending=null;desired=null;notify();onError(result.error);
+    };
+    const failed=error=>({ok:false,error:{code:error?.code||'PROJECT_SWITCH_FAILED',message:error?.message||'项目切换未能开始。'}});
+    const run=async()=>{
+      if(active!==request||entered)return;
+      entered=true;
       // A queued slot has not begun touching its source: replace it in place.
       if(pending){settle(active,cancelled(active.id));active=pending;pending=null;}
       const running=active;
@@ -26,7 +36,12 @@ export function createProjectSwitches({schedule,transition,current,ready,onPendi
       if(pending){const next=pending;pending=null;start(next);}
       else {desired=null;notify();}
       return result;
-    });
+    };
+    try {
+      void Promise.resolve(schedule(run)).then(result=>{
+        if(!entered)refuse(result?.ok===false?result:failed());
+      },error=>refuse(failed(error)));
+    } catch(error){refuse(failed(error));}
   }
   return {request(id){
     if(!active&&current()===id&&ready())return Promise.resolve({ok:true,projectId:id});

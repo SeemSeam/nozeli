@@ -73,7 +73,14 @@ export class GuidedDemo {
  row(projectId){const row=this.data.projects[projectId];if(!row)throw fail('DEMO_NOT_OWNED','项目不是本机登记的演示副本。');return row;}
  async verify(projectId,{allowRemoved=false}={}){
   const row=this.row(projectId),project=await this.host.requireRegisteredProject(projectId);
-  if(row.removed&&!allowRemoved||project.instanceId!==row.instanceId||project.root!==row.root||!sameDemoDirectory(row.identity,project.identity)||!sameDemoDirectory(row.identity,await demoDirectoryIdentity(row.root)))throw fail('DEMO_IDENTITY_CHANGED','演示项目身份或目录已变化，自动操作已停止。');
+  if(row.removed&&!allowRemoved||project.instanceId!==row.instanceId||project.root!==row.root||!sameDemoDirectory(row.identity,await demoDirectoryIdentity(row.root)))throw fail('DEMO_IDENTITY_CHANGED','演示项目身份或目录已变化，自动操作已停止。');
+  // Windows project storage records native FileIdInfo, not the Node stat tuple
+  // saved when copying the example. Verify each identity in its own namespace.
+  if(project.identity?.kind==='windows-file-id-128'){
+   const io=this.host.storage.io;
+   await io.authorizeProject(row.root,project.identity);
+   await io.directoryIdentity(row.root,project.identity);
+  }else if(!sameDemoDirectory(row.identity,project.identity))throw fail('DEMO_IDENTITY_CHANGED','演示项目身份或目录已变化，自动操作已停止。');
   const manifest=path.join(row.root,'.nozeli','project.json'),stat=await fs.lstat(manifest,{bigint:true});if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536||!sameDemoDirectory(row.manifestIdentity,{dev:String(stat.dev),ino:String(stat.ino)})||digest(await fs.readFile(manifest))!==row.manifestDigest)throw fail('DEMO_IDENTITY_CHANGED','演示项目清单已变化，原授权不再适用。');
   return {row,project};
  }

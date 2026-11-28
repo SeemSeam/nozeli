@@ -35,11 +35,15 @@ export async function inspectArchivedColdOwnerMaterials(tree,owner,refused=messa
  const copied=copyEntries.map(e=>({...e,relative:e.relative===owner.archiveRelative?'':e.relative.slice(owner.archiveRelative.length+1)}));
  if(!same(content(copied),content(owner.sourceManifest.entries)))throw refused('Archived home content differs from the complete original source manifest');
  const materials={};
- for(const [kind,key,schema] of [['settings','settingsReads',2],['model-auth','modelAuthReads',1]]){
-  const observed=await inspectColdSettingsReads({launch:starts[0].ownerLaunch,requests,transcript,manifest:owner.sourceManifest,kind,
-   readFile:(relative,options)=>tree.readFile(owner.archiveRelative+'/'+relative,options)});
+ // Recompute under the interpretation the original observation recorded so
+ // an untouched older archive stays comparable; the readers ignore it
+ // whenever original stdout still authenticates a generation themselves.
+ for(const [kind,key,schemas] of [['settings','settingsReads',[3,2]],['model-auth','modelAuthReads',[2,1]]]){
   const original=owner.journal[key];
-  if(original?.schema===schema){
+  const observed=await inspectColdSettingsReads({launch:starts[0].ownerLaunch,requests,transcript,manifest:owner.sourceManifest,kind,
+   interpretation:original?.schema,
+   readFile:(relative,options)=>tree.readFile(owner.archiveRelative+'/'+relative,options)});
+  if(original?.schema!==undefined&&schemas.includes(original.schema)){
    if(!same(observed,original))throw refused('Independent configuration interpretation differs from the original cold observation');
    materials[key]={launchId:owner.launchId,...observed};
   }else{
@@ -56,9 +60,11 @@ export async function inspectArchivedColdOwnerMaterials(tree,owner,refused=messa
   materials.metadataReads={launchId:owner.launchId,...observed};
  }else materials.metadataReads={launchId:owner.launchId,...observed,state:'legacy-unverified',completeObservedSet:false};
  const roleObserved=await inspectColdRoleReads({launch:starts[0].ownerLaunch,requests,transcript,manifest:owner.sourceManifest,
+  interpretation:owner.journal.roleReads?.schema,
   readFile:(relative,options)=>tree.readFile(owner.archiveRelative+'/'+relative,options)});
- if(owner.journal.roleReads?.schema===2){
-  if(!same(roleObserved,owner.journal.roleReads))throw refused('Independent role skill interpretation differs from the original cold observation');
+ if([2,3].includes(owner.journal.roleReads?.schema)){
+  if(roleObserved.schema!==owner.journal.roleReads.schema||!same(roleObserved,owner.journal.roleReads))
+   throw refused('Independent role skill interpretation differs from original cold observation');
   materials.roleReads={launchId:owner.launchId,...roleObserved};
  }else materials.roleReads={launchId:owner.launchId,...roleObserved,state:'legacy-unverified',completeObservedSet:false,
   reason:owner.journal.roleReads?'unsupported-original-material-schema':'missing-original-material-observation'};

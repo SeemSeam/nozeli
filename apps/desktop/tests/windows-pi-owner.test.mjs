@@ -8,6 +8,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
+import {readEvidenceFrames} from '../../../integrations/pi/src/read-evidence-journal.mjs';
 import {PiSession} from '../src/agents/managed/pi-session.mjs';
 import {roleSkillCatalog} from '../src/agents/managed/runtime.mjs';
 import {ProjectStorage} from '../src/main/project-storage.mjs';
@@ -188,10 +189,10 @@ for(const mode of ['normal','forced','abrupt-desktop','abrupt-tail','abrupt-no-p
       assert.equal(journal.roleReads.ownerReleaseQualified,false);
       assert.equal(journal.roleReads.fullRecoveryClosureQualified,false);
     }
-    assert.equal(journal.settingsReads.schema,2);assert.ok(journal.settingsReads.confirmedReads>0);
+    assert.equal(journal.settingsReads.schema,3);assert.ok(journal.settingsReads.confirmedReads>0);
     assert.equal(journal.settingsReads.ownerReleaseQualified,false);
     if(mode==='stopped-forced'){
-      const receipt=journal.settingsReads.observedEntries.find(e=>e.type==='file'&&e.relative.endsWith('.json'));
+      const receipt=journal.settingsReads.journal;
       const receiptFile=path.join(f.home,...receipt.relative.split('/')),original=await fs.readFile(receiptFile);
       await fs.rename(receiptFile,receiptFile+'.retained');await fs.writeFile(receiptFile,original);
       await assert.rejects(inspectExperimentalColdHostJournal(journalBinding),{code:'HOST_SETTINGS_CHANGED'});
@@ -664,14 +665,17 @@ test('actual Pi settings reads bind project versions across a real turn and SDK 
  const original=Buffer.from(JSON.stringify({defaultModel:'scripted',defaultProvider:'local-fixture',customMarker:'original'}));await fs.writeFile(file,original);
  const session=f.session();await session.start();
  const first=await session.prompt('配置版本原生读取验证',{job:{id:randomUUID(),target:'frontdesk',type:'front'}});assert.equal(first.completion,'provider-completed');assert.equal(f.provider.requests.length,1);
- const before=await session.request('flush'),proof=before.settingsReads;assert.equal(proof.mechanism,'windows-native-settings-read-bytes');assert.ok(proof.reads>0);assert.equal(proof.fullRecoveryClosureQualified,false);
+ const before=await session.request('flush'),proof=before.settingsReads;assert.equal(proof.mechanism,'windows-native-settings-read-journal');assert.ok(proof.reads>0);assert.equal(proof.fullRecoveryClosureQualified,false);
  const changed=Buffer.from(JSON.stringify({defaultModel:'scripted',defaultProvider:'local-fixture',customMarker:'external-update'}));await fs.writeFile(file,changed);await session.request('reload');
  const after=await session.request('flush');assert.equal(after.settingsReads.streamId,proof.streamId);assert.ok(after.settingsReads.reads>proof.reads);assert.notEqual(after.settingsReads.headSha256,proof.headSha256);
- const records=[];for(const name of await fs.readdir(proof.directory))if(name.endsWith('.json')){const record=JSON.parse(await fs.readFile(path.join(proof.directory,name),'utf8'));if(record.streamId===proof.streamId)records.push(record);}
- records.sort((a,b)=>a.sequence-b.sequence);assert.equal(records.length,after.settingsReads.reads);
- for(const bytes of [original,changed])assert.ok(records.some(row=>row.scope==='project'&&row.sha256===sha(bytes)&&row.path===file&&typeof row.fileIdentity==='string'));
- let head=null;for(const row of records){assert.equal(row.previousSha256,head);const matching=(await fs.readdir(proof.directory)).find(name=>name.endsWith('.json')&&name.startsWith(String(row.sequence).padStart(8,'0')+'-'));head=sha(await fs.readFile(path.join(proof.directory,matching)));if(row.present)assert.equal(sha(await fs.readFile(path.join(f.agentDir,row.blob))),row.sha256);}
- assert.equal(head,after.settingsReads.headSha256);await session.stop();assert.equal(f.provider.requests.length,1);assert.deepEqual(await fs.readFile(file),changed);
+ await session.stop();
+ const journal=await fs.readFile(path.join(proof.directory,`${proof.streamId}.journal`));
+ const frames=[...readEvidenceFrames(journal,after.settingsReads.headBytes,1024*1024)];
+ assert.equal(frames.length,after.settingsReads.reads);
+ assert.equal(frames[proof.reads-1].headSha256,proof.headSha256);
+ assert.equal(frames.at(-1).headSha256,after.settingsReads.headSha256);
+ for(const bytes of [original,changed])assert.ok(frames.some(({row,bytes:raw})=>row.scope==='project'&&raw?.equals(bytes)&&row.path===file&&typeof row.fileIdentity==='string'));
+ assert.equal(f.provider.requests.length,1);assert.deepEqual(await fs.readFile(file),changed);
 });
 
 test('shared Controller registers before execution, persists Pi facts and releases only after confirmed local exit',native,async t=>{

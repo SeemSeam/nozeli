@@ -1296,19 +1296,21 @@ function show(activeValue){active=activeValue;toolbar.hidden=true;if(!active){pe
  function observeFixture(id,snapshot){if(snapshot?.source!=='demo-fixture')throw Error('不是登记的演示来源');projectId=id;state=snapshot;fixtureMode=true;active=false;ready=false;render();}
  function clear({rememberDraft=true}={}){collaboration.clear();retireReviews();fixtureMode=false;if(rememberDraft)remember();if(agentDetails.open)agentDetails.close();agentDetailsStatus.textContent='';workInfo.hidden=true;workInfo.replaceChildren();delete workInfo.dataset.signature;$('ai-status').textContent='';delete $('ai-status').dataset.state;identityReads.clear();renderConfigurationNotice(configurationNotice,[]);routeUI.clear();todoUI.clear();mergePending.clear();mergeErrors.clear();reportRequest++;historyRequest++;pageRequest++;historyPage=false;pageError='';active=false;sessionStore.reset(null);timelineBox.hidden=true;historyReceiptSignature=null;historyItems=[];historyVersion=null;historyNext=null;historyTotal=0;historyLoading=false;historyNotice='';renderHistory();if(exportDialog.open)exportDialog.close();exportSource=null;sourceMessage=null;sourceBox.hidden=true;sourceGoal.value='';for(const row of workRows.values())row.remove();workRows.clear();generation++;ready=false;state=null;toolbar.hidden=true;toolbar.replaceChildren();progressBox.hidden=true;progressBox.replaceChildren();progressSignature=null;delete $('conversation-panel').dataset.managedConversation;projectFilePaths=new Set();fileAvailability=new Map();availabilityKey=null;availabilityRequest++;target='frontdesk';viewed=null;lockHistory();$('composer').disabled=false;show(false);}
  async function load(id,{connect=true,input,observe=false}={}){
-  if(id!==projectId){const saved=await flushManagedReviews();if(!saved.ok){toast(saved.error.message);return false;}retireReviews();}
+  const beforeReset=generation;
+  if(id!==projectId){const saved=await flushManagedReviews();if(beforeReset!==generation)return false;if(!saved.ok){toast(saved.error.message);return false;}retireReviews();}
   let frame=input?.frame||scope?.viewState||{};
   const reloading=ownsConversation&&projectId===id&&state;
   if(reloading){captureInput();frame={...scope?.viewState,workspace:{...scope?.viewState?.workspace,draft:$('composer').value},composerMaterials:window.__composerMaterials?.snapshotPersist()};}
   if(input&&!reloading&&input.projectId!==id)frame={...frame,conversationInput:{projectId:input.projectId,target:frame.conversationInput?.target}};
   const oldHistory=id===projectId&&viewed?.history?viewed:null,oldTarget=target,oldDraft=$('composer').value;
   resetSession();projectId=id;sessionStore.reset(id);inputEpoch++;inputIdentityReason='正在核对输入归属…';if(ownsConversation){target=null;$('composer').readOnly=true;$('send-message').disabled=true;}
+  const gen=generation;
   if(id)todoUI.loading(id);
   updateBackgroundSubmit();
   workControl.clear();serviceFaults.clear();void serviceFaults.refresh();
   if(!id)return false;if(oldHistory){viewed=oldHistory;target=oldTarget;$('composer').value=oldDraft;lockHistory();}
  void refreshProjectFiles().catch(error=>toast('文件链接列表读取失败：'+error.message));residentStatus=null;coldRecoveryState=null;residentRecovery.hidden=true;residentRecovery.replaceChildren();void loadHistory();
-  const gen=generation;let status;try{status=await call('status',{},id);}catch(error){if(gen===generation&&id===projectId)todoUI.unavailable(id);throw error;}if(gen!==generation||id!==projectId)return false;
+  let status;try{status=await call('status',{},id);}catch(error){if(gen===generation&&id===projectId)todoUI.unavailable(id);throw error;}if(gen!==generation||id!==projectId)return false;
   state=status.state;if(!state)todoUI.unavailable(id);if(ownsConversation&&!oldHistory)restoreInput(frame);
   if(pendingConversation&&pendingConversation.projectId===projectId){const event=pendingConversation;pendingConversation=null;if(event.action==='select')select(event.target);if(event.action==='todo')await openTodo(event.todoId);}
   if(status.recoveryRequiresConnection){show(true);ready=false;if(state)render();if(ownsConversation){$('composer').disabled=false;$('send-message').disabled=true;}return true;}

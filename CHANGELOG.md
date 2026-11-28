@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0-beta.10
+
+- 修复 Windows“体验演示”无法启动：固定生成的演示文本行尾，打包前校验模板的原始字节；演示目录分别核验 Node 文件身份和 Windows 原生文件身份，不再比较两种不同的表示。新候选 ZIP 解包后 11 个演示资源全部通过清单校验；经正式安装器独立安装后，从欢迎页实点进入离线教学、打开示例 Markdown、结束后保留副本并返回原工作面，应用正常退出并释放安装锁。原生测试验证播放切换与固定回复，无需模型账号。
+- Windows 主窗口和分离窗口改用系统标题栏及原生可缩放边框，不再依赖页面标题栏按钮；窗口关闭仍走原有保存与停止确认。隔离源码 GUI 验证了窗口变窄／变宽、最大化和还原，以及 Win32 边角命中、最小化和正常退出；未用安装包验收。
+- Windows 手动安装器报告安装锁的持有状态，区分活跃持有者、无持有者的空锁和无法确认的锁。失败后保留的锁不会被自动删除；原更新器仅在核实原尝试并完成恢复授权后释放其锁。
+- 项目切换调度槽在真正执行回调前被拒绝或失败时，现在会结算最新目的地请求、报告错误并清空 pending，不再留下永久 `aria-busy`；后续显式选择仍可重试（`tests/project-switches.test.mjs` 新增进入前拒绝/抛错两种回归）。
+- 项目绑定期间的源 shell flush 现在带 `purpose:'project-switch'` 目的；该目的下的 flush 不再等待全局管理助手草稿（`ADMIN_SAVE_PENDING`/助手保存流不再阻塞导航），关闭与审校屏障的 flush 行为不变（`workspace-native.mjs`/`app.mjs`，preload 兼容对象与裸 requestId 两种 payload）。
+- 关闭流程中 renderer 明确报告保存失败（`ok:false`）时，主进程不再先等待无关的 Host settle 才显示恢复对话框；明确的保存拒绝立即给出具体错误并保留窗口，等待/重载路径经确认后才重试（`window-recovery.cjs`，配套回归更新）。
+- Shell 项目激活的 `workspace.activated` 回执不再等待全局助手配置/连接加载；助手面板自身的加载竞态防护保留。
+- Windows Pi owner 保留设置、模型／凭据与角色读取的原始字节，改用有界链式日志批量刷盘，不再每读一次发布一对文件。提交外部模型请求或宿主工具前检查耐久性；追加或刷盘失败不确认。冷态只认原请求及 owner 启动身份绑定的 stdout 回执所确认的前缀；未确认尾部不授权释放或重放。
+- 全局管理助手草稿遇到版本冲突时，仅在已保存文本仍等于编辑基线时用新版本号重试一次；若另一处改了文本，保留本地输入和已保存版本并报冲突，不再静默覆盖。
+- Windows x64 本地 beta.8 候选已通过 ZIP CRC、实解包清单及隔离安装核验。从原样 launcher 实测项目往返切换、管理助手草稿与显式回环发送、文档保存、主窗与分离窗原生几何、系统关闭和锁释放；普通重启未自动重放，随后显式发送只触发一次推理。官方 beta.9 现场及保存失败、停止失败等负向路径未用本候选验证。
+
 ## 0.1.0-beta.9
 
 - Integrate the current desktop changes with Windows x64, Linux x64 and macOS arm64. Final native qualification is required for the exact release commit.

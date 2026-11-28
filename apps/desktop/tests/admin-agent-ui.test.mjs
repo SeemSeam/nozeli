@@ -86,6 +86,18 @@ test('draft writes serialize revisions and late replies never replace newer inpu
  await f.api.close();await f.api.open();assert.equal(f.get('admin-input').value,'second');
  f.get('admin-compose').requestSubmit();await tick();const sent=f.calls.filter(c=>c[0]==='admin.send');assert.equal(sent.length,1);assert.equal(sent[0][1].text,'second');assert.equal(sent[0][1].draftRevision,3);assert.equal(f.get('admin-input').value,'');
 });
+
+test('draft save retries a new revision only when the persisted text is unchanged',async t=>{
+ const f=fixture(t,{'admin.draft':async(payload,state)=>{if(payload.expectedRevision!==state.draftRevision)return {ok:false,error:{code:'ADMIN_DRAFT_CONFLICT',message:'草稿已更新'}};state.draft=payload.text;state.draftRevision++;return {ok:true,value:structuredClone(state)};}});
+ await f.api.open();f.state.draftRevision++;f.type('local draft');await tick();
+ assert.deepEqual(f.calls.filter(([op])=>op==='admin.draft').map(([,p])=>p.expectedRevision),[1,2]);
+ assert.equal(f.state.draft,'local draft');assert.equal(f.get('admin-error').textContent,'');
+});
+test('conflicting drafts retain both local input and newer saved text',async t=>{
+ const f=fixture(t,{'admin.draft':async(payload,state)=>{if(payload.expectedRevision!==state.draftRevision)return {ok:false,error:{code:'ADMIN_DRAFT_CONFLICT',message:'草稿已更新'}};state.draft=payload.text;state.draftRevision++;return {ok:true,value:structuredClone(state)};}});
+ await f.api.open();f.state.draft='another edit';f.state.draftRevision++;f.type('local edit');await tick();
+ assert.equal((await f.api.flush()).error.code,'ADMIN_DRAFT_CONFLICT');assert.equal(f.state.draft,'another edit');assert.equal(f.get('admin-input').value,'local edit');
+});
 test('failed draft blocks closing and settings navigation without losing local input',async t=>{
  const f=fixture(t,{'admin.draft':async()=>({ok:false,error:{message:'disk unavailable'}})});await f.api.open();f.type('unsaved');await tick();
  assert.equal(f.get('admin-input').value,'unsaved');assert.equal(f.get('admin-retry-draft').hidden,false);assert.match(f.get('admin-error').textContent,/disk unavailable/);

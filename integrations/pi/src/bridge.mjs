@@ -573,7 +573,7 @@ export class OwnerRuntime {
         finally { this.activityState.end(method, failure); this.send({event:'activity'}); }
       };
     }
-    this.tools = createHostToolBridge({ send, onHostControl: (reason = {}) => {
+    this.tools = createHostToolBridge({ send, beforeRequest:()=>this.flushReadEvidence(), onHostControl: (reason = {}) => {
       const turn = this.promptInFlight;
       if (!turn || turn.settled) return;
       if (reason.error) turn.hostToolError = reason.error;
@@ -584,8 +584,9 @@ export class OwnerRuntime {
       const stopping = this.nativeRuntime.session.abort();
       void stopping.catch(error => this.facts.failTurn(error?.message ?? String(error)));
     } });
-    this.interactions = createInteractionBridge({ send });
-    this.questions = createNativeQuestionBridge({ send });
+    const sendInteraction=frame=>{if(frame.event==='interaction')this.flushReadEvidence();send(frame);};
+    this.interactions = createInteractionBridge({ send:sendInteraction });
+    this.questions = createNativeQuestionBridge({ send:sendInteraction });
     this.storage = createMemoryCatalogStorage();
     this.driver = null;
     this.sessionRef = null;
@@ -632,7 +633,7 @@ export class OwnerRuntime {
     const vendor = await loadVendor();
     if (!this.driver) {
       this.settingsIO = await createOwnerSettingsIO({agentDir:this.agentDir});
-      this.modelAuthIO = await createOwnerModelAuthIO({agentDir:this.agentDir});
+      this.modelAuthIO = await createOwnerModelAuthIO({agentDir:this.agentDir,beforeProviderRequest:()=>this.flushReadEvidence()});
       this.roleSkillIO = await createOwnerRoleSkillIO({agentDir:this.agentDir});
       this.journalStorage=await createOwnerJournalStorage({agentDir:this.agentDir});
       const runtimeImpl = async (options) => {
@@ -1148,6 +1149,7 @@ export class OwnerRuntime {
     const projection = normalizeProjection(params.projection, this.contextBudget.projectionMaxBytes);
     const materials = normalizeMaterials(params.materials, { requestId, jobId: params.job?.id });
     const textBytes = utf8Bytes(params.text);
+    this.flushReadEvidence();
     const record = {
       requestId,
       jobId: params.job && typeof params.job.id !== "undefined" ? params.job.id : undefined,
@@ -1644,7 +1646,14 @@ export class OwnerRuntime {
     return file;
   }
 
+  flushReadEvidence() {
+    this.settingsIO?.flush();
+    this.modelAuthIO?.flush();
+    this.roleSkillIO?.flush?.();
+  }
+
   async flush({metadataEvidence}={}) {
+    this.flushReadEvidence();
     const snapshot=(await this.readJournalSnapshot({project:true})).snapshot;
     return metadataEvidence?{...snapshot,metadataEvidence}:snapshot;
   }
@@ -1750,7 +1759,11 @@ export class OwnerRuntime {
     };
   }
 
-  async stop() {
+  stop() {
+    return this.stopCompletion??=this.stopOnce();
+  }
+
+  async stopOnce() {
     try{
     let finalJournal=null,sessionId=null;
     this.authAbort?.abort(Object.assign(new Error('worker stopping'), { code: 'PI_INTERACTION_CANCELLED' }));
@@ -1767,15 +1780,22 @@ export class OwnerRuntime {
       this.facts.endTurn();
       this.tools.setTurn(null);
       this.sessionRef = null;
+    } else {
+      this.flushReadEvidence();
     }
-    this.journalDirectory?.close();
-    this.journalDirectory = null;
     return { confirmationComplete: true,sessionId,finalJournal };
     }finally{
       // Release the pinned trusted-role custody HANDLEs on every stop path.
       // A closure failure stays visible as an unknown custody outcome.
-      this.roleSkillIO?.close();
-      this.journalStorage?.close();
+      try{this.journalDirectory?.close();}
+      finally{
+        this.journalDirectory=null;
+        try{this.roleSkillIO?.close();}
+        finally{
+          try{this.journalStorage?.close();}
+          finally{try{this.settingsIO?.close();}finally{this.modelAuthIO?.close();}}
+        }
+      }
     }
   }
 
@@ -1992,6 +2012,7 @@ export class OwnerRuntime {
     }
     const fetchedAt = new Date().toISOString();
     const origin = safeOrigin(listUrl);
+    this.flushReadEvidence();
     const collected = await collectServiceModels({
       listUrl,
       headers,
@@ -2127,9 +2148,10 @@ export class OwnerRuntime {
         if (!options.some(row => row.id === provider)) throw Object.assign(new Error('Unknown OAuth provider'), {code:'PI_INVALID_PARAMS'});
       }
       this.authProvider = provider;
+      this.flushReadEvidence();
       await this.runtimeSupervisor().login(workspace, provider, {
         signal: controller.signal,
-        onAuth: (info) => this.send({event:'interaction',interaction:{id:randomUUID(),provider,kind:'url',url:info.url,message:info.instructions}}),
+        onAuth: (info) => {this.flushReadEvidence();this.send({event:'interaction',interaction:{id:randomUUID(),provider,kind:'url',url:info.url,message:info.instructions}});},
         onPrompt: (prompt) =>
           this.interactions.ask({
             provider,

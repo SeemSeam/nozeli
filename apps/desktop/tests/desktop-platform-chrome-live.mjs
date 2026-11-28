@@ -37,8 +37,8 @@ async function scoped(predicate){return until(async()=>{for(const page of await 
 async function chrome(page,role){
   const state=await page.evaluate(()=>({platform:nozeli.platform,attribute:document.documentElement.dataset.platform,buttons:document.querySelectorAll('[data-window-action]').length,logos:document.querySelectorAll('.nozeli-window-logo').length}));
   assert.equal(state.platform,process.platform);assert.equal(state.attribute,process.platform);
-  assert.equal(state.buttons,role==='shell'&&process.platform!=='darwin'?3:0);
-  assert.equal(state.logos,role==='shell'&&process.platform!=='darwin'?1:0);
+  assert.equal(state.buttons,role==='shell'&&process.platform==='linux'?3:0);
+  assert.equal(state.logos,role==='shell'&&process.platform==='linux'?1:0);
 }
 try{
   child=spawn(binary,[...(process.env.NOZELI_TEST_BINARY?[]:[path.join(root,'src/main/main.cjs')]),'--inspect=0',...(process.platform==='linux'?['--ozone-platform='+(process.env.NOZELI_OZONE||'wayland')]:[])],{cwd:root,env,stdio:['ignore','pipe','pipe']});
@@ -75,9 +75,9 @@ try{
   await detached.page.waitForSelector('#workspace-title-menu:not([hidden])');
   const commands=await detached.page.$$eval('#workspace-title-menu [data-command]',nodes=>nodes.map(node=>node.dataset.command));
   assert(commands.includes('dock'));
-  for(const action of ['minimize','maximize','close'])assert.equal(commands.includes(action),process.platform!=='darwin');
+  for(const action of ['minimize','maximize','close'])assert.equal(commands.includes(action),process.platform==='linux');
   await detached.page.keyboard.press('Escape');
-  if(process.platform==='darwin')assert.equal(await detached.page.$eval('.workspace-pane-header',node=>getComputedStyle(node).getPropertyValue('-webkit-app-region')),'no-drag');
+  if(process.platform!=='linux')assert.equal(await detached.page.$eval('.workspace-pane-header',node=>getComputedStyle(node).getPropertyValue('-webkit-app-region')),'no-drag');
   await detached.page.screenshot({path:path.join(out,'detached-content-toolbar.png')});
   if(process.platform==='darwin'){await detached.page.bringToFront();const {bounds}=await call(detached.page,'workspace.control',{type:'window-control',action:'state'});execFileSync('/usr/sbin/screencapture',['-x','-R',[bounds.x,bounds.y,bounds.width,bounds.height].map(Math.round).join(','),path.join(out,'native-screen.png')]);}
   await detached.page.locator('.workspace-pane-title').click({button:'right'});await detached.page.locator('#workspace-title-menu [data-command="dock"]').click();
@@ -98,8 +98,8 @@ try{
   await chat.page.click('#conversation-head',{button:'right'});
   await chat.page.waitForSelector('#conversation-context-menu:not([hidden])');
   const chatWindowCommands=await chat.page.$$eval('#conversation-context-menu [data-command^="chat-window-"]',nodes=>nodes.map(node=>node.dataset.command).sort());
-  assert.deepEqual(chatWindowCommands,process.platform==='darwin'?[]:['chat-window-maximize','chat-window-minimize']);
-  if(process.platform==='darwin')assert.equal(await chat.page.$eval('#conversation-head',node=>node.classList.contains('nozeli-draggable')),false);
+  assert.deepEqual(chatWindowCommands,process.platform==='linux'?['chat-window-maximize','chat-window-minimize']:[]);
+  if(process.platform!=='linux')assert.equal(await chat.page.$eval('#conversation-head',node=>node.classList.contains('nozeli-draggable')),false);
   await chat.page.keyboard.press('Escape');
   await chat.page.screenshot({path:path.join(out,'detached-chat-content-toolbar.png')});
   report.checks.push('real platform DOM chrome, main/detached content toolbar, platform shortcut, light/dark media and narrow screenshots, pane menu dock via real workspace');

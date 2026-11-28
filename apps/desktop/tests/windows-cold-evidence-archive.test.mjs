@@ -18,6 +18,7 @@ import {ensureExperimentalPrivateDirectory} from '../src/platform/windows/experi
 import {serve} from './pi-provider.fixture.mjs';
 import {staticReport} from './static-report.fixture.mjs';
 import {openColdController} from './fixtures/windows-cold-controller.mjs';
+import {readEvidenceFrames} from '../../../integrations/pi/src/read-evidence-journal.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const native={skip:process.platform!=='win32'||process.arch!=='x64',timeout:480000};
 const run=promisify(execFile);
@@ -123,13 +124,16 @@ test(`actual cold evidence archive: ${mode} retains original homes and helpers w
   const {archiveOwners,...sourceEvidence}=manifest;assert.equal(sha(JSON.stringify(sourceEvidence)),result.sourceEvidenceSha256);
   assert.equal(archiveOwners.length,3);
   for(const saved of archiveOwners){
-   assert.equal(saved.journal.settingsReads.schema,2);assert.ok(saved.journal.settingsReads.confirmedReads>0);
+   const base=path.join(result.destination,...saved.archiveRelative.split('/'));
+   assert.equal(saved.journal.settingsReads.schema,3);assert.ok(saved.journal.settingsReads.confirmedReads>0);
    assert.equal(saved.journal.settingsReads.ownerReleaseQualified,false);
-   assert.ok(saved.journal.settingsReads.observedEntries.some(e=>e.type==='file'&&e.relative.endsWith('.bytes')&&e.sha256===sha(originalSettings)));
-   assert.equal(saved.journal.modelAuthReads.schema,1);assert.ok(saved.journal.modelAuthReads.confirmedReads>0);
+   const settings=saved.journal.settingsReads;
+   const retained=await fs.readFile(path.join(base,...settings.journal.relative.split('/')));
+   assert.ok([...readEvidenceFrames(retained,settings.headBytes,1024*1024)].some(({bytes})=>bytes?.equals(originalSettings)));
+   assert.equal(saved.journal.modelAuthReads.schema,2);assert.ok(saved.journal.modelAuthReads.confirmedReads>0);
    assert.equal(saved.journal.modelAuthReads.fullRecoveryClosureQualified,false);
    assert.equal(saved.journal.modelAuthReads.ownerReleaseQualified,false);
-   assert.equal(saved.journal.roleReads.schema,2);assert.equal(saved.journal.roleReads.originalStartupConfirmed,true);assert.equal(saved.journal.roleReads.catalogCovered,true);assert.equal(saved.journal.roleReads.completeObservedSet,true);assert.equal(saved.journal.roleReads.ownerReleaseQualified,false);
+   assert.equal(saved.journal.roleReads.schema,3);assert.equal(saved.journal.roleReads.originalStartupConfirmed,true);assert.equal(saved.journal.roleReads.catalogCovered,true);assert.equal(saved.journal.roleReads.completeObservedSet,true);assert.equal(saved.journal.roleReads.ownerReleaseQualified,false);
    for(const entry of saved.journal.modelAuthReads.observedEntries){
     const source=saved.sourceManifest.entries.find(e=>e.relative===entry.relative);
     assert.ok(source);assert.equal(source.identity,entry.identity);
@@ -138,7 +142,6 @@ test(`actual cold evidence archive: ${mode} retains original homes and helpers w
    assert.equal(saved.originalHomeDirectoryCustodyQualified,true);
    assert.equal(saved.originalHomeLifetimeCustodyQualified,false);
    assert.equal(saved.sourceManifest.rootIdentity,owners.find(o=>o.id===saved.target).value.supervision.ownerHomeIdentity);
-   const base=path.join(result.destination,...saved.archiveRelative.split('/'));
    for(const entry of saved.sourceManifest.entries)if(entry.type==='file')assert.equal(sha(await fs.readFile(path.join(base,...entry.relative.split('/')))),entry.sha256);
    for(const [name,stream] of Object.entries(saved.streams)){
     const bytes=await fs.readFile(path.join(result.destination,'streams',saved.launchId,name+'.bin'));assert.equal(bytes.length,stream.bytes);assert.equal(sha(bytes),stream.sha256);
@@ -192,18 +195,17 @@ test(`actual cold evidence archive: ${mode} retains original homes and helpers w
    for(const settings of observed.result.settingsReads){assert.ok(settings.confirmedReads>0);assert.equal(settings.fullRecoveryClosureQualified,false);}
    assert.equal(observed.result.modelAuthReads.length,3);
    for(const material of observed.result.modelAuthReads){assert.ok(material.confirmedReads>0);assert.equal(material.fullRecoveryClosureQualified,false);assert.equal(material.ownerReleaseQualified,false);}
-   assert.equal(observed.result.roleReads.length,3);for(const role of observed.result.roleReads){assert.equal(role.schema,2);assert.equal(role.originalStartupConfirmed,true);assert.equal(role.completeObservedSet,true);assert.equal(role.ownerReleaseQualified,false);}
+   assert.equal(observed.result.roleReads.length,3);for(const role of observed.result.roleReads){assert.equal(role.schema,3);assert.equal(role.originalStartupConfirmed,true);assert.equal(role.completeObservedSet,true);assert.equal(role.ownerReleaseQualified,false);}
    const manifest=JSON.parse(await fs.readFile(path.join(archiveRow.value.destination,'manifest.json'),'utf8'));
-   const saved=manifest.archiveOwners[0],entry=saved.journal.settingsReads.observedEntries.find(e=>e.type==='file'&&e.relative.endsWith('.bytes'));
-   const settingsFile=path.join(archiveRow.value.destination,...saved.archiveRelative.split('/'),...entry.relative.split('/'));
+   const saved=manifest.archiveOwners[0],journal=saved.journal.settingsReads.journal;
+   const settingsFile=path.join(archiveRow.value.destination,...saved.archiveRelative.split('/'),...journal.relative.split('/'));
    const settingsBytes=await fs.readFile(settingsFile);await fs.rename(settingsFile,settingsFile+'.retained');await fs.writeFile(settingsFile,settingsBytes);
    assert.equal((await reconcile()).code,'MANAGED_COLD_ARCHIVE_UNVERIFIED');
    await assert.rejects(openWindowsReleasedColdArchiveReader({storage,projectId,operationId:archiveRow.id}),{code:'MANAGED_COLD_ARCHIVE_UNVERIFIED'});
    await fs.unlink(settingsFile);await fs.rename(settingsFile+'.retained',settingsFile);
    assert.equal((await reconcile()).result?.state,'ready-verified');
-   const modelEntry=saved.journal.modelAuthReads.observedEntries.find(e=>e.type==='file'&&e.relative.endsWith('.bytes'));
-   assert.ok(modelEntry);
-   const modelFile=path.join(archiveRow.value.destination,...saved.archiveRelative.split('/'),...modelEntry.relative.split('/'));
+   const modelJournal=saved.journal.modelAuthReads.journal;
+   const modelFile=path.join(archiveRow.value.destination,...saved.archiveRelative.split('/'),...modelJournal.relative.split('/'));
    const modelBytes=await fs.readFile(modelFile);
    // A same-byte replacement still changes the frozen ARCHIVE identity.
    // Original SOURCE IDs are separately checked by material reconciliation.

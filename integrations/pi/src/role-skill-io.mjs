@@ -13,6 +13,7 @@ import {constants} from 'node:fs';
 import {access as fsAccess,readFile as fsReadFile} from 'node:fs/promises';
 import {loadSkillsFromDir,createSyntheticSourceInfo,detectSupportedImageMimeTypeFromFile} from '@earendil-works/pi-coding-agent';
 import {windowsBridge} from './journal-io.mjs';
+import {createReadEvidenceJournal} from './read-evidence-journal.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=(code,message,cause)=>Object.assign(Error(message,{cause}),{code});
@@ -56,7 +57,7 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
   throw fail('PI_ROLE_SKILL_SCOPE','Role skill evidence directory is outside the bound owner root');
  const native=await windowsBridge(),agentRelative=relative.split(path.sep).join('/');
  const streamId=randomUUID();
- let sequence=0,headSha256=null,headFileIdentity=null,poisoned=null,closed=false;
+ let poisoned=null,closed=false,stagedReads=0,stagedHead=null;
  let agentParent=null,evidenceDir=null,parseDir=null,evidenceBoundIdentity=null,parseBoundIdentity=null;
  const retained=new Map();
  const verifyOpen=()=>{
@@ -64,6 +65,10 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
   if(closed)throw fail('PI_ROLE_SKILL_CLOSED','Trusted role skill custody is closed with the owner');
  };
  const openAgent=()=>native.openAnchoredPersistenceParent(privateRoot,agentRelative+'/__role_skills_anchor__');
+ // Durable evidence is a single native append-only journal inside the pinned
+ // role-reads directory; the staged parse copies remain the SDK's only input.
+ const journal=createReadEvidenceJournal({openAgent,member:'role-reads',streamId,schema:3,
+  mechanism:'windows-native-role-read-journal',directory:path.join(agentDir,'role-reads'),byteLimit:limit,directorySync});
  function publish(parent,name,bytes){
   let stage,primary,published=false;
   try{stage=parent.createPrivateExclusive('.role-'+randomUUID()+'.pending');stage.write(bytes);stage.sync();stage.publishNew(name);published=true;directorySync(parent);parent.verify();return stage.identity();}
@@ -121,16 +126,16 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
  // Retain bytes and identities, publish the staged copy, pin its exact
  // published entity with a native read lease BEFORE the SDK parses it, keep
  // the lease across the parse, then re-verify identity and bytes through the
- // same lease and through a fresh name binding. Only then chain the receipt.
+ // same lease and through a fresh name binding. Only then append the journal
+ // frame for the confirmed read.
  async function readRoleSkill(role,row,rolePackageRoot){
   verifyOpen();
   const observation=observe(role,row,rolePackageRoot);
   let stagedDirectory=null,stagedLease=null,stagedRecheck=null,primary,wrote=false;
   try{
-   const {evidence,parse}=openEvidence();wrote=true;
-   const next=sequence+1,base=String(next).padStart(8,'0')+'-'+randomUUID();
+  const {parse}=openEvidence();wrote=true;
+  const next=stagedReads+1,base=String(next).padStart(8,'0')+'-'+randomUUID();
    const bytes=observation.bytes;
-   const blobIdentity=publish(evidence,base+'.bytes',bytes);
    stagedDirectory=parse.openPrivateDirectory(base,true);stagedDirectory.syncDirectory();parse.syncDirectory();
    const publishedIdentity=publish(stagedDirectory,skillFileName,bytes);
    stagedLease=stagedDirectory.openPrivateObjectRead(skillFileName);
@@ -148,15 +153,15 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
    stagedDirectory.verify();parse.verify();
    if(loaded.diagnostics.length||loaded.skills.length!==1||loaded.skills[0].name!==row.name)
     throw fail('PI_SKILL_SCOPE','Invalid or colliding trusted role skill');
-   const record={schema:2,streamId,sequence:next,previousSha256:headSha256,previousFileIdentity:headFileIdentity,
-    role:observation.role,name:observation.name,path:observation.path,rolePackageRoot:observation.rolePackageRoot,
-    rootIdentity:observation.rootIdentity,roleIdentity:observation.roleIdentity,skillsIdentity:observation.skillsIdentity,
-    parentIdentity:observation.parentIdentity,fileIdentity:observation.fileIdentity,
-    evidenceIdentity:evidenceBoundIdentity,parseRootIdentity:parseBoundIdentity,parseDirectoryIdentity:stagedDirectory.identity(),
-    byteLength:bytes.length,sha256:hash(bytes),blob:'role-reads/'+base+'.bytes',blobIdentity,
-    parse:'role-reads/parse/'+base+'/'+skillFileName,parseIdentity:publishedIdentity};
-   const encoded=Buffer.from(JSON.stringify(record)),identity=publish(evidence,base+'.json',encoded);
-   sequence=next;headSha256=hash(encoded);headFileIdentity=identity;
+  const fields={role:observation.role,name:observation.name,path:observation.path,rolePackageRoot:observation.rolePackageRoot,
+   rootIdentity:observation.rootIdentity,roleIdentity:observation.roleIdentity,skillsIdentity:observation.skillsIdentity,
+   parentIdentity:observation.parentIdentity,fileIdentity:observation.fileIdentity,
+   evidenceIdentity:evidenceBoundIdentity,parseRootIdentity:parseBoundIdentity,parseDirectoryIdentity:stagedDirectory.identity(),
+   parse:'role-reads/parse/'+base+'/'+skillFileName,parseIdentity:publishedIdentity};
+  const record={...fields,schema:3,streamId,sequence:next,previousSha256:stagedHead,present:true,byteLength:bytes.length,sha256:hash(bytes)};
+  if(journal.retain(fields,bytes)!==next)
+   throw fail('PI_ROLE_SKILL_UNCONFIRMED','Retained role skill journal sequence diverged from the staged read');
+  stagedReads=next;stagedHead=hash(Buffer.from(JSON.stringify(record)));
    const skillDirPath=path.dirname(observation.path);
    const skill={...loaded.skills[0],filePath:observation.path,baseDir:skillDirPath,
     sourceInfo:createSyntheticSourceInfo(observation.path,{source:roleSource,baseDir:skillDirPath})};
@@ -179,6 +184,7 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
   if(closed)return;
   closed=true;
   const errors=[];
+  try{journal.close();}catch(error){errors.push(error);}
   for(const handle of [parseDir,evidenceDir,agentParent]){
    if(!handle)continue;
    try{handle.close();}catch(error){errors.push(error);}
@@ -192,8 +198,11 @@ export async function createOwnerRoleSkillIO({agentDir,privateRoot=process.env.N
  return Object.freeze({
   readRoleSkill,
   close,
+  flush(){verifyOpen();journal.flush();},
   readOperations:()=>roleReadOperations(retained,verifyOpen),
-  snapshot(){verifyOpen();return {schema:2,streamId,mechanism:'windows-native-role-read-bytes',reads:sequence,headSha256,headFileIdentity,
-   directory:path.join(agentDir,'role-reads'),fullRecoveryClosureQualified:false};},
+  snapshot(){verifyOpen();const snapshot=journal.snapshot();
+   if(snapshot.reads>0&&snapshot.directoryIdentity!==evidenceBoundIdentity)
+    throw poisoned=fail('PI_ROLE_SKILL_UNCONFIRMED','Retained role skill evidence directory was replaced');
+   return snapshot;},
  });
 }

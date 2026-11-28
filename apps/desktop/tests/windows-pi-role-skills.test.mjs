@@ -46,8 +46,10 @@ async function fixture(t,{skills=2,ioOptions={}}={}){
   async trusted(catalog=rows){return await trustedRoleResources('orchestrator',catalog,rolePackageRoot,io);},
   async inspect(){const tree=await openExperimentalPrivateTree(root,home,{rootAccess:'readwrite',fileAccess:'read'});
    try{return await inspectColdRoleReads({launch,requests,transcript,manifest:tree.manifest,readFile:(...args)=>tree.readFile(...args)});}finally{tree.close();}},
-  async receipts(){const result=[];for(const name of (await fs.readdir(directory)).filter(n=>n.endsWith('.json')))
-   result.push({file:path.join(directory,name),row:JSON.parse(await fs.readFile(path.join(directory,name),'utf8'))});
+  async frames(){const result=[];for(const name of (await fs.readdir(directory).catch(()=>[])).filter(n=>n.endsWith('.journal'))){
+   const file=path.join(directory,name),bytes=await fs.readFile(file);let offset=0;
+   while(offset<bytes.length){const n=bytes.readUInt32BE(offset);offset+=4;const header=bytes.subarray(offset,offset+n);offset+=n;
+    const row=JSON.parse(new TextDecoder().decode(header));result.push({file,row,headSha256:sha(header),end:offset+row.byteLength});offset+=row.byteLength;}}
    return result.sort((a,b)=>a.row.sequence-b.row.sequence);}};
 }
 
@@ -72,33 +74,40 @@ test('native role skills retain exact bytes and identities before SDK consumptio
   assert.equal(entry.skill.sourceInfo.path,path.resolve(row.filePath));
   assert.equal(entry.skill.sourceInfo.source,'nozeli-role-package');
  }
- const receipts=await f.receipts();
- assert.equal(receipts.length,f.rows.length);
- assert.equal(receipts.every(({row})=>row.schema===2),true);
- assert.equal(receipts[0].row.previousSha256,null);
- assert.equal(receipts[1].row.previousSha256,sha(Buffer.from(JSON.stringify(receipts[0].row))));
- assert.equal(receipts.every(({row})=>row.evidenceIdentity===receipts[0].row.evidenceIdentity&&row.parseRootIdentity===receipts[0].row.parseRootIdentity),true);
+ const snapshot=f.io.snapshot();
+ assert.equal(snapshot.schema,3);
+ assert.equal(snapshot.reads,f.rows.length);
+ assert.equal(snapshot.mechanism,'windows-native-role-read-journal');
+ assert.equal(snapshot.directory,f.directory);
+ assert.ok(identityOf(snapshot.headFileIdentity)&&identityOf(snapshot.directoryIdentity));
+ assert.ok(snapshot.headBytes>0);
+ f.respond('start',{journalSnapshot:{roleReads:snapshot}});
+ // Close the writer lease before any cold tree read or mutation.
+ f.io.close();
+ const frames=await f.frames();
+ assert.equal(frames.length,f.rows.length);
+ assert.equal(frames.every(({row})=>row.schema===3&&row.present===true),true);
+ assert.equal(frames[0].row.previousSha256,null);
+ assert.equal(frames[1].row.previousSha256,frames[0].headSha256);
+ assert.equal(frames.every(({row})=>row.blob===undefined&&row.blobIdentity===undefined&&row.previousFileIdentity===undefined),true);
+ assert.equal(frames.every(({row})=>row.evidenceIdentity===frames[0].row.evidenceIdentity&&row.parseRootIdentity===frames[0].row.parseRootIdentity),true);
  // The staged parse copies still hold exactly the retained bytes.
- for(const {row} of receipts){
+ for(const {row} of frames){
   const staged=path.join(f.directory,row.parse.split('/').slice(1).join(path.sep));
   assert.equal(sha(await fs.readFile(staged)),row.sha256);
  }
- const snapshot=f.io.snapshot();
- assert.equal(snapshot.schema,2);
- assert.equal(snapshot.reads,f.rows.length);
- assert.equal(snapshot.mechanism,'windows-native-role-read-bytes');
- assert.equal(snapshot.directory,f.directory);
- assert.equal(snapshot.headSha256,sha(Buffer.from(JSON.stringify(receipts.at(-1).row))));
- assert.equal(snapshot.fullRecoveryClosureQualified,false);
- f.respond('start',{journalSnapshot:{roleReads:f.io.snapshot()}});
+ assert.equal(snapshot.headSha256,frames.at(-1).headSha256);
+ assert.equal(snapshot.headBytes,frames.at(-1).end);
  const observed=await f.inspect();
- assert.equal(observed.schema,2);
+ assert.equal(observed.schema,3);
  assert.equal(observed.state,'complete-observed-set');
  assert.equal(observed.confirmedReads,f.rows.length);
  assert.equal(observed.catalogCovered,true);
  assert.equal(observed.catalogSize,f.rows.length);
  assert.equal(observed.originalStartupConfirmed,true);
  assert.equal(observed.headSha256,snapshot.headSha256);
+ assert.equal(observed.headFileIdentity,snapshot.headFileIdentity);
+ assert.equal(observed.unconfirmedTailBytes,0);
  assert.deepEqual(observed.unknownFiles,[]);
  assert.equal(observed.automaticReplay,false);
  assert.equal(observed.ownerReleaseQualified,false);
@@ -163,7 +172,7 @@ test('the published staged copy is pinned and an unpinned replacement is never p
  await assert.rejects(f.trusted());
  assert.equal(swaps.length,1);
  assert.throws(()=>f.io.snapshot(),{code:'PI_ROLE_SKILL_UNCONFIRMED'});
- assert.equal((await f.receipts()).length,0);
+ assert.equal((await f.frames()).length,0);
 });
 
 test('planted evidence-directory contenders are refused and never produce receipts',native,async t=>{
@@ -171,7 +180,7 @@ test('planted evidence-directory contenders are refused and never produce receip
  await fs.mkdir(f.directory,{recursive:true});
  await fs.writeFile(path.join(f.directory,'parse'),'contender');
  await assert.rejects(f.trusted());
- assert.equal((await f.receipts()).length,0);
+ assert.equal((await f.frames()).length,0);
  await fs.rm(f.directory,{recursive:true,force:true});
  const fresh=await fixture2(t,f);
  assert.ok(fresh.resources.allowed.size);
@@ -185,28 +194,29 @@ test('closed role skill custody refuses later snapshots and retained reads witho
  nativeRoleExtension({cwd:f.cwd,resources,getTurn:()=>null,onApi:()=>{}})({registerTool:tool=>{reader=tool;},on:()=>{}});
  const skill=path.resolve(f.rows[0].filePath);
  assert.equal((await reader.execute('r1',{path:skill},undefined,undefined,{})).isError,undefined);
- f.io.close();
+ f.io.flush();
  f.io.close();
  assert.throws(()=>f.io.snapshot(),{code:'PI_ROLE_SKILL_CLOSED'});
  await assert.rejects(f.trusted(),{code:'PI_ROLE_SKILL_CLOSED'});
  await assert.rejects(reader.execute('r2',{path:skill},undefined,undefined,{}),{code:'PI_ROLE_SKILL_CLOSED'});
  // Closing releases custody only: the release package and retained evidence
  // remain exactly as published; no home deletion or release is implied.
- assert.equal((await f.receipts()).length,f.rows.length);
+ assert.equal((await f.frames()).length,f.rows.length);
  assert.equal(sha(await fs.readFile(f.rows[0].filePath)),resources.retained.get(skill).record.sha256);
 });
 
 test('pinned role evidence directories cannot be replaced across observations',native,async t=>{
  const f=await fixture(t);
  await f.trusted();
- const receipts=await f.receipts();
  // The bound evidence directory handle denies rename/delete: a same-content
  // contender directory cannot take its place while the owner holds custody.
  await assert.rejects(fs.rename(f.directory,f.directory+'.contender'));
  await f.trusted();
- const after=await f.receipts();
- assert.equal(after.length,f.rows.length*2);
- assert.equal(after.every(({row})=>row.evidenceIdentity===receipts[0].row.evidenceIdentity&&row.parseRootIdentity===receipts[0].row.parseRootIdentity),true);
+ f.io.snapshot();
+ f.io.close();
+ const frames=await f.frames();
+ assert.equal(frames.length,f.rows.length*2);
+ assert.equal(frames.every(({row})=>row.evidenceIdentity===frames[0].row.evidenceIdentity&&row.parseRootIdentity===frames[0].row.parseRootIdentity),true);
 });
 
 test('registered owner runtimes expose role read heads next to settings evidence',native,async t=>{
@@ -215,10 +225,12 @@ test('registered owner runtimes expose role read heads next to settings evidence
  await runtime.ensureInitialized({home:f.home,agentDir:f.agentDir,cwd:f.cwd});
  assert.ok(runtime.roleSkillIO);
  const head=runtime.roleSkillIO.snapshot();
- assert.equal(head.schema,2);
+ assert.equal(head.schema,3);
  assert.equal(head.reads,0);
  assert.equal(head.headSha256,null);
  assert.equal(head.headFileIdentity,null);
+ assert.equal(head.headBytes,0);
+ assert.equal(head.directoryIdentity,null);
  assert.equal(head.fullRecoveryClosureQualified,false);
  // Orderly stop releases the runtime's pinned role custody HANDLEs before
  // fixture disposal; later snapshots refuse.
@@ -230,7 +242,8 @@ test('copied archive reconstruction reads retained role evidence without replay 
  const f=await fixture(t);
  await f.trusted();
  f.respond('start',{journalSnapshot:{roleReads:f.io.snapshot()}});
- f.respond('flush',{roleReads:f.io.snapshot()});
+f.respond('flush',{roleReads:f.io.snapshot()});
+f.io.close();
  const observed=await f.inspect();
  assert.equal(observed.state,'complete-observed-set');
  const tree=await openExperimentalPrivateTree(f.root,f.home,{rootAccess:'readwrite',fileAccess:'read'});
@@ -247,35 +260,59 @@ test('copied archive reconstruction reads retained role evidence without replay 
  }finally{copy?.close();tree.close();}
 });
 
-for(const mutation of ['record-same-bytes','parse-content','blob-content','missing-record','wrong-head','earlier-head','wrong-request','wrong-launch','wrong-directory','backward-count','stream-change','shrunken-catalog','staged-same-bytes','parse-directory-contender','parse-root-contender'])
+test('historical role receipts verify against their original head without journal authority',native,async t=>{
+ const f=await fixture(t,{skills:1});await f.trusted();const current=f.io.snapshot();f.io.close();
+ const [{row,file}]=await f.frames(),base=path.posix.basename(path.posix.dirname(row.parse));
+ const relative='config/role-reads/',blob=path.join(f.directory,base+'.bytes'),receipt=path.join(f.directory,base+'.json');
+ const readIdentity=async name=>{
+  const tree=await openExperimentalPrivateTree(f.root,f.home,{rootAccess:'readwrite',fileAccess:'read'});
+  try{return tree.manifest.entries.find(entry=>entry.relative===relative+name).identity;}finally{tree.close();}
+ };
+ await fs.copyFile(path.join(f.directory,...row.parse.split('/').slice(1)),blob);await fs.unlink(file);
+ const {present,...facts}=row;
+ const bytes=Buffer.from(JSON.stringify({...facts,schema:2,blob:'role-reads/'+base+'.bytes',
+  previousFileIdentity:null,blobIdentity:await readIdentity(base+'.bytes')}));
+ await fs.writeFile(receipt,bytes);
+ const {headBytes,directoryIdentity,...old}=current;
+ const snapshot={...old,schema:2,mechanism:'windows-native-role-read-bytes',headSha256:sha(bytes),headFileIdentity:await readIdentity(base+'.json')};
+ f.respond('start',{journalSnapshot:{roleReads:snapshot}});
+ const historical=await f.inspect();assert.equal(historical.schema,2);assert.equal(historical.state,'complete-observed-set');assert.equal(historical.automaticReplay,false);
+ f.respond('flush',{roleReads:current});await assert.rejects(f.inspect(),{code:'HOST_ROLE_SKILLS_CHANGED'});
+ f.transcript.pop();await fs.rename(receipt,receipt+'.retained');await fs.writeFile(receipt,bytes);
+ await assert.rejects(f.inspect(),{code:'HOST_ROLE_SKILLS_CHANGED'});
+});
+
+for(const mutation of ['journal-same-bytes','parse-content','missing-record','wrong-head','earlier-head','wrong-request','wrong-launch','wrong-directory','backward-count','stream-change','shrunken-catalog','staged-same-bytes','parse-directory-contender','parse-root-contender'])
 test(`native cold role skills reject ${mutation}`,native,async t=>{
  const f=await fixture(t);
  await f.trusted();
  f.respond('start',{journalSnapshot:{roleReads:f.io.snapshot()}});
  f.respond('flush',{roleReads:f.io.snapshot()});
- const rows=await f.receipts(),first=rows[0],latest=f.transcript.at(-1).result.roleReads;
- if(mutation==='record-same-bytes'||mutation==='parse-content'||mutation==='blob-content'){
-  const file=mutation==='record-same-bytes'?first.file:path.join(f.agentDir,mutation==='parse-content'?first.row.parse:first.row.blob);
-  const bytes=await fs.readFile(file);
-  const content=mutation==='parse-content'?Buffer.concat([bytes,Buffer.from('\ndrifted\n')]):bytes;
-  await fs.rename(file,file+'.retained');await fs.writeFile(file,mutation==='parse-content'?content:bytes);
+ const latest=f.transcript.at(-1).result.roleReads;
+ // Release the writer lease before any cold tree read or mutation.
+ f.io.close();
+ const frames=await f.frames(),first=frames[0];
+ if(mutation==='journal-same-bytes'){
+  const bytes=await fs.readFile(first.file);
+  await fs.rename(first.file,first.file+'.retained');await fs.writeFile(first.file,bytes);
+ }else if(mutation==='parse-content'){
+  const file=path.join(f.agentDir,first.row.parse),bytes=await fs.readFile(file);
+  await fs.rename(file,file+'.retained');await fs.writeFile(file,Buffer.concat([bytes,Buffer.from('\ndrifted\n')]));
  }else if(mutation==='staged-same-bytes'){
   const staged=path.join(f.agentDir,first.row.parse),bytes=await fs.readFile(staged);
   await fs.rename(staged,staged+'.retained');await fs.writeFile(staged,bytes);
  }else if(mutation==='parse-directory-contender'){
-  // Release the lifetime pins first; rebuild the staged directory with the
-  // SAME bytes through the native private-tree primitives (a plain mkdir'd
-  // contender has the wrong policy and dies in tree traversal, not in the
-  // identity binding). The directory FileID mismatch must be the rejection.
-  f.io.close();
+  // Rebuild the staged directory with the SAME bytes through the native
+  // private-tree primitives (a plain mkdir'd contender has the wrong policy
+  // and dies in tree traversal, not in the identity binding). The directory
+  // FileID mismatch must be the rejection.
   const dir=path.join(f.agentDir,path.dirname(first.row.parse)),bytes=await fs.readFile(path.join(dir,'SKILL.md'));
   await fs.rename(dir,dir+'.contender');
   await createPrivateStagedCopy(f,'parse',path.basename(dir),bytes);
  }else if(mutation==='parse-root-contender'){
   // Same-content contender for the whole parse root, natively created.
-  f.io.close();
-  const parseRoot=path.join(f.directory,'parse'),members=await f.receipts();
-  const copies=[];for(const {row} of members)copies.push([row.parse.split('/').at(-2),await fs.readFile(path.join(f.agentDir,row.blob))]);
+  const parseRoot=path.join(f.directory,'parse');
+  const copies=[];for(const {row} of frames)copies.push([row.parse.split('/').at(-2),await fs.readFile(path.join(f.agentDir,row.parse))]);
   await fs.rename(parseRoot,parseRoot+'.contender');
   for(const [index,[base,bytes]] of copies.entries())await createPrivateStagedCopy(f,'parse',base,bytes,index===0);
  }else if(mutation==='missing-record')await fs.unlink(first.file);
@@ -296,6 +333,7 @@ test(`native cold role skills keep ${mutation} startup authority unknown or refu
  await f.trusted();
  const snapshot=f.io.snapshot();
  const startId=randomUUID(),flushId=randomUUID();
+ f.io.close();
  if(mutation==='missing-start-response'){
   // The catalog start request exists and later heads match, but no original
   // start response confirms startup consumption: stays UNKNOWN, never complete.
@@ -330,6 +368,7 @@ test(`native cold role skills retain ${mutation} as explicit unknown material`,n
  if(mutation==='orphan-blob')await fs.writeFile(path.join(f.directory,'orphan.bytes'),'unconfirmed bytes');
  else if(mutation==='pending-publication')await fs.writeFile(path.join(f.directory,'.role-'+randomUUID()+'.pending'),'published without receipt');
  else{await fs.writeFile(path.join(f.directory,'legacy.json'),'{"schema":1}');}
+ f.io.close();
  const result=await f.inspect();
  assert.equal(result.completeObservedSet,false);
  assert.equal(result.state,'confirmed-prefix-with-unknown-material');
@@ -349,6 +388,24 @@ test('cold role skills without original launch snapshots stay unverified',native
  assert.equal(result.completeObservedSet,false);
  assert.equal(result.originalStartupConfirmed,false);
  assert.equal(result.automaticReplay,false);
+});
+
+test('a flushed journal tail without its stdout head stays unknown material',native,async t=>{
+ const f=await fixture(t);
+ await f.trusted([f.rows[0]]);
+ f.respond('start',{journalSnapshot:{roleReads:f.io.snapshot()}});
+ await f.trusted([f.rows[1]]);
+ // Flushing appends durable frames that no original stdout head confirms.
+ f.io.flush();
+ f.io.close();
+ const observed=await f.inspect();
+ assert.equal(observed.state,'confirmed-prefix-with-unknown-material');
+ assert.equal(observed.confirmedReads,1);
+ assert.equal(observed.completeObservedSet,false);
+ assert.equal(observed.catalogCovered,false);
+ assert.ok(observed.unconfirmedTailBytes>0);
+ assert.equal(observed.automaticReplay,false);
+ assert.equal(observed.ownerReleaseQualified,false);
 });
 
 test('unregistered owners keep the plain catalog-checked role resources',async t=>{

@@ -162,3 +162,16 @@ test('a thrown retention error is presented once and does not strand the next ex
   assert.equal(project,'source');assert.equal(errors.length,1);assert.equal(switches.pending(),null);
   fail=false;assert.equal((await switches.request('B')).ok,true);assert.equal(project,'B');assert.equal(errors.length,1);
 });
+
+for(const rejected of [false,true])test(`unentered scheduling slot (${rejected?'rejection':'refusal'}) settles the latest request without replay`,{timeout:1000},async()=>{
+  let project='source',first=true;
+  let release;const gate=new Promise((resolve,reject)=>{release=rejected?reject:resolve;});
+  const error={code:'UI_FAILED',message:'cannot hold input'},failure={ok:false,error},errors=[],transitions=[];
+  const switches=createProjectSwitches({schedule:action=>{if(!first)return action();first=false;return gate;},current:()=>project,ready:()=>true,onError:e=>errors.push(e),transition:async id=>{transitions.push(id);project=id;return {ok:true,projectId:id};}});
+  const a=switches.request('A'),b=switches.request('B'),duplicate=switches.request('B');
+  release(rejected?Object.assign(Error(error.message),error):failure);
+  assert.equal((await a).error.code,'PROJECT_SWITCH_SUPERSEDED');
+  assert.deepEqual(await Promise.all([b,duplicate]),[failure,failure]);
+  assert.deepEqual(errors,[error]);assert.equal(switches.pending(),null);assert.equal(project,'source');assert.deepEqual(transitions,[]);
+  assert.equal((await switches.request('B')).ok,true);assert.deepEqual(transitions,['B']);
+});

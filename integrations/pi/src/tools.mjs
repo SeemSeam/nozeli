@@ -98,7 +98,7 @@ function errorToAgentToolResult(error) {
   };
 }
 
-export function createHostToolBridge({ send, onHostControl }) {
+export function createHostToolBridge({ send, onHostControl, beforeRequest }) {
   /** id -> { resolve, toolName } */
   const pending = new Map();
   let turn = null;
@@ -128,6 +128,7 @@ export function createHostToolBridge({ send, onHostControl }) {
               if (current.jobId !== undefined) frame.jobId = current.jobId;
             }
           }
+          beforeRequest?.();
           return new Promise((resolve) => {
             const abort = () => {
               if (!pending.has(id)) return;
@@ -206,7 +207,8 @@ export function createInteractionBridge({ send }) {
     const id = nextReverseId();
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      send({ event: "interaction", interaction: { id, ...interaction } });
+      try{send({ event: "interaction", interaction: { id, ...interaction } });}
+      catch(error){pending.delete(id);reject(error);}
     });
   }
 

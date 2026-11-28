@@ -14,6 +14,15 @@ function fixture(options={}){
 test('normal close waits for authoritative Host settlement and cleanup',async()=>{
  const save=deferred(),f=fixture({settle:()=>save.promise});f.r.requestClose();const ack=f.ack();assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});save.resolve();assert.equal((await ack).accepted,true);assert.deepEqual(f.counts(),{closed:1,reloads:0,stops:1});
 });
+test('explicit save refusal stays visible when unrelated Host work has not settled',async()=>{
+ const outstanding=deferred(),f=fixture({settle:()=>outstanding.promise});
+ f.r.requestClose();const receipt=f.r.acknowledge(f.wc,{requestId:f.r.pending.id,ok:false,error:{code:'ADMIN_SAVE_PENDING',message:'assistant draft is still saving'}});
+ try{
+  await tick();assert.match(f.dialogs[0]?.opts.detail??'',/assistant draft is still saving/);
+  assert.equal(f.r.pending,null);assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});
+ }finally{outstanding.resolve();}
+ assert.deepEqual(await receipt,{accepted:true});
+});
 test('timeout stall keeps the original waiter; continue waiting resumes and the late ack closes',async()=>{
  const f=fixture();
  f.r.requestClose();const p=f.r.pending;
@@ -144,11 +153,11 @@ test('confirmed force quit after a failed save never retries settlement or claim
  let forced=0,settles=0;const f=fixture({forceQuit:()=>forced++,settle:async()=>{settles++;}});
  f.r.requestClose();
  assert.deepEqual(await f.r.acknowledge(f.wc,{requestId:f.r.pending.id,ok:false,error:{message:'保存通道无响应'}}),{accepted:true});
- assert.equal(settles,1);assert.equal(f.r.phase,'save-unconfirmed');
+ assert.equal(settles,0);assert.equal(f.r.phase,'save-unconfirmed');
  assert.match(f.dialogs[0].opts.message,/未能确认保存/);
  f.dialogs[0].resolve({response:2});await tick();
  f.dialogs[1].resolve({response:1});await tick();
- assert.equal(forced,1);assert.equal(settles,1);assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});
+ assert.equal(forced,1);assert.equal(settles,0);assert.deepEqual(f.counts(),{closed:0,reloads:0,stops:0});
  assert.equal(f.r.snapshot().forced,true);
 });
 for(const stage of ['choice','confirmation'])test('stale '+stage+' force quit interaction cannot kill a replacement page',async()=>{

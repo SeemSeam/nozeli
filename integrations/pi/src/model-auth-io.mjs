@@ -1,31 +1,34 @@
 // Host-owned private model/config storage. SDK parsers, credential orchestration
 // and persistent catalog semantics stay upstream. Raw bytes remain private.
 import path from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {windowsBridge} from './journal-io.mjs';
+import {createReadEvidenceJournal} from './read-evidence-journal.mjs';
 const sdkRoot=path.resolve(import.meta.dirname,'../node_modules/@earendil-works/pi-coding-agent');
 const {AuthStorage}=await import(pathToFileURL(path.join(sdkRoot,'dist/core/auth-storage.js')));
 const {ModelConfig}=await import(pathToFileURL(path.join(sdkRoot,'dist/core/model-config.js')));
 const {FileModelsStore}=await import(pathToFileURL(path.join(sdkRoot,'dist/core/models-store.js')));
-const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fail=(code,message,cause)=>Object.assign(Error(message,{cause}),{code});
 const missing=e=>e.code==='WIN32_IO_ERROR'&&e.win32Code===2;
 const names=new Set(['models.json','auth.json','models-store.json']);
 const limit=8*1024*1024;
 
-export async function createOwnerModelAuthIO({agentDir,privateRoot=process.env.NOZELI_PI_PRIVATE_ROOT,directorySync=p=>p.syncDirectory()}={}){
+export async function createOwnerModelAuthIO({agentDir,privateRoot=process.env.NOZELI_PI_PRIVATE_ROOT,directorySync=p=>p.syncDirectory(),beforeProviderRequest}={}){
  if(process.platform!=='win32'||!privateRoot)return null;
  const relative=path.relative(privateRoot,agentDir);
  if(!path.isAbsolute(privateRoot)||!path.isAbsolute(agentDir)||!relative||path.isAbsolute(relative)||relative.split(path.sep).includes('..'))
   throw fail('PI_MODEL_AUTH_SCOPE','Model/auth directory is outside the bound owner root');
  const native=await windowsBridge(),agentRelative=relative.split(path.sep).join('/'),streamId=randomUUID();
- let sequence=0,headSha256=null,headFileIdentity=null,poisoned=null,evidenceDirectoryIdentity=null;
+ let poisoned=null;
  const check=()=>{if(poisoned)throw poisoned;};
  const poison=cause=>poisoned??=fail('PI_MODEL_AUTH_UNCONFIRMED','Private model/auth storage requires reconciliation',cause);
  const openAgent=()=>native.openAnchoredPersistenceParent(privateRoot,agentRelative+'/__model_auth_anchor__');
+ const evidence=createReadEvidenceJournal({openAgent,member:'model-auth-reads',streamId,schema:2,
+  mechanism:'windows-native-model-auth-read-journal',directory:path.join(agentDir,'model-auth-reads'),byteLimit:limit,directorySync});
+ const flushEvidence=()=>{check();try{evidence.flush();}catch(cause){throw poison(cause);}};
  const close=(resources,primary)=>{
   const errors=[];for(const resource of resources)try{resource?.close();}catch(e){errors.push(e);}
   if(errors.length){const error=poison(errors[0]);if(primary)primary.cleanupErrors=errors;else throw error;}
@@ -36,30 +39,8 @@ export async function createOwnerModelAuthIO({agentDir,privateRoot=process.env.N
   file.verify();return Buffer.concat(chunks,Number(size));
  };
  const writeChunks=(write,bytes)=>{for(let offset=0;offset<bytes.length;offset+=262144)write(bytes.subarray(offset,offset+262144));};
- function publish(parent,name,bytes){
-  let stage,primary,published=false;
-  try{stage=parent.createPrivateExclusive('.model-auth-'+randomUUID()+'.pending');writeChunks(chunk=>stage.write(chunk),bytes);stage.sync();stage.publishNew(name);published=true;directorySync(parent);parent.verify();return stage.identity();}
-  catch(cause){primary=cause;if(published||cause.committed){primary=poison(cause);primary.committed=true;}throw primary;}
-  finally{close([stage],primary);}
- }
- function retain(observation){
-  let agent,evidence,primary;
-  try{
-   agent=openAgent();evidence=agent.openPrivateDirectory('model-auth-reads',true);
-   const directoryIdentity=evidence.identity();
-   // Allocation barriers belong to the original directory once; every file
-   // publication below still flushes its bytes and the containing namespace.
-   if(evidenceDirectoryIdentity===null){evidence.syncDirectory();agent.syncDirectory();evidenceDirectoryIdentity=directoryIdentity;}
-   else if(directoryIdentity!==evidenceDirectoryIdentity)throw fail('PI_MODEL_AUTH_CHANGED','Private model/auth evidence directory changed');
-   const next=sequence+1,base=String(next).padStart(8,'0')+'-'+randomUUID(),bytes=observation.bytes;
-   const blobIdentity=bytes===null?null:publish(evidence,base+'.bytes',bytes);
-   const row={schema:1,streamId,sequence:next,previousSha256:headSha256,previousFileIdentity:headFileIdentity,
-    name:observation.name,path:path.join(agentDir,observation.name),parentIdentity:observation.parentIdentity,
-    present:bytes!==null,fileIdentity:observation.identity??null,byteLength:bytes?.length??0,sha256:bytes===null?null:sha(bytes),
-    blob:bytes===null?null:'model-auth-reads/'+base+'.bytes',blobIdentity};
-   const encoded=Buffer.from(JSON.stringify(row)),identity=publish(evidence,base+'.json',encoded);
-   sequence=next;headSha256=sha(encoded);headFileIdentity=identity;
-  }catch(cause){primary=poison(cause);throw primary;}finally{close([evidence,agent],primary);}
+ function retain({name,parentIdentity,identity,bytes}){
+  evidence.retain({name,path:path.join(agentDir,name),parentIdentity,fileIdentity:identity??null},bytes);
  }
  function observe(name){
   check();if(!names.has(name))throw fail('PI_MODEL_AUTH_SCOPE','Unsupported private configuration member');
@@ -83,6 +64,7 @@ export async function createOwnerModelAuthIO({agentDir,privateRoot=process.env.N
  }
  function write(observation,next){
   check();if(typeof next!=='string'||Buffer.byteLength(next)>limit)throw fail('PI_MODEL_AUTH_LIMIT','Private configuration candidate exceeds its bound');
+  flushEvidence();
   let parent,transaction,stage,primary,published=false;
   try{
    parent=openAgent();if(parent.identity()!==observation.parentIdentity)throw fail('PI_MODEL_AUTH_CONFLICT','Private configuration directory changed');
@@ -161,14 +143,34 @@ export async function createOwnerModelAuthIO({agentDir,privateRoot=process.env.N
   storage,
   readModels(){return observe('models.json').bytes?.toString('utf8');},
   async updateModels(fn){return storage('models.json').withLockAsync(fn);},
-  createCredentials(){const credentials=AuthStorage.fromStorage(storage('auth.json'));check();return guarded(credentials);},
+  createCredentials(){
+   const credentials=AuthStorage.fromStorage(storage('auth.json'));
+   const modify=credentials.modify.bind(credentials);
+   // Pi refreshes OAuth credentials inside the locked modify callback.
+   // Confirm the native read before the callback can contact the provider.
+   credentials.modify=(provider,callback,options)=>modify(provider,current=>{
+    options?.signal?.throwIfAborted();
+    (beforeProviderRequest??flushEvidence)();
+    return callback(current);
+   },options);
+   check();return guarded(credentials);
+  },
   createModelsStore(){return guarded(new FileModelsStore(undefined,storage('models-store.json')));},
   async createModelRuntime(options={}){
    const runtime=await ModelRuntime.create({...options,authPath:path.join(agentDir,'auth.json'),modelsPath:path.join(agentDir,'models.json'),
     credentials:this.createCredentials(),modelsStore:this.createModelsStore(),loadModelConfig});
+   // Pi 1.4.0 resolves request-time credentials here, immediately before
+   // calling the provider adapter, including adapters that do not use fetch.
+   const prepareRequest=runtime.prepareRequest.bind(runtime);
+   runtime.prepareRequest=async (model,requestOptions)=>{
+    const prepared=await prepareRequest(model,requestOptions);
+    requestOptions?.signal?.throwIfAborted();
+    (beforeProviderRequest??flushEvidence)();
+    return prepared;
+   };
    check();return guarded(runtime);
   },
-  snapshot(){check();return {schema:1,streamId,mechanism:'windows-native-model-auth-read-bytes',reads:sequence,headSha256,headFileIdentity,
-   directory:path.join(agentDir,'model-auth-reads'),fullRecoveryClosureQualified:false};},
+  flush:flushEvidence,close:evidence.close,
+  snapshot(){flushEvidence();return evidence.snapshot();},
  });
 }

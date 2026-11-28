@@ -1,5 +1,5 @@
 import {setActionButton} from './ui-actions.mjs';
-export function usesNativeWindowChrome(){return globalThis.nozeli?.platform==='darwin';}
+export function usesNativeWindowChrome(){const platform=globalThis.nozeli?.platform;return platform==='darwin'||platform==='win32';}
 export function windowBrand(){const image=document.createElement('img');image.src='./nozeli-small-icon.png';image.alt='Nozeli';image.className='nozeli-window-logo';return image;}
 export function windowControls(invoke){
  if(usesNativeWindowChrome())return document.createDocumentFragment();const box=document.createElement('div');box.className='nozeli-window-controls';

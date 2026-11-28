@@ -18,11 +18,24 @@ const launchIdentity=(()=>{
 })();
 const respond=(frame,result)=>send({id:frame.id,result,...(launchIdentity?{method:frame.method,ownerLaunch:launchIdentity}:{})});
 const methods={inspectRecovery:'inspectRecovery',recover:'recover',start:'start',prompt:'prompt',cancel:'cancel',respond:'respond',model:'model',reload:'reload',compact:'compact',flush:'flush',status:'status',activity:'activity',models:'modelsList',providerList:'providerList',providerUpsert:'providerUpsert',providerRemove:'providerRemove',providerDiscover:'providerDiscoverModels',authSetKey:'authSetKey',authDisable:'authDisable',authList:'authList',authLogin:'authLogin'};
-let stopping=false;
+let stopping=false,stopCompletion=null;
+// One stop completion and one ten-second failure deadline are shared by the
+// explicit stop RPC and the signal, EOF, invalid-frame and stdout-error
+// stops: whichever entry begins the stop arms the bound, and a stall on the
+// runtime close or the final receipt drain exits nonzero instead of hanging.
+const beginStop=()=>{
+ if(!stopCompletion){
+  stopping=true;
+  setTimeout(()=>process.exit(1),10000).unref();
+  stopCompletion=runtime.stop();
+ }
+ return stopCompletion;
+};
 async function stop(){
- if(stopping)return;stopping=true;
- const force=setTimeout(()=>process.exit(1),10000);force.unref();
- try{await runtime.stop();}finally{clearTimeout(force);process.exit(0);}
+ if(stopping)return;
+ try{await beginStop();}
+ catch{process.exitCode=1;}
+ finally{process.exit(process.exitCode??0);}
 }
 process.stdout.on('error',()=>void stop());
 async function dispatch(frame){
@@ -31,18 +44,32 @@ async function dispatch(frame){
  }
  if(!frame||typeof frame.id!=='string'||typeof frame.method!=='string')throw Object.assign(Error('Invalid Pi request'),{code:'PI_PROTOCOL_INVALID'});
  if(frame.method==='stop'){
-  const result=await runtime.stop();respond(frame,result);await stop();return;
+  if(stopping)throw Object.assign(Error('Pi stop already running'),{code:'PI_METHOD_UNAVAILABLE'});
+  // The success receipt with the final journal is sent only after the shared
+  // stop completed its flush and close; failure keeps the structured error
+  // and a nonzero exit, and the shared deadline bounds a stalled drain.
+  const result=await beginStop();
+  respond(frame,result);
+  process.stdout.write('',()=>process.exit(0));
+  return;
  }
  const method=methods[frame.method];
  if(!method||stopping)throw Object.assign(Error('Pi method unavailable: '+frame.method),{code:'PI_METHOD_UNAVAILABLE'});
  const params={...frame.params};
  if(!params.agentDir&&process.env.NOZELI_PI_HOME)params.agentDir=process.env.NOZELI_PI_HOME;
- const result=await runtime[method](params);respond(frame,result);
+ const result=await runtime[method](params);
+ // Read evidence in other RPCs is durable, but only a journal snapshot in
+ // an original bound response authenticates a prefix for cold recovery.
+ if(!['activity','cancel','respond'].includes(method))runtime.flushReadEvidence();
+ respond(frame,result);
 }
 createInterface({input:process.stdin,crlfDelay:Infinity}).on('line',line=>{
  let frame;try{frame=JSON.parse(line);}catch(error){console.error('Invalid owner JSONL');void stop();return;}
  // Error frames keep the bounded structured provider-failure evidence
  // (sanitized picklist) beside code/message; never stacks or raw bodies.
- void dispatch(frame).catch(error=>send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{}),...(error.deliveryPhase?{deliveryPhase:error.deliveryPhase}:{}),...(error.definitiveNonDispatch===true&&error.deliveryPhase==='not-submitted'?{definitiveNonDispatch:true}:{}),...(error.providerFailure&&typeof error.providerFailure==='object'?{providerFailure:error.providerFailure}:{})}}));
+ void dispatch(frame).catch(error=>{
+  send({id:frame?.id,error:{code:error.code??'PI_RUNTIME_ERROR',message:error.message,...(['host','provider','runtime'].includes(error.failureOrigin)?{failureOrigin:error.failureOrigin}:{}),...(typeof error.hostToolCode==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(error.hostToolCode)?{hostToolCode:error.hostToolCode}:{}),...(error.deliveryPhase?{deliveryPhase:error.deliveryPhase}:{}),...(error.definitiveNonDispatch===true&&error.deliveryPhase==='not-submitted'?{definitiveNonDispatch:true}:{}),...(error.providerFailure&&typeof error.providerFailure==='object'?{providerFailure:error.providerFailure}:{})}});
+  if(frame?.method==='stop'&&error.code!=='PI_METHOD_UNAVAILABLE')process.stdout.write('',()=>process.exit(1));
+ });
 }).on('close',()=>void stop());
 process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());

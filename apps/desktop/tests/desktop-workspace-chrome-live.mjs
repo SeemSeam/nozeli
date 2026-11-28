@@ -76,9 +76,11 @@ try {
 
   const doc = await openFile('paper.md'), page = doc.page, viewId = doc.scope.viewId;
   assert.equal(await shell.$eval('#project-name',node=>node.textContent),'Synthetic chrome');
-  assert.equal(await shell.$eval('.nozeli-window-logo',node=>node.complete&&node.naturalWidth>0),true);
+  if(process.platform==='linux')assert.equal(await shell.$eval('.nozeli-window-logo',node=>node.complete&&node.naturalWidth>0),true);
   assert.equal(await shell.$$eval('.workspace-toolbar',nodes=>nodes.length),0);
-  await shell.locator('[data-window-action="maximize"]').click();await shell.locator('[data-window-action="maximize"]').click();
+  if(process.platform==='linux'){
+    await shell.locator('[data-window-action="maximize"]').click();await shell.locator('[data-window-action="maximize"]').click();
+  }
   await page.waitForSelector('#text-preview', {visible: true});
   assert.equal(await visible(page, '.desk-header'), 0);
   assert.equal(await visible(page, '#reader-bar'), 0);

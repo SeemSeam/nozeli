@@ -12,6 +12,7 @@ const {createOwnerSettingsIO}=await import(pathToFileURL(path.join(integration,'
 const {OwnerRuntime}=await import(pathToFileURL(path.join(integration,'src/bridge.mjs')));
 const {ownerRuntimeResources}=await import(pathToFileURL(path.join(integration,'src/native-skills.mjs')));
 const {createPiSdkDriver}=await import(pathToFileURL(path.join(integration,'dist/vendor/pi-gui/packages/pi-sdk-driver/index.js')));
+const {readEvidenceFrames}=await import(pathToFileURL(path.join(integration,'src/read-evidence-journal.mjs')));
 const native={skip:process.platform!=='win32'||process.arch!=='x64'};
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function fixture(t,{pi=true,...options}={}){
@@ -20,22 +21,15 @@ async function fixture(t,{pi=true,...options}={}){
  const bridge=path.resolve(import.meta.dirname,'../native/windows/build/Release/nozeli_windows_read.node');
  const values={NOZELI_PI_PRIVATE_ROOT:root,NOZELI_PI_WINDOWS_NATIVE_BRIDGE:bridge,NOZELI_PI_WINDOWS_NATIVE_SHA256:sha(await fs.readFile(bridge))};
  const before={};for(const [key,value] of Object.entries(values)){before[key]=process.env[key];process.env[key]=value;}
- t.after(async()=>{for(const [key,value] of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await fs.rm(root,{recursive:true,force:true});});
- const io=await createOwnerSettingsIO({agentDir,...options});
- return {root,home,cwd,agentDir,io,settings:path.join(cwd,'.pi','settings.json'),global:path.join(agentDir,'settings.json'),workspace:{workspaceId:'synthetic-settings',path:cwd},bridge};
+ const io=await createOwnerSettingsIO({agentDir,...options}),closers=[()=>io.close()];
+ t.after(async()=>{for(const close of closers.reverse())await close();for(const [key,value] of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await fs.rm(root,{recursive:true,force:true});});
+ return {root,home,cwd,agentDir,io,closers,settings:path.join(cwd,'.pi','settings.json'),global:path.join(agentDir,'settings.json'),workspace:{workspaceId:'synthetic-settings',path:cwd},bridge};
 }
 async function records(f){
- const directory=path.join(f.agentDir,'settings-reads'),files=(await fs.readdir(directory)).filter(n=>n.endsWith('.json')).sort();let previous=null;
- const result=[];
- for(const name of files){
-  const bytes=await fs.readFile(path.join(directory,name)),row=JSON.parse(bytes);assert.equal(row.previousSha256,previous);previous=sha(bytes);
-  assert.equal(row.schema,2);assert.equal(row.sequence,result.length+1);assert.equal(row.streamId,f.io.snapshot().streamId);
-  assert.equal(row.sequence===1?row.previousFileIdentity===null:/^[a-f0-9]{16}:[a-f0-9]{32}$/.test(row.previousFileIdentity),true);
-  if(row.present)assert.match(row.blobIdentity,/^[a-f0-9]{16}:[a-f0-9]{32}$/);
-  if(row.present){const blob=await fs.readFile(path.join(f.agentDir,row.blob));assert.equal(blob.length,row.byteLength);assert.equal(sha(blob),row.sha256);row.bytes=blob;}
-  result.push(row);
- }
- assert.equal(previous,f.io.snapshot().headSha256);assert.match(f.io.snapshot().headFileIdentity,/^[a-f0-9]{16}:[a-f0-9]{32}$/);assert.equal(result.length,f.io.snapshot().reads);return result;
+ const snapshot=f.io.snapshot(),bytes=await fs.readFile(path.join(snapshot.directory,snapshot.streamId+'.journal'));
+ const frames=[...readEvidenceFrames(bytes,snapshot.headBytes,1024*1024)];
+ assert.equal(frames.at(-1)?.headSha256,snapshot.headSha256);assert.equal(frames.length,snapshot.reads);
+ return frames.map(({row,bytes})=>({...row,bytes}));
 }
 test('native SDK settings preserve project priority, reload, dirty-field writes and exact read receipts',native,async t=>{
  const f=await fixture(t),initial=Buffer.from('\ufeff'+JSON.stringify({defaultModel:'project-old',queueMode:'followUp',untouched:{nested:'原值'},extensions:['outside.js']}));
@@ -81,14 +75,16 @@ test('native settings refuse redirected and hard-linked project inputs without S
  const g=await fixture(t);await fs.writeFile(g.settings,'{}');await fs.link(g.settings,path.join(g.root,'alias.json'));
  assert.throws(()=>g.io.createSettingsManager(g.cwd),{code:'PI_SETTINGS_UNCONFIRMED'});assert.equal(await fs.readFile(g.settings,'utf8'),'{}');
 });
-test('settings evidence barrier failure poisons the manager before it can return a model or retry',native,async t=>{
+test('settings evidence barrier failure refuses durable confirmation and later reads',native,async t=>{
  const f=await fixture(t,{directorySync(){throw Error('synthetic evidence barrier failure');}});await fs.writeFile(f.settings,'{"defaultModel":"never-authorized"}');
- assert.throws(()=>f.io.createSettingsManager(f.cwd),{code:'PI_SETTINGS_UNCONFIRMED'});assert.throws(()=>f.io.snapshot(),{code:'PI_SETTINGS_UNCONFIRMED'});
+ const manager=f.io.createSettingsManager(f.cwd);
+ assert.throws(()=>f.io.snapshot(),{code:'PI_SETTINGS_UNCONFIRMED'});assert.throws(()=>manager.getDefaultModel(),{code:'PI_SETTINGS_UNCONFIRMED'});
  assert.equal(await fs.readFile(f.settings,'utf8'),'{"defaultModel":"never-authorized"}');assert.ok((await fs.readdir(path.join(f.agentDir,'settings-reads'))).length>0);
 });
 test('OwnerRuntime direct model queries use the captured native project bytes after changes',native,async t=>{
  const f=await fixture(t);await fs.writeFile(f.settings,'{"defaultModel":"before"}');const runtime=new OwnerRuntime({send:()=>{}});
  await runtime.ensureInitialized(f);const supervisor=runtime.driver.runtimeSupervisor;
+ f.closers.push(()=>runtime.stop());
  assert.equal((await supervisor.getCurrentModelSettings(f.workspace)).defaultModelId,'before');await fs.writeFile(f.settings,'{"defaultModel":"after"}');
  assert.equal((await supervisor.getCurrentModelSettings(f.workspace)).defaultModelId,'after');assert.ok(runtime.settingsIO.snapshot().reads>=6);
 });

@@ -267,7 +267,9 @@ test('manager requires explicit creation, stores private ownership, and stopped 
  const f=await demoFixture(t),id=f.created.project.id;
  await assert.rejects(f.manager.create({confirmed:false}),{code:'DEMO_CONFIRM_REQUIRED'});
  assert.equal(f.created.session.status,'paused');assert.equal(f.created.source,'demo-fixture');
- const stopped=await f.manager.invoke(f.scope,'demo.transition',{...binding(f.created),action:'stop'});
+ const playing=await f.manager.invoke(f.scope,'demo.transition',{...binding(f.created),action:'play'});
+ assert.equal(playing.session.status,'playing');
+ const stopped=await f.manager.invoke(f.scope,'demo.transition',{...binding(playing),action:'stop'});
  assert.equal(f.manager.isDemo(id),true);assert.equal(stopped.session.status,'stopped');
  const first=await f.manager.managed('managed.send',{projectId:id,text:'offline question',requestKey:'same-send'});
  const again=await f.manager.managed('managed.send',{projectId:id,text:'offline question',requestKey:'same-send'});
@@ -343,10 +345,18 @@ test('manager refuses changed root and manifest authority and never routes repla
  for(const kind of ['root','manifest']){
   const f=await demoFixture(t),id=f.created.project.id,project=await f.host.requireProject(id);
   if(kind==='root'){
+   // Windows pins the live project directory. Simulate replacement between
+   // sessions, when no process owns that pin, rather than bypassing the pin.
+   if(process.platform==='win32')await f.host.storage.db.close();
    const retained=path.join(f.directory,'retained-original');
    await fs.rename(project.root,retained);await fs.mkdir(project.root);
    assert.equal(hash(await fs.readFile(path.join(retained,'research-notes.md'))),hash(await fs.readFile(path.join(appRoot,'assets','guided-demo','research-notes.md'))));
    await fs.writeFile(path.join(project.root,'user.txt'),'replacement user content');
+   if(process.platform==='win32'){
+    const host=new DesktopHost(f.userDataDir);
+    closers.get(f.directory).push(()=>host.storage.db.close());
+    f.manager=await createGuidedDemo({host,userDataDir:f.userDataDir,examplesRoot:f.examplesRoot,appRoot,workspace:f.workspace});
+   }
   }else{
    const manifest=path.join(project.root,'.nozeli','project.json');
    await fs.appendFile(manifest,' ');
