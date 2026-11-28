@@ -19,7 +19,7 @@
     "src/launch.mjs": "7160e0c7e9faf1bcfe420bd7061fd71d1770d3a401c5816cc132252b8cc383f9",
     "src/model-auth-io.mjs": "7ce0023515b41a151a380fc50236004224bfa41eab5b637c54cd9f81f8394ded",
     "src/native-skills.mjs": "e7a5d4a7652b0fac7591c62ba83a45048308603dc899c0a33d4a72a931358d0c",
-    "src/owner.mjs": "542265f433779b01acdb74550d57f382d80b0e69dcc761dd6eda683173e2bdd8",
+    "src/owner.mjs": "139b4f146d1cb1ea10b0909e491e70f4d93154ab502c3c2e849ae3f01127821a",
     "src/questions.mjs": "84b45d9008d20def0f53f5582d9bb4a02763aeeb3b3b4865c950f214f0a6c0d8",
     "src/read-evidence-journal.mjs": "2ae9ce14f42d78cfcaf20ddaee3543bd0465cfad8fbe19a87e8ad2d82f9a9323",
     "src/role-skill-io.mjs": "456c48eba63628912158e534412a7c14373ceca95b52cf9fddc540febd853439",

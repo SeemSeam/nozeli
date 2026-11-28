@@ -301,6 +301,7 @@ const SUITES = {
       'managed-explicit-recovery.test.mjs',
       'pi-activity.test.mjs',
       'pi-journal-snapshot.test.mjs',
+      'pi-read-evidence-journal.test.mjs',
       'target-model-intent.test.mjs',
       'managed-deviation-surface.test.mjs',
       'managed-frontdesk-surface.test.mjs',

@@ -1,6 +1,6 @@
 # 发布说明与发行边界
 
-当前版本基线：**`0.1.0-beta.9`**（Linux x64、macOS arm64 与 Windows x64 预发行候选，尚待同一提交的 CI 和三平台实包验收）。用户明确批准本版 Beta 公开预发行审计例外：SuperDoc/PPTist 与 Git、OMP 对应源码，Electron/Chromium 第三方通知，PPTist 传递依赖及 Pi 运行时闭包六项仍未签核，`--public` 继续阻断，不构成合规认证或稳定版授权。
+当前版本基线：**`0.1.0-beta.10`**（Linux x64、macOS arm64 与 Windows x64 预发行候选）。SuperDoc/PPTist、Git 和 OMP 对应源码、Electron/Chromium 通告、PPTist 传递依赖及 Pi 运行时闭包六项仍未签核，`--public` 继续阻断。Beta.9 的公开例外不适用于 Beta.10。
 
 ## Beta.9 候选回归记录
 

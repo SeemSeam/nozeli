@@ -68,8 +68,8 @@ Agent 交付得快，不代表人已经理解。Nozeli 希望让你看清成果�
 
 ## 当前状态
 
-- **[Beta.9 三平台候选](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.9)**：Linux x64、macOS arm64、Windows x64，待同一源码提交的 CI 与各平台最终包验证。Windows 分发暂按手动安装方式；Mac 包仅 ad-hoc 签名、未公证。
-- 用户明确批准本版 Beta.9 公开预发行例外。分发审计未完成，六项再分发义务仍未签核，详见[发布说明](docs/release.md)；不构成合规认证、稳定版或平台验收。
+- **[Beta.10 三平台候选](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.10)**：Linux x64、macOS arm64、Windows x64，待同一提交的 CI 与各平台最终包验收。当前公开版为 [Beta.9](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.9)。
+- 分发审计未完成，六项再分发义务仍未签核，详见[发布说明](docs/release.md)。Beta.9 的公开预发行例外不适用于 Beta.10。
 - 已有阅读、批注、编辑、真实文件与后台协作工作流；具体格式、版本和能力边界见[当前状态与能力边界](docs/status.md)。
 - **Beta8 双平台预发行 `v0.1.0-beta.8`**（[发行页](https://github.com/SeemSeam/nozeli/releases/tag/v0.1.0-beta.8)，公开状态及下载以发行页为准）：Linux打包仅清除发行副本特殊权限，保持宿主sandbox与旧更新器安全拒绝不变；macOS arm64新增原生更新签名验证、同卷原子交换、独立helper、新renderer健康确认、失败回退／中断恢复与父进程退出竞态修复。扩展市场及官网仍为原型。
 - **升级边界**：Linux旧版可更新至beta.8；没有新更新器的旧Mac版首次须手动安装beta.8，此后才支持未来自动升级，不声称旧Mac版能自动更新到beta.8。

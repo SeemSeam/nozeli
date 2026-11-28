@@ -135,7 +135,7 @@ for(const failure of ['shell-save','surface-save','attachment','none'])test(`pro
  const guest=new View();guest.setVisible(true);const sourceGuest=previewSlot(guest,original,root.win,'source-guest');preview.slots.set(sourceGuest.id,sourceGuest);
  const captures=[];
  for(const owner of [root,original]){
-  owner.wc.onSend=(channel,payload)=>{
+  owner.ready=true;owner.wc.onSend=(channel,payload)=>{
    if(channel!=='nozeli:flush')return;
    void (async()=>{
     assert.equal(root.projectId,'p','host must still admit source recovery while saving');
@@ -256,7 +256,7 @@ test('cross-project docking waits for completed activation without holding the t
  await native.reconcile(layout);const resident=native.surfaces.get(viewId),originalView=resident.view;receipt(native,resident);
  let activationReady,activationError;const ready=new Promise(resolve=>activationReady=resolve);
  root.wc.onSend=(channel,event)=>{
-  if(channel==='nozeli:flush')void native.saveRecovery(root,{projectId:'p',generation:1,candidate:{text:'KEEP A SHELL DRAFT'},workspace:{draft:'A UNSENT'}}).then(()=>native.acknowledge(root,{requestId:event,ok:true}));
+  if(channel==='nozeli:flush')void native.saveRecovery(root,{projectId:'p',generation:1,candidate:{text:'KEEP A SHELL DRAFT'},workspace:{draft:'A UNSENT'}}).then(()=>native.acknowledge(root,{requestId:event?.requestId??event,ok:true}));
   if(channel==='nozeli:workspace-control'&&event.type==='project')void (async()=>{
    // A renderer restore may need this queue; the waiting dock must not own it.
    await native.serial(target.id,async()=>{});
