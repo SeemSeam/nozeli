@@ -2,7 +2,6 @@
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import net from 'node:net';
 import {execFileSync,spawn} from 'node:child_process';
 import {createRequire} from 'node:module';

@@ -24,3 +24,5 @@
 *.woff2 binary
 # These bytes are pinned in archify-vendor/SOURCES.json, including LICENSE.
 apps/desktop/src/agents/managed/archify-vendor/** -text
+# The guided demo manifest verifies exact bundled bytes on every platform.
+apps/desktop/assets/guided-demo/** -text
